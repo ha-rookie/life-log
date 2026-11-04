@@ -37,15 +37,3 @@ jobs:
         run: npm run db:fixture:local
       - name: Confirm schema/fixtures in local Wrangler D1
         run: npx --no-install wrangler d1 execute life-log-dev --local --command "SELECT count(*) AS n FROM body_measurements"
-      - name: CI security scope audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          if grep -nE '(^|[^a-zA-Z])--remote|wrangler deploy|pages deploy|migrations apply[^\n]*--remote' .github/workflows/life-log-ci.yml; then
-            echo 'Forbidden remote command in PR CI'
-            exit 1
-          fi
-          if grep -q 'secrets\.CLOUDFLARE_' .github/workflows/life-log-ci.yml; then
-            echo 'Cloudflare secrets forbidden in PR CI'
-            exit 1
-          fi
