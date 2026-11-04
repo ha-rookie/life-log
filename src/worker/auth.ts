@@ -8,7 +8,7 @@ export interface AccessEnv {
   OWNER_EMAIL?: string;
 }
 
-type KeyResolver = ReturnType<typeof createRemoteJWKSet>;
+type KeyResolver = Parameters<typeof jwtVerify>[1];
 const jwksCache = new Map<string, KeyResolver>();
 
 function remoteKeys(team: string): KeyResolver {
