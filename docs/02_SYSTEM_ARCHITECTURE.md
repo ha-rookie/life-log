@@ -1,126 +1,72 @@
-# System Architecture
+# System Architecture — ライフログ（仮）
 
 ## 1. 文書目的
-
-この文書は、ユーザー・Cloudflare・GitHub・外部サービス・データストア等を含む「システム全体の構成」の正本とする。
+Hosting、認証、D1、外部データ経路と環境分離の正本。
 
 ## 2. Architecture Goals
-
-- ARCH-001: CHANGE-ME
-- ARCH-002: CHANGE-ME
+- ARCH-001: 匿名・他人から私有データへ一切アクセスさせない。
+- ARCH-002: データを欠測・推定・実測・出典付きで保持し、再現可能に比較する。
+- ARCH-003: Cloudflare無料枠を設計目標とし、従来アプリのD1やSecretsから独立させる。
 
 ## 3. System Context
-
-```text
-User / Browser
-      |
-      v
-CHANGE-ME Web App
-      |
-      +--> CHANGE-ME External Service
-      |
-      +--> CHANGE-ME Data / API
-
-GitHub
-  |
-  +--> CI / Build / Data Update
-  |
-  v
-Cloudflare Pages / Workers / CHANGE-ME
-```
-
-実際の採用構成に合わせ、使わない要素は削除せず「該当なし」と明記する。
+Browser/Android Chrome → Cloudflare Access (予定) → Workers/Static Assets (予定) → D1 (開発用IDを設定予定)
+CSVは本人選択後にブラウザで解析・確認し、認証済APIが再検証してD1へ分割登録。
+将来の画像AI API、R2、商用公開はMVP外。
 
 ## 4. Deployment Architecture
-
-| ID | Component | Platform | Responsibility | Production | Preview |
+| ID | Component | Platform | Responsibility | Production | Preview/Development |
 | --- | --- | --- | --- | --- | --- |
-| ARCH-010 | Frontend | CHANGE-ME | CHANGE-ME | CHANGE-ME | CHANGE-ME |
-| ARCH-011 | Server/API | CHANGE-ME | CHANGE-ME | CHANGE-ME | CHANGE-ME |
-| ARCH-012 | Data Store | CHANGE-ME | CHANGE-ME | CHANGE-ME | CHANGE-ME |
+| ARCH-010 | SPA | React/Vite + Workers Static Assets | 画面表示とCSVプレビュー | 未作成 | 未実装 |
+| ARCH-011 | API | Cloudflare Workers | 認可・データ操作・分析 | 未作成 | 未実装 |
+| ARCH-012 | DB | Cloudflare D1 | 個人データの正本 | 未作成・未設定 | 開発D1 IDはHuman提供・API未検証 |
+| ARCH-013 | Identity Gate | Cloudflare Access | 入口保護、署名済identityの検証 | 未作成 | 未設定 |
 
 ### Environment Separation
+- Development DB: life-log-dev。user-provided UUID: 421d0116-5c33-4782-a2b6-28f9684d3956。存在と名前はread-only APIで後日確認。
+- Binding: DB (env.DB)、Wrangler configはBootstrap時点の接続定義のみ。
+- ProductionとPreviewのD1、Worker、Access、Secrets、Hostは独立して設計・承認してから作成する。
+- PreviewやProductionの設定に開発D1を自動流用しない。
+- 既存mahjong-score等のDBと共用しない。
 
-- ProductionとPreviewのSecrets/Variables/Bindingsを分離する
-- PreviewからProductionデータへ書き込まない
-- Production固有のDomain/Auth/Billing設定をPreviewへコピーしない
-- 環境差分がある場合はこの文書と `CLOUDFLARE_SETUP.md` の役割を分ける
-  - なぜ分けるか・何を分けるか → 本文書
-  - 具体的な設定手順 → Cloudflare Setup
-
-## 5. Runtime Data Flow
-
-```text
-CHANGE-ME
-```
-
-ユーザー操作時に発生する通信・計算・保存を記載する。
+## 5. Runtime Data Flow (planned)
+本人 → Access検証 → Worker認可確認 → D1で取得・保存 → 体重推移／仮説の支持・反証を表示。
+未認証はUI・Static Assets・APIの全公開経路でfail-closed。CORSとCSRFは認証方式確定後に設計する。
 
 ## 6. Build / Update Data Flow
-
-```text
-CHANGE-ME
-```
-
-CI、定期更新、バッチ、事前生成がある場合、Runtimeと分けて記載する。
+Project Bootstrap PR → Repository validation → Human merge gate。
+Secretsチェックはmanual workflow_dispatch、GET Token Verify、GET D1 metadataのみ。実行時も遠隔DB書込・Migration・Deployをしない。
+CSV取込は将来ブラウザで前処理し、Workerが再検証と冪等性を担う。
 
 ## 7. External Dependencies
-
 | ID | Service | Purpose | Runtime Dependency | Auth | Failure Behavior |
 | --- | --- | --- | --- | --- | --- |
-| IF-001 | CHANGE-ME | CHANGE-ME | Yes/No | CHANGE-ME | CHANGE-ME |
-
-外部障害時にコア機能まで停止させるか、縮退できるかを明示する。
+| IF-001 | Cloudflare Access | 本人認証 | Yes (planned) | Browser login + Worker verify | 拒否/利用不可、fail-closed |
+| IF-002 | Cloudflare D1 | データ保存と分析 | Yes (planned) | Worker binding | 明示エラー、架空データを返さない |
+| IF-003 | Google Fit由来CSV | 歩数の初回／継続取込 | No, manual import | 本人アップロード | サンプル形式確認・取込保留 |
 
 ## 8. Trust Boundaries / Security
-
-- Browserで保持してよい情報: CHANGE-ME
-- Browserへ出してはいけない情報: Secrets / tokens / CHANGE-ME
-- Server側検証: CHANGE-ME
-- CORS / CSP / same-origin: CHANGE-ME
-- 認証・認可: CHANGE-ME
-- 個人情報: CHANGE-ME
-- Rate limit / abuse対策: CHANGE-ME
+- Public edgeでは本人の認証を全URLで確認。Identity検証はaud/iss/署名/期限、本人allowlistと合わせて検証する設計（詳細TBD）。
+- WorkerはD1のowner scopeをサーバー側で確認。UI表示非表示は認可の代替にならない。
+- GitHub Actions Secretsの値は出力・保存・ソース化禁止。D1 UUIDはSecretではない。
+- 元ファイル・ヘルスデータをGitHub CIやログへ送らない。
+- PWAのオフラインキャッシュは個人データを保存しない。
 
 ## 9. Availability / Failure Strategy
-
-| Failure | User-visible behavior | Fallback | Logging/Detection |
-| --- | --- | --- | --- |
-| External API unavailable | CHANGE-ME | CHANGE-ME | CHANGE-ME |
-| Data missing | CHANGE-ME | CHANGE-ME | CHANGE-ME |
-| Analytics unavailable | Core機能へ波及させない/CHANGE-ME | CHANGE-ME | CHANGE-ME |
-
-架空値を生成して正常に見せるより、取得失敗・データ不足を明示する。
+| Failure | Behavior | Recovery |
+| --- | --- | --- |
+| Access unavailable/invalid | APIとUIを拒否 | 再認証、運用確認 |
+| D1 unavailable | 不明/失敗と表示 | 再試行。部分登録・重複を避ける |
+| Data missing | 欠測/比較不可と表示 | ソース追加 |
+| Free quota exceeded | 明示的な制限エラー | 使用量調整。自動有料化しない |
 
 ## 10. Observability
-
-- Cloudflare Web Analytics: CHANGE-ME
-- Application events: CHANGE-ME
-- Error logs: CHANGE-ME
-- Deployment history: CHANGE-ME
-- Privacy boundary: CHANGE-ME
+構造化した安全な処理結果のみ。個人データ・画像・token・認証ヘッダは出力しない。既存他アプリのメトリクスと分けて監視（アカウントFree枠は共有）。
 
 ## 11. Performance / Cost
-
-- Performance budget: CHANGE-ME
-- Cloudflare無料枠/費用上限: CHANGE-ME
-- API費用上限: CHANGE-ME
-- Asset/cache strategy: CHANGE-ME
+Cloudflare Free月額0円を設計目標とする。Workers CPU、D1行読書き、Actions使用量は実測。CSV解析はブラウザ主軸、APIは分割受信。
 
 ## 12. Architecture Decisions
-
-重要な選択は `adr/` に残す。
-
-例:
-
-- Pages vs Workers
-- Runtime API vs static pre-generated data
-- Database採用/非採用
-- SPA/MPA
-- PWA採用
-- Analytics方式
-- Auth方式
+docs/adr/ADR-0001-life-log-infrastructure.md に選定理由と未確定境界を記録。
 
 ## 13. 未決事項
-
-- TBD-ARCH-001: CHANGE-ME
+Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime entrypoint、Google Fit CSV実形式。どれもBootstrap時点では未検証。
