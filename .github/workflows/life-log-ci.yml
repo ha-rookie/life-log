@@ -1,0 +1,39 @@
+name: Life-log local app and D1 CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-local-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install isolated dependencies (no Cloudflare credentials)
+        run: npm install --no-audit --no-fund
+      - name: Typecheck and build
+        run: npm run build
+      - name: Unit security and legacy tests (synthetic)
+        run: npm test
+      - name: Validate SQLite constraints (synthetic in-memory)
+        run: npm run test:schema
+      - name: Apply migrations ONLY to Wrangler local D1
+        run: npm run db:migrate:local
+      - name: Re-apply local D1 migrations to verify idempotence
+        run: npm run db:migrate:local
+      - name: Insert synthetic fixtures ONLY into local D1
+        run: npm run db:fixture:local
+      - name: Confirm schema/fixtures in local Wrangler D1
+        run: npx --no-install wrangler d1 execute life-log-dev --local --command "SELECT count(*) AS n FROM body_measurements"

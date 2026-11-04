@@ -1,14 +1,18 @@
 {
-  // Bootstrap only: defines dev D1 identity. No Worker entrypoint or deployment workflow.
-  // Do not run wrangler deploy or --remote migrations until Access and environment isolation are approved.
+  // D1 is local-only for the current issue. NEVER run remote SQL or deploy without a separate Human approval.
   "name": "life-log-dev",
   "compatibility_date": "2026-11-04",
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "life-log-dev",
-      "database_id": "421d0116-5c33-4782-a2b6-28f9684d3956",
-      "migrations_dir": "migrations"
-    }
-  ]
+  "main": "src/worker/index.ts",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "life-log-dev",
+    "database_id": "421d0116-5c33-4782-a2b6-28f9684d3956",
+    "migrations_dir": "migrations"
+  }]
 }

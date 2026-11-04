@@ -39,5 +39,13 @@
 ## 5. Generated / Security
 生成物・測定原本・実健康情報・API Tokenをリポジトリに保存しない。SecretsはGitHub設定でのみ保持し、値を直接CI出力しない。D1 UUIDは秘密値ではない。
 
+## 5.1 Local app implementation (#5)
+- `src/client/`: React/Vite source. `src/worker/`: Access JWT authorization, GET-only API, Worker-first asset gate. `src/shared/`: legacy data semantics.
+- `migrations/0001_initial.sql`: D1 schema (synthetic-only local verification). `tests/fixtures/synthetic.sql`: no personal data.
+- `tests/`: Vitest security and dedupe negative cases; `scripts/validate-schema.py`: in-memory SQLite constraint tests.
+- `.github/workflows/life-log-ci.yml`: PR-only Node+Vite/TS/Vitest/Python/--local Wrangler pipeline; Cloudflare Secrets excluded.
+- `index.html`, `tsconfig.json`, `package.json`, `.gitignore`: local build configuration. npm lockfile generation is deferred until dependency retrieval is available; exact direct-dependency versions are pinned.
+- A local Vite preview exposes only development scaffolding, no personal data; it is not an auth acceptance test. The deployable Worker always gates all Static Assets and API.
+
 ## 6. Naming
 Issue専用Branch、設計ID、ADR番号はTemplate規約を継続。本人のデータを含むファイル名・内容は公開Artifactへ出さない。
