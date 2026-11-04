@@ -47,6 +47,15 @@
 - Production/Preview, real import, User Acceptance, remote D1, Cloudflare Access provisioning **NOT EXECUTED**.
 - Validation: Issue #5 PR tests (Vitest, TypeScript+Vite, offline SQLite and Wrangler D1 local) require actual CI evidence; do not mark success from code presence.
 
+
+## 5.3 Synthetic CSV preview-confirm local slice (Issue #9)
+- REQ-002/REQ-006/APP-004: lifestyle + ECLEAR synthetic UTF-8 CSV parse, mapped preview, explicit confirmation, server-side revalidation and local-only D1 batch storage.
+- NFR-001/REQ-001: Access owner verification precedes every route. Confirmation also requires local flag + loopback hostname + Origin matching; no public import route by default.
+- NFR-002: blank fields remain NULL, explicit drinking=0 has cups=0, past drinking=1 keeps cup count NULL. Equal row overlaps skip, conflicts produce 409, and data/job/audit use one atomic batch.
+- Tests: synthetic Vitest parser/API and Python SQLite transaction rollback, plus existing Wrangler local-only D1 checks. Final PR HEAD CI must be inspected before completion claims.
+- Deferred: actual user CSV, Google Fit/Shift_JIS/XLSX/TXT, editable mapping, import cancellation, larger batch protocol, live Access/Worker/D1 end-to-end.
+- No main merge, remote D1 SQL/Migration/write, Access mutation or deployment.
+
 ## 6. Coverage Review
 Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実装／未検証を明確に残す。
 

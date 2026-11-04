@@ -72,5 +72,17 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 - Body measurements preserve multiple readings on one day; activity sources are separate and never summed implicitly. Imported data itself is not processed by any API in this Issue.
 - Unit tests use synthetic JWT signing and injection, not live credentials or Cloudflare resources.
 
+
+## 11.2 CSV import local-only vertical slice (Issue #9)
+- Scope: synthetic UTF-8 lifestyle and ECLEAR CSV only. Parser accepts BOM, CRLF, CSV double quotes and comma escaping, at most 30 rows and 30KB.
+- Mapping: lifestyle 日付/飲酒 required and 歩数/体重_kg optional; ECLEAR 年月日/時刻/体重 required and 体脂肪率/骨格筋率 optional. Other columns not yet persisted. Google Fit, Shift_JIS, TXT/XLSX, BMI analysis deferred.
+- Browser does format detection, column display, first-three-row preview and error counts without calling the Worker. A separate explicit confirmation sends original CSV + SHA-256. No CSV stored in localStorage/Service Worker/GitHub.
+- Signed Access owner authorization precedes routes; POST /api/import/confirm additionally requires IMPORT_LOCAL_ONLY=true, loopback hostname, same-Origin request and application/json. Default disabled on public Cloudflare hostname.
+- The Worker rehashes/reparses original CSV. Invalid rows, duplicate-in-file keys, changed hashes reject the entire file before database access.
+- D1 preflight compares owner+source+day (lifestyle), or owner+source+exact timestamp (ECLEAR). Exact cross-file overlaps skip, conflicting overlaps return 409 and zero writes; same-file replay reports skipped. Distinct ECLEAR times on the same date remain separate.
+- D1 batch atomically saves owner, import_job, data rows and per-row audit. Any statement failure rolls back the entire batch, no partial success. Existing schema is unchanged.
+- Only local synthetic SQL and injected-authorizer TypeScript tests have been exercised; live Access, Worker/D1 integration, Android Chrome and real source mapping remain unverified.
+- Large CSV needs a future bounded batch protocol and separate performance validation.
+
 ## 12. Operational Boundary
 本Issueは設計とCloudflare開発D1 Bindingの準備まで。実際のWorker / Schema / APIは後続Issueで実装する。
