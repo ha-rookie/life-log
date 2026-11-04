@@ -20,7 +20,7 @@ function fake(){
       const q=statements[i] as unknown as {sql:string;args:unknown[]};
       let changes=1;
       if(q.sql.includes("INSERT OR IGNORE INTO body_measurements")){const key=String(q.args[8]);if(staged.has(key))changes=0;else staged.add(key);}
-      if(q.sql.includes("INSERT OR IGNORE INTO lifestyle_days")){const key=String(q.args[1])+":"+String(q.args[5]);if(staged.has(key))changes=0;else staged.add(key);}
+      if(q.sql.includes("INSERT INTO lifestyle_days")){const key=String(q.args[1])+":"+String(q.args[5]);if(staged.has(key))changes=0;else staged.add(key);}
       results.push({meta:{changes}});
     }
     const job=statements[1] as unknown as {args:unknown[]};for(const key of staged)seen.add(key);jobs.set(String(job.args[4]),"confirmed");return results;

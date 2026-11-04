@@ -59,3 +59,9 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - REQ-002/REQ-006/NFR-002: strict synthetic CSV mapping, preview-before-confirm, Worker-side revalidation, missing vs zero, per-file SHA-256 idempotence and ECLEAR cross-file reliable fingerprint. Atomic local D1 batch; real export columns remain TBD.
 - NFR-001/NFR-006: Worker signed Access authorization before all import routes, owner-scoped parameterized SQL; no raw CSV in logs. Real Access and real personal data UAT NOT EXECUTED.
 - Verification: Vitest CSV/Worker negative cases and existing PR CI (npm ci, TypeScript/Vite, SQLite and Wrangler --local); no Remote D1/Preview/Production.
+
+## Issue #11 collision fix and real local D1 integration (unmerged)
+- REQ-002/006 NFR-002: NULL-safe source-independent per-day lifestyle conflict comparison; conflicting values return HTTP 409 with day and differing field names, no job/row writes, no automatic overwrite or silent ignore. Equal duplicate days are skipped.
+- Concurrency: a transactional job-status CHECK guard revalidates every day inside the D1 batch, closing the read-to-write race. SQL failure rolls back the entire batch. Main and remote still unchanged.
+- `tests/import-worker.test.ts` runs actual ephemeral Wrangler D1, not only an in-memory mock, and verifies preview no-write, NULL vs zero, same-file retry, cross-file duplicate, conflict persistence, raced insertion, mid-batch SQL failure/rollback and clean retry.
+- Actual user data, actual CSV vendor layout, remote D1, Cloudflare Access setup and deployment remain NOT VERIFIED / NOT EXECUTED.

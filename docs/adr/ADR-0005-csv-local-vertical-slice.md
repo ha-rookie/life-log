@@ -15,3 +15,9 @@
 - Concurrent cross-file same-measurement imports rely on DB uniqueness; skipped rows do not overwrite earlier source provenance.
 - D1 batch failure must rollback all statements; preview-only path must not touch DB. Client confirmation is not an authorization control.
 - Full import row audit and user-directed conflict resolution are follow-up work; import_jobs and source keys remain available for provenance.
+
+## Revised conflict isolation and integration gate (Issue #11, same PR)
+- Same owner/day different `drinking_presence`, `drink_cups` or `steps` is a conflict **across source files and source IDs**, including `NULL` versus explicit `0`. HTTP 409 returns date and differing field names; user resolution is deferred. Exact matching days are skipped and never duplicated.
+- Previous `INSERT OR IGNORE INTO lifestyle_days` silently discarded different same-day data. Replace it with explicit preflight reads plus owner-scoped transactional guard on `import_jobs` status. A reserved invalid `conflict` status violates the existing CHECK constraint, causing D1 batch rollback if a conflicting write races preflight. The guard dynamically repeats only a fixed bound SQL predicate and binds all values.
+- Integration tests use Wrangler `getPlatformProxy` with `remoteBindings:false`, `persist:false` and apply the existing migration to an ephemeral local D1. SQL failure is injected into a *real* D1 batch after an initial insert; the batch must rollback, with no import job or rows, and clean retry must succeed.
+- No schema/config/CI changes, migration, real data or any Cloudflare remote operation. The test harness does not prove production concurrency behavior; that remains a later UAT gate.
