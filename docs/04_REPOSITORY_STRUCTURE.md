@@ -14,7 +14,7 @@
 
 本Issueで新しく追加する:
 - wrangler.jsonc — 開発D1 Bindingの識別値、実運用のdeploy targetではない
-- .github/workflows/cloudflare-d1-readonly-check.yml — manual GET-only credential/database check
+- .github/workflows/cloudflare-d1-readonly-check.yml — 承認済みmainへのpushでのみ動くGET-only credential/database check。PRにはCloudflare Secretsを渡さない（Issue #3）。
 - docs/adr/ADR-0001-life-log-infrastructure.md — D1と認証を含む設計上の決定
 
 ## 3. Planned (not created in Bootstrap)
@@ -30,7 +30,7 @@
 | Path | Role | Status |
 | --- | --- | --- |
 | docs/ | 設計の正本 | Existing/updated |
-| .github/workflows/ | ローカルCI、手動Cloudflare read-only check | Existing/new |
+| .github/workflows/ | PR向けRepository validation（Secretなし）、main push向けCloudflare read-only check | Existing |
 | wrangler.jsonc | dev D1 Binding ID。Secret値を含まない | New |
 | src/ | UI / API | Planned |
 | migrations/ | D1 schema changes（Remote適用は別承認） | Planned |

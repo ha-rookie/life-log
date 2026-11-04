@@ -34,7 +34,7 @@ CSVは本人選択後にブラウザで解析・確認し、認証済APIが再�
 
 ## 6. Build / Update Data Flow
 Project Bootstrap PR → Repository validation → Human merge gate。
-Secretsチェックはmanual workflow_dispatch、GET Token Verify、GET D1 metadataのみ。実行時も遠隔DB書込・Migration・Deployをしない。
+PRでは既存のRepository validationのみを実行し、Cloudflare Secretsは一切渡さない。Human承認後のmain pushでだけGET Token VerifyとGET D1 metadataが自動実行され、遠隔DB書込・SQL・Migration・Deployは行わない（ADR-0002）。
 CSV取込は将来ブラウザで前処理し、Workerが再検証と冪等性を担う。
 
 ## 7. External Dependencies
@@ -66,7 +66,7 @@ CSV取込は将来ブラウザで前処理し、Workerが再検証と冪等性�
 Cloudflare Free月額0円を設計目標とする。Workers CPU、D1行読書き、Actions使用量は実測。CSV解析はブラウザ主軸、APIは分割受信。
 
 ## 12. Architecture Decisions
-docs/adr/ADR-0001-life-log-infrastructure.md に選定理由と未確定境界を記録。
+docs/adr/ADR-0001-life-log-infrastructure.md に初期選定を記録。検証トリガーの手動→main push自動化は docs/adr/ADR-0002-auto-readonly-cloudflare-check.md に記録。
 
 ## 13. 未決事項
 Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime entrypoint、Google Fit CSV実形式。どれもBootstrap時点では未検証。

@@ -33,5 +33,11 @@
 - Cloudflare API TokenとD1 metadata GETの検証ワークフローを提案。実行はmain反映後の別工程。
 - GitHub TemplateのProject validation通過を確認。Application Runtime・remote validation・deploymentは未実施。
 
-## 5. Coverage Review
+## 5. Credential Verification Transition (Issue #3)
+- Bootstrap時点の手動Workflow採用理由をADR-0001へ残し、トリガーのみADR-0002で変更する。
+- PRではCloudflare Secretsを使用しない。既存Repository validationのみ実行する。
+- GitHub mainへの承認済みpush後、GitHub ActionsがToken activeとD1 metadataのGETを自動実行する。実行結果が確認されるまではRemote D1認証・存在は **未検証**。
+- D1の行読み書き、SQL、Migration、Worker Binding実行、DeployはこのWorkflowの検証範囲外。
+
+## 6. Coverage Review
 Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実装／未検証を明確に残す。

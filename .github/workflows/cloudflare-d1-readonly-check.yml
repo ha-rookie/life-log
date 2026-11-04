@@ -1,17 +1,22 @@
 name: Cloudflare credential and development D1 read-only check
 
+# Cloudflare credentials are used ONLY by trusted, human-approved main commits.
+# PRs are validated by the separate Repository validation workflow without these secrets.
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: life-log-cloudflare-readonly-check
+  group: life-log-cloudflare-readonly-check-main
   cancel-in-progress: false
 
 jobs:
   validate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'ha-rookie/life-log'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -53,8 +58,9 @@ jobs:
           echo 'Development D1 metadata verified: name and UUID match.'
           {
             echo '### Read-only Cloudflare validation'
+            echo '- Trigger: trusted main push'
             echo '- API token: active'
             echo '- GitHub secrets: present'
             echo '- Development D1 metadata: name/UUID match'
-            echo '- Remote database writes/migrations/deployments: not executed'
+            echo '- Remote D1 writes, SQL, migrations, and deployments: not executed'
           } >> "$GITHUB_STEP_SUMMARY"
