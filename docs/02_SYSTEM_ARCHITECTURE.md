@@ -68,5 +68,14 @@ Cloudflare Free月額0円を設計目標とする。Workers CPU、D1行読書き
 ## 12. Architecture Decisions
 docs/adr/ADR-0001-life-log-infrastructure.md に初期選定を記録。検証トリガーの手動→main push自動化は docs/adr/ADR-0002-auto-readonly-cloudflare-check.md に記録。
 
+## 12.1 Local full-stack implementation proposal (#5)
+- `wrangler.jsonc`: Worker entrypoint `src/worker/index.ts`; Static Assets `./dist` with `binding: ASSETS` and `run_worker_first: true` on **every** request, not just `/api/*`.
+- Important Cloudflare official limitation: Static Assets routing may not propagate `ctx.access` to the User Worker, so the runtime independently verifies a **signed** Access JWT (`Cf-Access-Jwt-Assertion`) using Cloudflare Access JWKS, exact issuer, audience and owner email. This is a design implementation under local test; no live Access configuration exists.
+- All routes fail closed (403) without `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_EMAIL` or a valid token; no header spoofing, no public asset fallback.
+- User data is only available to GET `/api/summary` using the validated singleton owner scope `owner`; POST and import writes are not implemented. All responses force no-store.
+- Local D1 schema and synthetic fixture verification only; `wrangler d1 migrations apply life-log-dev --local` must always carry `--local`. Remote migration/deploy are prohibited.
+- CI `.github/workflows/life-log-ci.yml` triggers on PR with no Cloudflare Secrets. Prior Cloudflare read-only metadata workflow remains main-push-only.
+- Real Access, Worker binding end-to-end, mobile/browser negative smoke and public hostname protection are unverified; deployment is forbidden until separate human approval.
+
 ## 13. 未決事項
 Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime entrypoint、Google Fit CSV実形式。どれもBootstrap時点では未検証。

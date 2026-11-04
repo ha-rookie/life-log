@@ -63,5 +63,14 @@ Domainはブラウザ/SQL/外部APIに依存しない。Workerでは本人認可
 ## 11. Identity / Session Boundary
 External identity、Application user、Sessionを分離し、失効・不一致・不明identityは拒否。本人専用としownerの認可をサーバー側で行う。詳細のCookie/Access JWT methodはTBD。
 
+## 11.1 First local vertical slice (#5)
+- `src/client/App.tsx`: minimal React read-only Today screen; `/api/summary` fetch is no-store and missing weight renders as no record, not 0kg.
+- `src/worker/auth.ts`: validates issuer/audience/RS256 signature/expiry and exact owner allowlist using Cloudflare Access JWKS; direct spoofable identity headers are never trusted. Missing config is always denied.
+- `src/worker/index.ts`: every static and API path is authenticated before `ASSETS.fetch` or D1. No write routes.
+- `src/worker/summary.ts`: owner-scoped parameterized D1 SELECT.
+- `src/shared/legacy.ts`: converts legacy drinking 0→(no,0), 1→(yes,unknown cups), blank→(unknown,unknown cups); preview dedupe uses source identity or reliable cross-file fingerprint. D1 constraints protect row and fingerprint uniqueness.
+- Body measurements preserve multiple readings on one day; activity sources are separate and never summed implicitly. Imported data itself is not processed by any API in this Issue.
+- Unit tests use synthetic JWT signing and injection, not live credentials or Cloudflare resources.
+
 ## 12. Operational Boundary
 本Issueは設計とCloudflare開発D1 Bindingの準備まで。実際のWorker / Schema / APIは後続Issueで実装する。
