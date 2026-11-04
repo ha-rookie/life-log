@@ -5,7 +5,7 @@ const life="local_day,drinking_presence,drink_cups,steps\n2026-01-02,1,,\n2026-0
 const eclear="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
 function request(path:string,body:unknown){return new Request("https://example.invalid/api/import/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
 function fake(){
-  const jobs=new Map<string,string>(),seen=new Set<string>(),calls:string[]=[],state={fail:false};
+  const jobs=new Map<string,string>(),seen=new Set<string>(),calls:string[]=[],state={fail:false,failAt:-1};
   const db:ImportDb={prepare(sql:string){
     calls.push(sql);
     const q:{sql:string;args:unknown[];bind:(...v:unknown[])=>Statement;first:<T>()=>Promise<T|null>}={
@@ -14,15 +14,16 @@ function fake(){
     };return q;
   },async batch(statements:Statement[]){
     if(state.fail)throw Error("synthetic failure");
-    const results:unknown[]=[];
+    const results:unknown[]=[],staged=new Set(seen);
     for(let i=0;i<statements.length;i++){
+      if(i===state.failAt)throw Error("synthetic partial batch failure");
       const q=statements[i] as unknown as {sql:string;args:unknown[]};
       let changes=1;
-      if(q.sql.includes("INSERT OR IGNORE INTO body_measurements")){const key=String(q.args[8]);if(seen.has(key))changes=0;else seen.add(key);}
-      if(q.sql.includes("INSERT OR IGNORE INTO lifestyle_days")){const key=String(q.args[1])+":"+String(q.args[5]);if(seen.has(key))changes=0;else seen.add(key);}
+      if(q.sql.includes("INSERT OR IGNORE INTO body_measurements")){const key=String(q.args[8]);if(staged.has(key))changes=0;else staged.add(key);}
+      if(q.sql.includes("INSERT OR IGNORE INTO lifestyle_days")){const key=String(q.args[1])+":"+String(q.args[5]);if(staged.has(key))changes=0;else staged.add(key);}
       results.push({meta:{changes}});
     }
-    const job=statements[1] as unknown as {args:unknown[]};jobs.set(String(job.args[4]),"confirmed");return results;
+    const job=statements[1] as unknown as {args:unknown[]};for(const key of staged)seen.add(key);jobs.set(String(job.args[4]),"confirmed");return results;
   }};
   return {db,calls,jobs,seen,state};
 }
@@ -77,6 +78,15 @@ describe("explicit confirmed import",()=>{
   it("fails closed on SQL failure without committed job/rows",async()=>{
     const f=fake();f.state.fail=true;const r=await handleImport(request("confirm",{source:"eclear",csv:eclear,hash:await hash(eclear),confirmed:true}),f.db,"owner");
     expect(r.status).toBe(503);expect(f.jobs.size).toBe(0);expect(f.seen.size).toBe(0);
+  });
+  it("rolls back a mid-batch failure, then succeeds on a clean retry",async()=>{
+    const f=fake(),body={source:"lifestyle",csv:life,hash:await hash(life),confirmed:true};
+    f.state.failAt=4;
+    const failed=await handleImport(request("confirm",body),f.db,"owner");
+    expect(failed.status).toBe(503);expect(f.jobs.size).toBe(0);expect(f.seen.size).toBe(0);
+    f.state.failAt=-1;
+    const retry=await handleImport(request("confirm",body),f.db,"owner");
+    expect(retry.status).toBe(200);expect(await retry.json()).toMatchObject({inserted:3,skipped:0});
   });
   it("does not interpolate CSV into SQL",async()=>{
     const f=fake(),csv=life.replace("2026-01-02","2026-01-02");
