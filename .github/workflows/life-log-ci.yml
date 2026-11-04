@@ -24,15 +24,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      # Transitional one-time artifact recovery, removed before PR approval.
-      # Only package-lock metadata (no credentials or personal information) goes into logs.
-      - name: Generate npm lock for controlled capture
-        run: npm install --no-audit --no-fund
-      - name: Emit temporary package-lock for branch-only capture
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ci/issue-7-lockfile-main-auth-tests'
-        shell: bash
-        run: |
-          node -e 'const fs=require("node:fs"); const b=Buffer.from(JSON.stringify(JSON.parse(fs.readFileSync("package-lock.json","utf8")))).toString("base64"); const n=3000; for(let i=0;i<b.length;i+=n) console.log("LIFELOG_LOCK_CHUNK:"+Math.floor(i/n)+":"+b.slice(i,i+n)); console.log("LIFELOG_LOCK_END:"+b.length)'
+      - name: Install pinned npm dependencies (no Cloudflare credentials)
+        run: npm ci --no-audit --no-fund
+      - name: Verify package-lock stays unchanged
+        run: git diff --exit-code -- package-lock.json
       - name: Typecheck and build
         run: npm run build
       - name: Unit security and legacy tests (synthetic)

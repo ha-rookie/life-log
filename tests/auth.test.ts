@@ -63,7 +63,6 @@ describe("signed Cloudflare Access identity", () => {
   });
 
   it("rejects future not-before, non-text email, missing email, and wrong signing key", async () => {
-    const { keys } = await fixture();
     const { privateKey, publicKey } = await generateKeyPair("RS256");
     const { privateKey: unauthorizedKey } = await generateKeyPair("RS256");
     const signer = (claims: Record<string, unknown>, key = privateKey) => new SignJWT(claims)
