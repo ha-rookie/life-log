@@ -58,7 +58,11 @@ describe("actual ephemeral Wrangler local D1 import integration", () => {
     });
     db = platform.env.DB;
     const schema = schemaSql.split("\n").filter((line: string) => !line.trimStart().startsWith("--")).join("\n");
-    await db.exec(schema);
+    // D1.exec splits at newlines and cannot initialize multi-line CREATE TABLE.
+    // Apply each complete migration statement through the actual local D1 binding.
+    for (const sql of schema.split(";").map(x => x.trim()).filter(Boolean)) {
+      await db.prepare(sql).run();
+    }
   }, 100_000);
   afterAll(async () => { await platform?.dispose(); }, 60_000);
   beforeEach(async () => {
