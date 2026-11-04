@@ -74,3 +74,10 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 
 ## 12. Operational Boundary
 本Issueは設計とCloudflare開発D1 Bindingの準備まで。実際のWorker / Schema / APIは後続Issueで実装する。
+
+## 11.2 Synthetic CSV preview/confirm (#11)
+- Canonical synthetic-only UTF-8 headers: lifestyle `local_day,drinking_presence,drink_cups,steps`; ECLEAR `measured_at,weight_kg,body_fat_pct`. Real vendor mapping remains TBD pending sample and Human approval.
+- Browser previews transient CSV, row errors and explicit confirm; Worker re-parses, checks hash and authenticated owner, rejects invalid batch; no DB read/write on preview.
+- Existing D1 schema, no remote Migration. A single D1 batch atomically writes owner, job and rows. File hash enforces same-file idempotence; trusted ECLEAR timestamp+measurements fingerprint handles cross-file duplicates; lifestyle day+source uniqueness applies.
+- No automatic conflict resolution; SQL failure must roll back all changes. Existing imported file returns already_imported.
+- No real data, Access live UAT, remote D1 or deployment in Issue #11.
