@@ -1,0 +1,327 @@
+# Risk-aware CI
+
+## 1. 目的
+
+GitHub Actionsを品質Gateとして維持したまま、変更内容に応じて必要なJobだけを実行し、不要なActions消費を減らす。
+
+Risk-aware CIは「Low Riskだから検証しない」という仕組みではない。
+
+- Workflow自体はPRごとに起動する
+- 最初にchanged filesを軽量に分類する
+- 分類結果に応じて重いJobだけ条件実行する
+- unknown pathは安全側のstrictへ倒す
+- 最後のCI Gateは常に生成する
+- PR時はIssueのPlanned Filesと実変更fileをScope Guardで照合する
+- CI Gateの既存runner内でRelease EvidenceをJob Summaryへ生成する
+
+## 2. Profile
+
+### docs
+
+Documentation / governanceだけの変更。
+
+代表:
+
+- docs/**（docs/design/**を除く）
+- README.md
+- CHANGELOG.md
+- AGENTS.md
+- .github/ISSUE_TEMPLATE/**
+- .github/PULL_REQUEST_TEMPLATE.md
+
+Runtime test / build / Previewを原則要求しない。
+
+### design
+
+Visual Design / Design Previewに関係する変更。
+
+代表:
+
+- docs/design/**
+- docs/design-public/**
+
+Application runtime CIは原則不要。
+
+ただしDesign Preview、Browser / Smartphone Human Reviewは別Gateとして必要になり得る。
+
+### runtime
+
+Application runtime / build / testへ影響する変更。
+
+代表:
+
+- src/**
+- public/**
+- tests/**
+- scripts/**
+- package.json
+- lock files
+- build config
+
+Project固有のlint / test / buildを実行する。
+
+### strict
+
+CI / Infrastructure / server-side / deployment / unknown変更。
+
+代表:
+
+- .github/workflows/**
+- wrangler.*
+- functions/**
+- workers/**
+- migrations/**
+- schema / database関連
+- classifierが認識しないpath
+
+runtime validationに加え、Project固有のstrict validationを実行する。
+
+unknown pathをdocsやruntimeへ楽観的に分類しない。
+
+## 3. Profile優先順位
+
+複数種類のfileが同じPRに含まれる場合は、重い側へ寄せる。
+
+```text
+strict > runtime > design > docs
+```
+
+例:
+
+- README + src/app.js → runtime
+- docs/design/index.html + wrangler.jsonc → strict
+- docsだけ → docs
+- 未知のroot file → strict
+
+## 3.5 Scope Guard
+
+Project CIでは、Risk profile判定より前にIssue Change Contractの `Planned Files` と実変更fileを照合する。
+
+詳細は `docs/PLANNED_FILES_GUARD.md` を正本とする。
+
+- PR本文のclosing keywordから同一RepositoryのIssueを1件だけ解決
+- GitHub Pull Request Files APIで実変更fileを取得
+- renameはprevious filenameも確認
+- Scope外fileが1件でもあればfail
+- Scope拡張はIssueのPlanned FilesをHuman承認後に更新して再実行
+- PR本文だけのbypassは作らない
+- `pull_request_target` は使わずread-only権限で動かす
+
+## 4. CI Gate
+
+conditional jobそのものをRequired Checkにすると、そのjobがskipされたPRでRequired Checkが生成されない可能性がある。
+
+そのためProject CIでは最後に常時実行される `CI Gate` を置く。
+
+```text
+Scope Guard ──────────┐
+Classify ──────────────┼─ docs validation
+├─ design validation
+├─ runtime validation
+└─ strict validation
+        ↓
+      CI Gate
+```
+
+CI Gateは以下を確認する。
+
+- PR時はScope Guardがsuccess
+- workflow_dispatch時はScope Guardがskipped
+- Classifyがsuccess
+- 実行対象Jobがsuccess
+- 非対象Jobのskippedはfailure扱いしない
+- failure / cancelledはfail
+
+Project CI側のRuleset Required Checkは原則 `CI Gate` を登録する。
+
+Repository標準の `Repository validation` を別Workflowとして維持する場合は、それもRequired Checkに含める。
+
+## 5. Template Workflow
+
+Template:
+
+`docs/workflow-templates/risk-aware-ci.yml`
+
+新規Projectでは、Application CI方針が決まった時点で次へコピーする。
+
+`.github/workflows/project-ci.yml`
+
+コピー後、以下のCHANGE-ME commandをProject固有に置き換える。
+
+- docs validation
+- design validation
+- runtime validation
+- strict validation
+
+不要なvalidationは `echo "not required"` 等で明示し、空欄のままにしない。
+
+## 6. Actions節約の考え方
+
+Actionsを減らす優先順位:
+
+1. 不要なWorkflow二重起動をなくす
+2. heavy jobをchanged filesでskipする
+3. 同一原因のrerunを避ける
+4. timeoutを設定する
+5. docs-onlyでinstall / build / browser test / deploy previewを動かさない
+
+「CIを実行しない」こと自体を目的にしない。
+
+## 6.5 External Resource Budget
+
+GitHub Actionsのrunner時間と、Workflow / Test / Benchmarkから利用する外部Serviceの消費は別の有限資源として扱う。
+
+外部API、Database、Storage、AI API、Search API等を使う場合は、必要に応じて次を確認する。
+
+- request / read / write等のquota
+- rate limit
+- storage / transfer量
+- billing impact
+- account-wide / organization-wide等のshared quota
+- Production resourceや他Projectへの影響
+
+大量fixture、performance test、load test等は、可能ならlocalまたはisolated environmentで成立性とtest designを先に確認する。remote environmentを使う必要がある場合は、quota / cost / shared resourceへの影響を確認してから実行する。
+
+高costまたはquota-sensitiveなremote testを、毎PRや定期CIへ無条件に組み込むことを標準にしない。必要に応じてmanual trigger等、Humanが意図して開始できる方式を選ぶ。
+
+Performance resultとtest実行costは分けて記録する。速い/遅いという結果だけでなく、その測定にどの外部資源をどの程度使ったかを確認できるようにする。
+
+static / local-onlyで完結し外部Serviceを利用しないProjectへ、このSectionのremote resource確認を一律に要求しない。
+
+このTemplateでは外部Serviceを有限資源として扱う判断基準までを定義し、各Service固有のquota値、command、benchmark workflow、fixture implementationはProjectまたはTechnology-specific Template側で定義する。
+
+## 6.6 Environment Isolation / Safe Test Execution
+
+External ServiceやRemote resourceを利用するProjectでは、Resource Budgetとは別に、**どのenvironmentのどのresourceへ接続して試験するか**を安全境界として設計する。
+
+このSectionは #86 / `6.5 External Resource Budget` のquota / cost原則を置き換えない。6.5は「どれだけ外部資源を消費するか」、6.6は「どこへ接続し、どのdata lifecycleで試験するか」を扱う。
+
+### Environment Role Separation
+
+Project規模に応じて、Production / Preview / Test / Performance等のroleを分ける。
+
+すべてのProjectへ4環境を必須化しないが、複数roleを持つ場合は最低限次を明示する。
+
+- 各environmentの目的
+- 書き込み可能なresource
+- Production dataへ接続可能か
+- test fixtureを保持してよいか
+- destructive operationを許可するか
+- benchmark / load testを実行してよいか
+
+Productionは実利用の正本として扱い、Performance / load test用のlarge fixtureや破壊的testの標準実行先にしない。
+
+### Resource Binding Safety
+
+Environmentごとのresource bindingは、表示名や慣習だけに依存して判断しない。
+
+Remote resourceへ接続する場合は、Projectに適した範囲で次を確認する。
+
+- environment roleとresource roleが一致している
+- resource nameに加え、stable identifierやaccount / project context等で対象を識別できる
+- ProductionとTest系resourceを取り違えた場合に検出または停止できる
+- unknown / missing bindingを暗黙にProductionへfallbackしない
+
+具体的なUUID、secret名、binding syntax、Cloud / Database製品はProject側で定義し、このTemplateでは固定しない。
+
+### Seed / Reseed / Cleanup Safety
+
+Seed / reseed / cleanup / destructive testは、通常のPR CIへ無条件に混ぜない。
+
+- Humanまたは明示的な実行条件から開始できるようにする
+- seed / reseedは可能ならidempotent、またはduplicate投入を防ぐguardを持たせる
+- 同一fixtureの意図しない再投入を検出または拒否する
+- cleanup / reset等のdestructive operationは、対象environment / resourceが不明な場合に実行しない
+- Production resourceへの破壊的操作を通常のtest pathから到達可能にしない
+
+「毎回cleanしてからseedする」を安全側のDefaultとしない。大量fixtureでは不要なwrite、quota消費、再投入事故を増やすため、再利用可能なら既存fixtureを保持する判断も持つ。
+
+### Fixture Lifecycle
+
+Performance / long-lived fixtureは、benchmark実行そのものとlifecycleを分ける。
+
+保持 / 再利用 / 再生成 / 破棄の判断では、必要に応じて次を見る。
+
+- 再利用頻度
+- dataの鮮度要件
+- fixture生成cost
+- external quota / billing impact（6.5参照）
+- 誤接続・誤利用Risk
+- cleanupによる破壊Risk
+
+Benchmarkのたびにfixtureを作成・削除することを前提にせず、測定対象とfixture preparationを別工程として扱えるようにする。
+
+### Safe Execution Order
+
+大量fixture / benchmark / load testでは、原則として次の順序を検討する。
+
+```text
+local / isolated validation
+  -> Test / Preview / Performance environment
+  -> explicit remote execution when needed
+  -> Production verificationは実利用相当の最小確認
+```
+
+Remote benchmark / load testがquota-sensitiveまたは破壊Riskを持つ場合は、通常CIの常時実行ではなく明示実行を基本とする。実行量・cost判断は `6.5 External Resource Budget` を正本とする。
+
+static / local-onlyで完結しRemote resourceを利用しないProjectへ、このSectionのenvironment分離を一律に要求しない。
+
+このTemplateではenvironment isolation、binding確認、fixture lifecycle、destructive operation guardの判断原則までを扱い、seed script、Database reset command、Cloud固有設定、resource ID実装はProjectまたはTechnology-specific Template側で定義する。
+
+## 7. Impact Flagsとの関係
+
+GitHub IssueのImpact Flagsとchanged files分類は役割が違う。
+
+- Impact Flags: Change Contract上の設計判断
+- changed files: 実際の差分から機械判定
+
+両者が矛盾する場合、軽い方へ自動補正しない。
+
+例:
+
+IssueではRuntime = Noだがsrc/**が変更されている
+
+→ runtime以上を実行し、Scope mismatchとしてReview対象にする。
+
+Risk-aware CI単独でPlanned Files整合性までは判定しない。Planned Files自動比較は別標準として扱う。
+
+## 7.5 Release Evidence
+
+CI Gateでは `docs/RELEASE_EVIDENCE.md` に従い、PR / Change Contract Issue / base・head SHA / profile / Scope Guard / validation results / changed files / run URLを `$GITHUB_STEP_SUMMARY` へ出力する。
+
+Evidence専用JobやPR commentは追加しない。CI失敗時も確認材料が残るよう、Summary stepは `if: always()` で実行する。
+
+PR CIのEvidenceはCI Evidenceであり、Production状態を推測しない。Productionは `Not evaluated by this CI` と明示する。
+
+## 8. Human Gate
+
+Risk-aware CIで削らないもの:
+
+- Human Merge approval
+- UI / Smartphone Review
+- Sensor実機確認
+- Binary Asset handoff
+- Production / Publicの重要操作
+- Security / Auth / Dataの重要判断
+
+CI ProfileはHuman Gateを置き換えない。
+
+## 9. 導入条件
+
+Project Bootstrap完了後、次が分かった段階で有効化する。
+
+- package manager / runtime
+- lint command
+- test command
+- build command
+- strict時に追加する確認
+- Previewが必要なfile領域
+
+初期PoCでcommand未確定なら、先にArchitectureを決める。placeholderのままactive workflowへコピーしない。
+
+## 10. 今後の拡張
+
+次候補:
+
+- CI result / changed files / SHAのRelease Evidence自動生成
+- Production Verification共通化

@@ -1,0 +1,427 @@
+name: Project CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_profile:
+        description: Manual run profile
+        required: true
+        default: strict
+        type: choice
+        options:
+          - docs
+          - design
+          - runtime
+          - strict
+  pull_request:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: project-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope-guard:
+    name: Scope Guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      issue-number: ${{ steps.scope.outputs.issue_number }}
+    steps:
+      - name: Compare Issue Planned Files with PR files
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t issue_numbers < <(
+            printf '%s\n' "$PR_BODY"               | grep -Eio '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+'               | grep -Eo '[0-9]+'               | sort -u || true
+          )
+
+          if [ "${#issue_numbers[@]}" -ne 1 ]; then
+            echo "Scope Guard requires exactly one closing Issue in the PR body."
+            echo "Use: Closes #<issue-number>"
+            echo "Detected closing Issues: ${issue_numbers[*]:-none}"
+            exit 1
+          fi
+
+          issue_number="${issue_numbers[0]}"
+          echo "issue_number=$issue_number" >> "$GITHUB_OUTPUT"
+          echo "Change Contract Issue: #$issue_number"
+
+          issue_body="$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue_number" --jq '.body // ""')"
+          test -n "$issue_body" || {
+            echo "Issue #$issue_number has no body."
+            exit 1
+          }
+
+          planned_section="$(
+            printf '%s\n' "$issue_body" | awk '
+              /^#{2,3}[[:space:]]+Planned Files[[:space:]]*$/ {in_section=1; found=1; next}
+              in_section && /^#{2,3}[[:space:]]+/ {exit}
+              in_section {print}
+              END {if (!found) exit 3}
+            '
+          )" || {
+            echo "Issue #$issue_number does not contain a Planned Files section."
+            exit 1
+          }
+
+          mapfile -t planned_patterns < <(
+            printf '%s\n' "$planned_section"               | grep -E '^[[:space:]]*[-*][[:space:]]+'               | sed -E '
+                  s/^[[:space:]]*[-*][[:space:]]+//;
+                  s/^[[:space:]]*\[[ xX]\][[:space:]]+//;
+                  s/`//g;
+                  s/[[:space:]]+\((new|modified|existing|delete|deleted|rename|renamed)\)[[:space:]]*$//;
+                  s/[[:space:]]+$//
+                '               | sed '/^[[:space:]]*$/d'
+          )
+
+          if [ "${#planned_patterns[@]}" -eq 0 ]; then
+            echo "Planned Files is empty."
+            exit 1
+          fi
+
+          for pattern in "${planned_patterns[@]}"; do
+            case "$pattern" in
+              TBD|tbd|CHANGE-ME|change-me|"*"|"**")
+                echo "Invalid Planned Files entry: $pattern"
+                exit 1
+                ;;
+            esac
+            if [[ "$pattern" = /* ]] || [[ "$pattern" == *".."* ]]; then
+              echo "Unsafe Planned Files entry: $pattern"
+              exit 1
+            fi
+          done
+
+          mapfile -t changed_files < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100"               --jq '.[] | .filename, (.previous_filename // empty)'               | sed '/^[[:space:]]*$/d'               | sort -u
+          )
+
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "No changed files found for PR #$PR_NUMBER."
+            exit 1
+          fi
+
+          echo "Planned patterns:"
+          printf '  %s\n' "${planned_patterns[@]}"
+          echo "Changed files:"
+          printf '  %s\n' "${changed_files[@]}"
+
+          unexpected=0
+          for file in "${changed_files[@]}"; do
+            matched=0
+            for pattern in "${planned_patterns[@]}"; do
+              if [[ "$file" == $pattern ]]; then
+                matched=1
+                break
+              fi
+            done
+
+            if [ "$matched" -ne 1 ]; then
+              echo "::error title=Unplanned file::$file is not covered by Issue #$issue_number Planned Files"
+              unexpected=1
+            fi
+          done
+
+          if [ "$unexpected" -ne 0 ]; then
+            echo "Scope mismatch detected."
+            echo "Revert opportunistic changes, or update the Issue Change Contract after Human scope approval."
+            exit 1
+          fi
+
+          echo "Scope Guard passed."
+
+  classify:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      profile: ${{ steps.classify.outputs.profile }}
+      files: ${{ steps.classify.outputs.files }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FORCE_PROFILE: ${{ inputs.force_profile }}
+        run: |
+          set -eu
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            profile="${FORCE_PROFILE:-strict}"
+            echo "profile=$profile" >> "$GITHUB_OUTPUT"
+            echo "files=manual-run" >> "$GITHUB_OUTPUT"
+            echo "Manual profile: $profile"
+            exit 0
+          fi
+
+          test -n "$BASE_SHA"
+          test -n "$HEAD_SHA"
+
+          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          test -n "$changed_files" || {
+            echo "No changed files detected; use strict as fail-safe."
+            echo "profile=strict" >> "$GITHUB_OUTPUT"
+            echo "files=none-detected" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          profile="docs"
+
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/*|wrangler.*|wrangler.json|wrangler.jsonc|functions/*|workers/*|migrations/*|db/*|database/*|schema/*)
+                profile="strict"
+                break
+                ;;
+
+              src/*|public/*|tests/*|scripts/*|package.json|package-lock.json|pnpm-lock.yaml|yarn.lock|bun.lockb|vite.config.*|webpack.config.*|tsconfig.json)
+                if [ "$profile" != "strict" ]; then
+                  profile="runtime"
+                fi
+                ;;
+
+              docs/design/*|docs/design-public/*)
+                if [ "$profile" = "docs" ]; then
+                  profile="design"
+                fi
+                ;;
+
+              docs/*|README.md|CHANGELOG.md|AGENTS.md|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                ;;
+
+              *)
+                echo "Unknown path -> strict: $path"
+                profile="strict"
+                break
+                ;;
+            esac
+          done <<EOF
+          $changed_files
+          EOF
+
+          {
+            echo "profile=$profile"
+            echo "files<<EOF"
+            echo "$changed_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Selected profile: $profile"
+          echo "$changed_files"
+
+  docs:
+    name: Docs validation
+    needs: classify
+    if: needs.classify.outputs.profile == 'docs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate docs
+        shell: bash
+        run: |
+          set -eu
+          # CHANGE-ME: lightweight documentation / governance validation.
+          echo "CHANGE-ME_DOCS_VALIDATION"
+
+  design:
+    name: Design validation
+    needs: classify
+    if: needs.classify.outputs.profile == 'design'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate design
+        shell: bash
+        run: |
+          set -eu
+          # CHANGE-ME: HTML/CSS/design contract checks. Do not replace Human visual review.
+          echo "CHANGE-ME_DESIGN_VALIDATION"
+
+  runtime:
+    name: Runtime validation
+    needs: classify
+    if: needs.classify.outputs.profile == 'runtime' || needs.classify.outputs.profile == 'strict'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate runtime
+        shell: bash
+        run: |
+          set -eu
+          # CHANGE-ME: install / lint / test / build required by the project.
+          echo "CHANGE-ME_RUNTIME_VALIDATION"
+
+  strict:
+    name: Strict validation
+    needs: classify
+    if: needs.classify.outputs.profile == 'strict'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate infrastructure and high-impact changes
+        shell: bash
+        run: |
+          set -eu
+          # CHANGE-ME: workflow/config/server-side/security-specific checks.
+          echo "CHANGE-ME_STRICT_VALIDATION"
+
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs:
+      - scope-guard
+      - classify
+      - docs
+      - design
+      - runtime
+      - strict
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Evaluate required jobs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCOPE_RESULT: ${{ needs.scope-guard.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          DESIGN_RESULT: ${{ needs.design.result }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+          STRICT_RESULT: ${{ needs.strict.result }}
+          PROFILE: ${{ needs.classify.outputs.profile }}
+        run: |
+          set -eu
+
+          echo "profile=$PROFILE"
+          echo "scope=$SCOPE_RESULT"
+          echo "classify=$CLASSIFY_RESULT"
+          echo "docs=$DOCS_RESULT"
+          echo "design=$DESIGN_RESULT"
+          echo "runtime=$RUNTIME_RESULT"
+          echo "strict=$STRICT_RESULT"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            [ "$SCOPE_RESULT" = "success" ] || exit 1
+          else
+            [ "$SCOPE_RESULT" = "skipped" ] || exit 1
+          fi
+
+          [ "$CLASSIFY_RESULT" = "success" ] || exit 1
+
+          case "$PROFILE" in
+            docs)
+              [ "$DOCS_RESULT" = "success" ] || exit 1
+              ;;
+            design)
+              [ "$DESIGN_RESULT" = "success" ] || exit 1
+              ;;
+            runtime)
+              [ "$RUNTIME_RESULT" = "success" ] || exit 1
+              ;;
+            strict)
+              [ "$RUNTIME_RESULT" = "success" ] || exit 1
+              [ "$STRICT_RESULT" = "success" ] || exit 1
+              ;;
+            *)
+              echo "Unknown profile: $PROFILE"
+              exit 1
+              ;;
+          esac
+
+      - name: Write Release Evidence
+        if: always()
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ needs.scope-guard.outputs.issue-number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PROFILE: ${{ needs.classify.outputs.profile }}
+          CHANGED_FILES: ${{ needs.classify.outputs.files }}
+          SCOPE_RESULT: ${{ needs.scope-guard.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          DESIGN_RESULT: ${{ needs.design.result }}
+          RUNTIME_RESULT: ${{ needs.runtime.result }}
+          STRICT_RESULT: ${{ needs.strict.result }}
+          CI_GATE_STATUS: ${{ job.status }}
+        run: |
+          set -eu
+
+          generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            pr_display="#$PR_NUMBER"
+            pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PR_NUMBER"
+            issue_display="#${ISSUE_NUMBER:-unknown}"
+            base_display="$BASE_SHA"
+          else
+            pr_display="N/A (workflow_dispatch)"
+            pr_url=""
+            issue_display="N/A"
+            base_display="N/A"
+          fi
+
+          {
+            echo "## Release Evidence"
+            echo
+            echo "> CI Evidence only. Production is not evaluated by this CI."
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | `$GITHUB_REPOSITORY` |"
+            if [ -n "$pr_url" ]; then
+              echo "| Pull Request | [$pr_display]($pr_url) |"
+            else
+              echo "| Pull Request | $pr_display |"
+            fi
+            echo "| Change Contract Issue | $issue_display |"
+            echo "| Base SHA | `$base_display` |"
+            echo "| Head SHA | `$HEAD_SHA` |"
+            echo "| Profile | `${PROFILE:-unknown}` |"
+            echo "| Scope Guard | `$SCOPE_RESULT` |"
+            echo "| Classify | `$CLASSIFY_RESULT` |"
+            echo "| Docs validation | `$DOCS_RESULT` |"
+            echo "| Design validation | `$DESIGN_RESULT` |"
+            echo "| Runtime validation | `$RUNTIME_RESULT` |"
+            echo "| Strict validation | `$STRICT_RESULT` |"
+            echo "| CI Gate current status | `$CI_GATE_STATUS` |"
+            echo "| Workflow run | [Open run]($run_url) |"
+            echo "| Generated at (UTC) | `$generated_at` |"
+            echo "| Production | **Not evaluated by this CI** |"
+            echo
+            echo "### Changed files"
+            echo
+            if [ -n "${CHANGED_FILES:-}" ]; then
+              printf '%s\n' "$CHANGED_FILES" | while IFS= read -r file; do
+                [ -n "$file" ] && printf -- '- `%s`\n' "$file"
+              done
+            else
+              echo "- N/A"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

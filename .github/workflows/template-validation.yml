@@ -1,0 +1,531 @@
+name: Repository validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: repository-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Scope Guard
+        id: scope
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t issue_numbers < <(
+            printf '%s\n' "$PR_BODY"               | grep -Eio '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+'               | grep -Eo '[0-9]+'               | sort -u || true
+          )
+
+          if [ "${#issue_numbers[@]}" -ne 1 ]; then
+            echo "Scope Guard requires exactly one closing Issue in the PR body."
+            echo "Detected closing Issues: ${issue_numbers[*]:-none}"
+            exit 1
+          fi
+
+          issue_number="${issue_numbers[0]}"
+          echo "issue_number=$issue_number" >> "$GITHUB_OUTPUT"
+          issue_body="$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue_number" --jq '.body // ""')"
+
+          planned_section="$(
+            printf '%s\n' "$issue_body" | awk '
+              /^#{2,3}[[:space:]]+Planned Files[[:space:]]*$/ {in_section=1; found=1; next}
+              in_section && /^#{2,3}[[:space:]]+/ {exit}
+              in_section {print}
+              END {if (!found) exit 3}
+            '
+          )" || {
+            echo "Issue #$issue_number does not contain a Planned Files section."
+            exit 1
+          }
+
+          mapfile -t planned_patterns < <(
+            printf '%s\n' "$planned_section"               | grep -E '^[[:space:]]*[-*][[:space:]]+'               | sed -E '
+                  s/^[[:space:]]*[-*][[:space:]]+//;
+                  s/^[[:space:]]*\[[ xX]\][[:space:]]+//;
+                  s/`//g;
+                  s/[[:space:]]+\((new|modified|existing|delete|deleted|rename|renamed)\)[[:space:]]*$//;
+                  s/[[:space:]]+$//
+                '               | sed '/^[[:space:]]*$/d'
+          )
+
+          [ "${#planned_patterns[@]}" -gt 0 ] || {
+            echo "Planned Files is empty."
+            exit 1
+          }
+
+          for pattern in "${planned_patterns[@]}"; do
+            case "$pattern" in
+              TBD|tbd|CHANGE-ME|change-me|"*"|"**")
+                echo "Invalid Planned Files entry: $pattern"
+                exit 1
+                ;;
+            esac
+            if [[ "$pattern" = /* ]] || [[ "$pattern" == *".."* ]]; then
+              echo "Unsafe Planned Files entry: $pattern"
+              exit 1
+            fi
+          done
+
+          mapfile -t changed_files < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100"               --jq '.[] | .filename, (.previous_filename // empty)'               | sed '/^[[:space:]]*$/d'               | sort -u
+          )
+
+          [ "${#changed_files[@]}" -gt 0 ] || {
+            echo "No changed files found."
+            exit 1
+          }
+
+          unexpected=0
+          for file in "${changed_files[@]}"; do
+            matched=0
+            for pattern in "${planned_patterns[@]}"; do
+              if [[ "$file" == $pattern ]]; then
+                matched=1
+                break
+              fi
+            done
+            if [ "$matched" -ne 1 ]; then
+              echo "::error title=Unplanned file::$file is not covered by Issue #$issue_number Planned Files"
+              unexpected=1
+            fi
+          done
+
+          [ "$unexpected" -eq 0 ] || exit 1
+          echo "Scope Guard passed for Issue #$issue_number."
+
+      - name: Check required files
+        shell: bash
+        run: |
+          set -eu
+          required=(
+            AGENTS.md
+            README.md
+            CHANGELOG.md
+            LICENSE
+            CONTRIBUTING.md
+            SECURITY.md
+            docs/README.md
+            docs/00_PROJECT_OVERVIEW.md
+            docs/01_REQUIREMENTS.md
+            docs/02_SYSTEM_ARCHITECTURE.md
+            docs/03_APPLICATION_ARCHITECTURE.md
+            docs/04_REPOSITORY_STRUCTURE.md
+            docs/05_DESIGN_MANAGEMENT.md
+            docs/06_REQUIREMENTS_TRACEABILITY.md
+            docs/design/README.md
+            docs/design/index.html
+            docs/design/_headers
+            docs/design-public/index.html
+            docs/design-public/_headers
+            docs/DESIGN_PREVIEW.md
+            docs/PROJECT_BOOTSTRAP.md
+            docs/PLANNED_FILES_GUARD.md
+            docs/RELEASE_EVIDENCE.md
+            docs/PRODUCTION_VERIFICATION.md
+            docs/RISK_AWARE_CI.md
+            docs/SECURITY_BASELINE.md
+            docs/PUBLIC_WEB_QUALITY.md
+            docs/workflow-templates/risk-aware-ci.yml
+            docs/workflow-templates/deploy-production.yml
+            docs/workflow-templates/deploy-design-preview.yml
+            scripts/verify-production.sh
+            docs/adr/README.md
+            docs/adr/ADR-0000-template.md
+            docs/GIT_WORKFLOW.md
+            docs/ASSET_WORKFLOW.md
+            docs/HUMAN_AI_COLLABORATION.md
+            docs/CLOUDFLARE_SETUP.md
+            docs/TROUBLESHOOTING.md
+            docs/RELEASE_CHECKLIST.md
+            .github/ISSUE_TEMPLATE/feature.yml
+            .github/ISSUE_TEMPLATE/bug.yml
+            .github/ISSUE_TEMPLATE/quick-change.yml
+            .github/ISSUE_TEMPLATE/project-bootstrap.yml
+            .github/PULL_REQUEST_TEMPLATE.md
+            .github/workflows/fork-monitor.yml
+          )
+          for path in "${required[@]}"; do
+            test -s "$path" || { echo "Missing or empty: $path"; exit 1; }
+          done
+      - name: Validate Template / Bootstrap / Project state
+        shell: bash
+        run: |
+          set -eu
+
+          template_docs=(
+            docs/00_PROJECT_OVERVIEW.md
+            docs/01_REQUIREMENTS.md
+            docs/02_SYSTEM_ARCHITECTURE.md
+            docs/03_APPLICATION_ARCHITECTURE.md
+            docs/04_REPOSITORY_STRUCTURE.md
+            docs/06_REQUIREMENTS_TRACEABILITY.md
+            docs/adr/ADR-0000-template.md
+          )
+
+          project_docs=(
+            docs/00_PROJECT_OVERVIEW.md
+            docs/01_REQUIREMENTS.md
+            docs/02_SYSTEM_ARCHITECTURE.md
+            docs/03_APPLICATION_ARCHITECTURE.md
+            docs/04_REPOSITORY_STRUCTURE.md
+            docs/06_REQUIREMENTS_TRACEABILITY.md
+          )
+
+          if [ "$GITHUB_REPOSITORY" = "ha-rookie/ai-driven-webapp-template" ]; then
+            echo "Validation mode: Template"
+            for path in "${template_docs[@]}"; do
+              grep -q "CHANGE-ME" "$path" || {
+                echo "Template file must retain CHANGE-ME placeholders: $path"
+                exit 1
+              }
+            done
+            exit 0
+          fi
+
+          if grep -q "CHANGE-ME" docs/00_PROJECT_OVERVIEW.md; then
+            echo "Validation mode: Bootstrap"
+            echo "Project Overview still contains CHANGE-ME. Core design placeholders are temporarily allowed until the project initialization PR."
+            exit 0
+          fi
+
+          echo "Validation mode: Project"
+          for path in "${project_docs[@]}"; do
+            if grep -q "CHANGE-ME" "$path"; then
+              echo "Project-specific file still contains CHANGE-ME placeholder: $path"
+              exit 1
+            fi
+          done
+
+          grep -q "CHANGE-ME" docs/adr/ADR-0000-template.md || {
+            echo "ADR template must retain CHANGE-ME placeholders"
+            exit 1
+          }
+      - name: Confirm design management rules exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "承認済み最新設計: GitHub" docs/05_DESIGN_MANAGEMENT.md
+          grep -q "Google Drive" docs/05_DESIGN_MANAGEMENT.md
+          grep -q "Significant Design Change" docs/05_DESIGN_MANAGEMENT.md
+          grep -q "Requirements Traceability" docs/05_DESIGN_MANAGEMENT.md
+          grep -q "Design Previewは表示面" docs/design/README.md
+          grep -q "Superseded" docs/adr/README.md
+      - name: Confirm Replacement PR handoff fields exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "## Replacement PR" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "元PR:" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "引き継ぎhead SHA:" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "CI run:" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "Preview run:" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "引き継ぐ承認内容:" .github/PULL_REQUEST_TEMPLATE.md
+      - name: Confirm Asset Handoff fields exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "label: Asset Handoff" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "元Design Issue/PR:" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "承認済みAsset一覧:" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "Asset配置場所:" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "file hash または承認head SHA:" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "## 実装Issueへの引き継ぎ" docs/ASSET_WORKFLOW.md
+      - name: Confirm GitHub Actions resource rules exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "## GitHub Actions 実行資源" docs/GIT_WORKFLOW.md
+          grep -q "同一原因を修正しないまま連続rerunしない" docs/GIT_WORKFLOW.md
+          grep -q "## CI失敗" docs/TROUBLESHOOTING.md
+          grep -q "failed jobだけ" docs/TROUBLESHOOTING.md
+
+      - name: Confirm Asset lifecycle rules exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "## Assetの3分類" docs/ASSET_WORKFLOW.md
+          grep -q "原本保存型" docs/ASSET_WORKFLOW.md
+          grep -q "ビルド時生成型" docs/ASSET_WORKFLOW.md
+          grep -q "同一Blob再利用型" docs/ASSET_WORKFLOW.md
+          grep -q "## OGP" docs/ASSET_WORKFLOW.md
+          grep -q "## favicon / App Icon / PWA Icon" docs/ASSET_WORKFLOW.md
+          grep -q "Human Uploadを標準経路" docs/ASSET_WORKFLOW.md
+          grep -q "GR-001 GitHub URL presentation" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "GR-002 Binary files use Human Upload by default" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "GR-003 Image generation requires explicit approval" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "GR-007 External capability / quota limitation" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "Human approval does not create a capability that the AI does not have" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "GR-008 Evidence-based work resumption / Recognition mismatch" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "External Capability / Quota" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "Google Drive → Google Sheets / bound Apps Script → GitHub work branch" docs/HUMAN_AI_COLLABORATION.md
+          grep -q "検証済み代替経路：Google Drive → GitHub work branch" docs/ASSET_WORKFLOW.md
+          grep -q "Apps Scriptはmainへ直接書き込まない" docs/ASSET_WORKFLOW.md
+
+      - name: Confirm consolidated pending standards exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "## AI変更制御" AGENTS.md
+          grep -q "## 人間・AIのGitHub作業分担" AGENTS.md
+          grep -q "## Change Contract / Pre-flight" docs/GIT_WORKFLOW.md
+          grep -q "### CI失敗分類" docs/GIT_WORKFLOW.md
+          grep -q "A: 今回の変更" docs/GIT_WORKFLOW.md
+          grep -q "Implemented" docs/GIT_WORKFLOW.md
+          grep -q "Actionsが起動しない・開始前に失敗する" docs/TROUBLESHOOTING.md
+          grep -q "Asset変更前のPre-check" docs/ASSET_WORKFLOW.md
+          grep -q "Production current spec" docs/ASSET_WORKFLOW.md
+          grep -q "label: Planned Files" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "directory/\*\*" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "directory/\*\*" .github/ISSUE_TEMPLATE/bug.yml
+          grep -q "directory/\*\*" .github/ISSUE_TEMPLATE/quick-change.yml
+          grep -q "machine-readable" .github/ISSUE_TEMPLATE/project-bootstrap.yml
+          grep -q "Planned Files Guard" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "label: Risk Level" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "label: Impact Flags" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "label: Stop Conditions" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "label: Planned Files" .github/ISSUE_TEMPLATE/bug.yml
+          grep -q "label: Impact Flags" .github/ISSUE_TEMPLATE/bug.yml
+          grep -q "label: Goal" .github/ISSUE_TEMPLATE/quick-change.yml
+          grep -q "Quick ChangeはLow Risk専用" .github/ISSUE_TEMPLATE/quick-change.yml
+          grep -q "label: Impact Flags" .github/ISSUE_TEMPLATE/quick-change.yml
+          grep -q "Human Gate" .github/ISSUE_TEMPLATE/quick-change.yml
+          grep -q "name: Project Bootstrap" .github/ISSUE_TEMPLATE/project-bootstrap.yml
+          grep -q "label: Project / Repository" .github/ISSUE_TEMPLATE/project-bootstrap.yml
+          grep -q "label: Bootstrap Boundary" .github/ISSUE_TEMPLATE/project-bootstrap.yml
+          grep -q "Template validation切替だけの別Issueを作らない" .github/ISSUE_TEMPLATE/project-bootstrap.yml
+          grep -q "## 2. Repository Validationの3状態" docs/PROJECT_BOOTSTRAP.md
+          grep -q "Template / Bootstrap / Project" docs/PROJECT_BOOTSTRAP.md
+          grep -q "Project Bootstrap" README.md
+          grep -q "Risk-aware CI" README.md
+          grep -q "## 新規Project Bootstrap" AGENTS.md
+          grep -q "### Planned Files Guard" docs/GIT_WORKFLOW.md
+          grep -q "### Risk-aware CI" docs/GIT_WORKFLOW.md
+          grep -q "## 2. Source of Truth" docs/PLANNED_FILES_GUARD.md
+          grep -q "## 2. CI Evidence" docs/RELEASE_EVIDENCE.md
+          grep -q "Production: Not evaluated by this CI" docs/RELEASE_EVIDENCE.md
+          grep -q "### Release Evidence" docs/GIT_WORKFLOW.md
+          grep -q "## Release Evidence" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "Release Evidence" README.md
+          grep -q "Production Verification" README.md
+          grep -q "## 2. 必須確認" docs/PRODUCTION_VERIFICATION.md
+          grep -q "INDEX_POLICY=index" docs/PRODUCTION_VERIFICATION.md
+          grep -q "REQUIRE_SECURITY_HEADERS=true" docs/PRODUCTION_VERIFICATION.md
+          grep -q "Production Evidence" docs/PRODUCTION_VERIFICATION.md
+          grep -q "scripts/verify-production.sh" docs/04_REPOSITORY_STRUCTURE.md
+          grep -q "previous_filename" docs/PLANNED_FILES_GUARD.md
+          grep -q "pull_request_target" docs/PLANNED_FILES_GUARD.md
+          grep -q "## 2. Profile" docs/RISK_AWARE_CI.md
+          grep -q "unknown path" docs/RISK_AWARE_CI.md
+          grep -q "CI Gate" docs/RISK_AWARE_CI.md
+          grep -q "docs/workflow-templates/risk-aware-ci.yml" docs/PROJECT_BOOTSTRAP.md
+          grep -q "name: Project CI" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "name: Scope Guard" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "issues: read" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "pull-requests: read" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "previous_filename" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "Unplanned file" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "name: Classify changes" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "Unknown path -> strict" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "name: CI Gate" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "name: Write Release Evidence" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "GITHUB_STEP_SUMMARY" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "Not evaluated by this CI" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "CHANGE-ME_RUNTIME_VALIDATION" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "CHANGE-ME_STRICT_VALIDATION" docs/workflow-templates/risk-aware-ci.yml
+          grep -q "## Risk / Impact Execution Profile" docs/GIT_WORKFLOW.md
+          grep -q "Human Gateまで連続実行" docs/GIT_WORKFLOW.md
+          grep -q "1 Issue = 1 coherent goal" docs/GIT_WORKFLOW.md
+          grep -q "## 0.5 Risk / Impact 適用範囲" docs/RELEASE_CHECKLIST.md
+          grep -q "## Execution Profile / Impact Flags" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "## Issue Contract / Scope Evidence" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "## Production Verified" .github/PULL_REQUEST_TEMPLATE.md
+          grep -q "人間によるbinary upload:" .github/ISSUE_TEMPLATE/feature.yml
+          grep -q "SSL.org" docs/SECURITY_BASELINE.md
+          grep -q "SSL.org" docs/RELEASE_CHECKLIST.md
+
+      - name: Confirm Public Repository Gate standards exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "^  fork:$" .github/workflows/fork-monitor.yml
+          grep -q "^  contents: read$" .github/workflows/fork-monitor.yml
+          grep -q "^  issues: write$" .github/workflows/fork-monitor.yml
+          grep -q "github.rest.issues.create" .github/workflows/fork-monitor.yml
+          grep -q "## Public Repository Gate / Ruleset" docs/GIT_WORKFLOW.md
+          grep -q "Ruleset `main protection`" docs/GIT_WORKFLOW.md
+          grep -q "Template Repository自身をPublic化する場合も同じRuleset" docs/GIT_WORKFLOW.md
+          grep -q "Public Repository Gate = Passed" docs/GIT_WORKFLOW.md
+          grep -q "## 1.5 Public Repository Gate" docs/RELEASE_CHECKLIST.md
+          grep -q "Block force pushes = ON" docs/RELEASE_CHECKLIST.md
+
+      - name: Confirm Cloudflare v0.2 standards exist
+        shell: bash
+        run: |
+          set -eu
+          grep -q "GitHub Actions → Wrangler → Cloudflare Pages" docs/CLOUDFLARE_SETUP.md
+          grep -q "Hello World Gate" docs/CLOUDFLARE_SETUP.md
+          grep -q "Production Smoke" docs/CLOUDFLARE_SETUP.md
+          grep -q "CHANGE-ME_PROJECT_NAME" docs/workflow-templates/deploy-production.yml
+          grep -q "bash scripts/verify-production.sh" docs/workflow-templates/deploy-production.yml
+          grep -q "INDEX_POLICY: skip" docs/workflow-templates/deploy-production.yml
+          grep -q 'REQUIRE_SECURITY_HEADERS: "false"' docs/workflow-templates/deploy-production.yml
+
+      - name: Validate Production Verification script
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/verify-production.sh
+          grep -q 'PRODUCTION_URL must use HTTPS' scripts/verify-production.sh
+          grep -q 'Stable marker not found' scripts/verify-production.sh
+          grep -q 'INDEX_POLICY must be index, noindex, or skip' scripts/verify-production.sh
+          grep -q 'Missing required security header' scripts/verify-production.sh
+          grep -q 'Required asset is not reachable' scripts/verify-production.sh
+          grep -q 'Missing required OGP meta' scripts/verify-production.sh
+          grep -q 'og:title' scripts/verify-production.sh
+          grep -q 'og:description' scripts/verify-production.sh
+          grep -q 'twitter:card summary_large_image not found' scripts/verify-production.sh
+          grep -q 'twitter:image does not match OG_IMAGE_URL' scripts/verify-production.sh
+          grep -q 'OGP image is empty' scripts/verify-production.sh
+          grep -q '## Production Evidence' scripts/verify-production.sh
+
+          if grep -Fq '\${' scripts/verify-production.sh; then
+            echo "Escaped shell variable expansion must not remain in verify-production.sh"
+            exit 1
+          fi
+
+          output="$(
+            PRODUCTION_URL="http://example.invalid" STABLE_MARKER="x" bash scripts/verify-production.sh 2>&1 || true
+          )"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q 'PRODUCTION_URL must use HTTPS' || {
+            echo "Optional defaults must expand before the HTTPS fail-fast check"
+            exit 1
+          }
+
+          og_output="$(
+            PRODUCTION_URL="https://example.invalid" STABLE_MARKER="x" OG_IMAGE_URL="http://example.invalid/ogp.png" bash scripts/verify-production.sh 2>&1 || true
+          )"
+          printf '%s\n' "$og_output"
+          printf '%s\n' "$og_output" | grep -q 'OG_IMAGE_URL must use HTTPS' || {
+            echo "Invalid OG_IMAGE_URL must fail before Production fetch"
+            exit 1
+          }
+
+      - name: Confirm Security baseline exists
+        shell: bash
+        run: |
+          set -eu
+          grep -q "Content-Security-Policy" docs/SECURITY_BASELINE.md
+          grep -q "Strict-Transport-Security" docs/SECURITY_BASELINE.md
+          grep -q "X-Permitted-Cross-Domain-Policies" docs/SECURITY_BASELINE.md
+          grep -q "Production Smoke" docs/SECURITY_BASELINE.md
+          grep -q "外部診断" docs/SECURITY_BASELINE.md
+
+      - name: Confirm Public Web Quality exists
+        shell: bash
+        run: |
+          set -eu
+          grep -q "Google Search Console" docs/PUBLIC_WEB_QUALITY.md
+          grep -q "URLプレフィックス" docs/PUBLIC_WEB_QUALITY.md
+          grep -q "HTMLファイル所有権確認" docs/PUBLIC_WEB_QUALITY.md
+          grep -q "Previewは原則としてindexさせない" docs/PUBLIC_WEB_QUALITY.md
+          grep -q "Public Trust" docs/PUBLIC_WEB_QUALITY.md
+
+      - name: Confirm Design Preview foundation exists
+        shell: bash
+        run: |
+          set -eu
+          grep -q "noindex, nofollow" docs/design/_headers
+          grep -q "noindex, nofollow" docs/design-public/_headers
+          grep -q "pr-<PR番号>" docs/DESIGN_PREVIEW.md
+          grep -q "main最新設計" docs/DESIGN_PREVIEW.md
+          grep -q "manual-<run_id>" docs/DESIGN_PREVIEW.md
+          grep -q "CHANGE-ME_DESIGN_PROJECT" docs/workflow-templates/deploy-design-preview.yml
+          grep -q "Production用Functions / Workers / Bindings" docs/DESIGN_PREVIEW.md
+
+
+      - name: Write Release Evidence
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ steps.scope.outputs.issue_number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          VALIDATION_STATUS: ${{ job.status }}
+        run: |
+          set -eu
+
+          generated_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          changed_files=""
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            pr_display="#$PR_NUMBER"
+            pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$PR_NUMBER"
+            issue_display="#${ISSUE_NUMBER:-unknown}"
+            base_display="$BASE_SHA"
+            changed_files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')"
+            scope_display="See Scope Guard step"
+          else
+            pr_display="N/A (workflow_dispatch)"
+            pr_url=""
+            issue_display="N/A"
+            base_display="N/A"
+            changed_files="N/A"
+            scope_display="skipped"
+          fi
+
+          {
+            echo "## Release Evidence"
+            echo
+            echo "> CI Evidence only. Production is not evaluated by this CI."
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | `$GITHUB_REPOSITORY` |"
+            if [ -n "$pr_url" ]; then
+              echo "| Pull Request | [$pr_display]($pr_url) |"
+            else
+              echo "| Pull Request | $pr_display |"
+            fi
+            echo "| Change Contract Issue | $issue_display |"
+            echo "| Base SHA | `$base_display` |"
+            echo "| Head SHA | `$HEAD_SHA` |"
+            echo "| Scope Guard | `$scope_display` |"
+            echo "| Repository validation current status | `$VALIDATION_STATUS` |"
+            echo "| Workflow run | [Open run]($run_url) |"
+            echo "| Generated at (UTC) | `$generated_at` |"
+            echo "| Production | **Not evaluated by this CI** |"
+            echo
+            echo "### Changed files"
+            echo
+            if [ "$changed_files" = "N/A" ]; then
+              echo "- N/A"
+            else
+              printf '%s\n' "$changed_files" | while IFS= read -r file; do
+                [ -n "$file" ] && printf -- '- `%s`\n' "$file"
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
