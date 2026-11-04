@@ -52,11 +52,13 @@ CREATE TABLE IF NOT EXISTS lifestyle_days (
   import_job_id TEXT REFERENCES import_jobs(id),
   PRIMARY KEY(owner_id, local_day, source_id),
   UNIQUE(owner_id, source_id, source_row_key),
-  CHECK(
-    (drinking_presence IS NULL AND drink_cups IS NULL)
-    OR (drinking_presence = 0 AND drink_cups = 0)
-    OR (drinking_presence = 1 AND (drink_cups IS NULL OR drink_cups > 0))
-  )
+  -- CASE yields an explicit boolean; a NULL expression would pass SQLite CHECK.
+  CHECK(CASE
+    WHEN drinking_presence IS NULL THEN drink_cups IS NULL
+    WHEN drinking_presence = 0 THEN drink_cups IS NOT NULL AND drink_cups = 0
+    WHEN drinking_presence = 1 THEN drink_cups IS NULL OR drink_cups > 0
+    ELSE 0
+  END)
 );
 CREATE TABLE IF NOT EXISTS activity_daily (
   id TEXT PRIMARY KEY,
