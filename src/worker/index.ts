@@ -1,8 +1,10 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { getSummary, type Database } from "./summary";
+import { confirmImport, ImportFailure, isSafeLocalImport, type ImportDatabase } from "./import";
 
 export interface Env extends AccessEnv {
   DB: Database;
+  IMPORT_LOCAL_ONLY?: string;
   ASSETS: { fetch(input: Request): Promise<Response> };
 }
 
@@ -18,6 +20,19 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
 
       const path = new URL(request.url).pathname;
+      if (path === "/api/import/confirm") {
+        if (request.method !== "POST") return Response.json({ error: "Method not allowed" }, { status: 405, headers: { ...privateHeaders, Allow: "POST" } });
+        if (!isSafeLocalImport(request, env.IMPORT_LOCAL_ONLY))
+          return Response.json({ error: "Local import disabled" }, { status: 403, headers: privateHeaders });
+        try {
+          const result = await confirmImport(request, env.DB as unknown as ImportDatabase, ownerId);
+          return Response.json(result, { headers: privateHeaders });
+        } catch (error) {
+          if (error instanceof ImportFailure)
+            return Response.json({ error: error.code, details: error.details ?? [] }, { status: error.status, headers: privateHeaders });
+          return Response.json({ error: "Import unavailable" }, { status: 503, headers: privateHeaders });
+        }
+      }
       if (path.startsWith("/api/")) {
         if (path !== "/api/summary") return Response.json({ error: "Not found" }, { status: 404, headers: privateHeaders });
         if (request.method !== "GET") return Response.json({ error: "Method not allowed" }, { status: 405, headers: { ...privateHeaders, Allow: "GET" } });
