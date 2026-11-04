@@ -88,6 +88,17 @@ describe("explicit confirmed import",()=>{
     const retry=await handleImport(request("confirm",body),f.db,"owner");
     expect(retry.status).toBe(200);expect(await retry.json()).toMatchObject({inserted:3,skipped:0});
   });
+  it("skips a matching ECLEAR measurement from a different file but imports new observations",async()=>{
+    const f=fake();
+    const first={source:"eclear",csv:eclear,hash:await hash(eclear),confirmed:true};
+    const expanded=eclear+"2026-01-04T07:00:00+09:00,73,21\n";
+    const second={source:"eclear",csv:expanded,hash:await hash(expanded),confirmed:true};
+    expect((await handleImport(request("confirm",first),f.db,"owner")).status).toBe(200);
+    const res=await handleImport(request("confirm",second),f.db,"owner");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({inserted:1,skipped:1});
+    expect(f.jobs.size).toBe(2);expect(f.seen.size).toBe(2);
+  });
   it("does not interpolate CSV into SQL",async()=>{
     const f=fake(),csv=life.replace("2026-01-02","2026-01-02");
     await handleImport(request("confirm",{source:"lifestyle",csv,hash:await hash(csv),confirmed:true}),f.db,"owner");
