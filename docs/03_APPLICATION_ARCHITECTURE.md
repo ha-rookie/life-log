@@ -74,3 +74,12 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 
 ## 12. Operational Boundary
 本Issueは設計とCloudflare開発D1 Bindingの準備まで。実際のWorker / Schema / APIは後続Issueで実装する。
+
+## 11.2 Synthetic CSV preview/confirm (#11)
+- Canonical synthetic-only UTF-8 headers: lifestyle `local_day,drinking_presence,drink_cups,steps`; ECLEAR `measured_at,weight_kg,body_fat_pct`. Real vendor mapping remains TBD pending sample and Human approval.
+- Browser previews transient CSV, row errors and explicit confirm; Worker re-parses, checks hash and authenticated owner, rejects invalid batch; no DB read/write on preview.
+- Existing D1 schema, no remote Migration. A single D1 batch atomically writes owner, job and rows. File hash enforces same-file idempotence; trusted ECLEAR timestamp+measurements fingerprint handles cross-file duplicates; lifestyle day+source uniqueness applies.
+- Lifestyle conflict policy: compare every existing source's owner/day values with NULL-safe SQLite `IS NOT`, including unknown versus explicit zero. If any value differs, return 409 `LIFESTYLE_CONFLICT` with day and changed fields; do not write an import job or any rows. Equal values from another file/source are skipped, not duplicated.
+- Prevent concurrent check-then-write races by revalidating all lifestyle rows inside the atomic `import_jobs` insert with a `CASE` status guard. The existing `status` CHECK constraint rejects the reserved invalid `conflict` status, aborting the entire D1 batch. After rollback, return an explicit 409 upon re-reading the conflict.
+- D1 batch SQL error must roll back *all* job/row writes, including mid-batch failure; failed confirmation can retry safely. The actual ephemeral Wrangler D1 integration suite executes migration SQL in a local workerd D1 proxy (`persist:false`, `remoteBindings:false`) and tests persistent state after conflict, rollback and retry. Existing imported file returns already_imported.
+- No real data, Access live UAT, remote D1 or deployment in Issue #11.
