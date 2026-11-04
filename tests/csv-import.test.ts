@@ -1,4 +1,4 @@
-import {describe,it,expect,vi} from "vitest";
+import {describe,it,expect} from "vitest";
 import {previewCsv,hash} from "../src/shared/csv-import";
 import {handleImport,type ImportDb,type Statement} from "../src/worker/import";
 const life="local_day,drinking_presence,drink_cups,steps\n2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
