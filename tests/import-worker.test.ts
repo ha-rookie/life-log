@@ -16,15 +16,19 @@ describe("import route signed authorization",()=>{
 // All data is synthetic, remote bindings are disabled and state is in memory.
 import { beforeAll, afterAll, beforeEach } from "vitest";
 import { getPlatformProxy } from "wrangler";
-import { readFileSync } from "node:fs";
+import schemaSql from "../migrations/0001_initial.sql?raw";
 import { handleImport, type ImportDb, type Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
 
-type LocalStatement = Statement & { run(): Promise<unknown> };
-type LocalDb = ImportDb & {
+interface LocalStatement extends Statement {
+  bind(...values: unknown[]): LocalStatement;
+  run(): Promise<unknown>;
+  all<T>(): Promise<{ results: T[] }>;
+}
+interface LocalDb extends ImportDb {
   exec(sql: string): Promise<unknown>;
   prepare(sql: string): LocalStatement;
-};
+}
 const header = "local_day,drinking_presence,drink_cups,steps\n";
 const lifestyle = header + "2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
 async function send(db: ImportDb, csv: string, confirmed = true) {
@@ -53,8 +57,7 @@ describe("actual ephemeral Wrangler local D1 import integration", () => {
       remoteBindings: false,
     });
     db = platform.env.DB;
-    const schema = readFileSync("migrations/0001_initial.sql", "utf8")
-      .split("\n").filter(line => !line.trimStart().startsWith("--")).join("\n");
+    const schema = schemaSql.split("\n").filter((line: string) => !line.trimStart().startsWith("--")).join("\n");
     await db.exec(schema);
   }, 100_000);
   afterAll(async () => { await platform?.dispose(); }, 60_000);
