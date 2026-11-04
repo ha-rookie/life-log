@@ -34,6 +34,8 @@ jobs:
         run: npm test
       - name: Validate SQLite constraints (synthetic in-memory)
         run: npm run test:schema
+      - name: Validate synthetic import transaction rollback in SQLite
+        run: python3 scripts/validate-import-sql.py
       - name: Apply migrations ONLY to Wrangler local D1
         run: npm run db:migrate:local
       - name: Re-apply local D1 migrations to verify idempotence
