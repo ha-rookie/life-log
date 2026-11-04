@@ -43,4 +43,47 @@ describe("worker authorization boundary", () => {
     expect(await getSummary(env.DB,"owner")).toEqual({latestWeightKg:72.2,measuredAt:"2026-01-02T07:00:00+09:00"});
     expect(env.DB.prepare).toHaveBeenCalledWith(expect.stringContaining("WHERE owner_id = ?"));
   });
+
+  it("rejects unsigned identity on every path and method without touching D1 or assets", async () => {
+    const env = testEnv(75.3);
+    const handler = createHandler();
+    for (const path of ["/", "/index.html", "/assets/bundle.abc.js", "/api/summary", "/api/import", "/api/admin"]) {
+      for (const method of ["GET","POST","HEAD","OPTIONS"]) {
+        const response = await handler.fetch(new Request("https://app.example.invalid" + path, {
+          method,
+          headers: {
+            "Cf-Access-Authenticated-User-Email": "owner@example.invalid",
+            "X-User": "owner",
+            "Cookie": "CF_Authorization=fake",
+          },
+        }), env);
+        expect(response.status).toBe(403);
+        expect(response.headers.get("Cache-Control")).toContain("no-store");
+      }
+    }
+    expect(env.DB.prepare).not.toHaveBeenCalled();
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the database is unavailable and exposes no internal exception", async () => {
+    const env = testEnv();
+    env.DB.prepare = vi.fn(() => { throw new Error("sensitive database internals"); });
+    const res = await createHandler(async () => "owner").fetch(
+      new Request("https://app.example.invalid/api/summary"), env);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Cache-Control")).toContain("no-store");
+    expect(await res.text()).not.toContain("sensitive database internals");
+  });
+
+  it("never reaches assets for unknown API paths, and blocks static mutations", async () => {
+    const env = testEnv(75);
+    const handler = createHandler(async () => "owner");
+    const missing = await handler.fetch(new Request("https://app.example.invalid/api/unknown"), env);
+    expect(missing.status).toBe(404);
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+    const mutation = await handler.fetch(new Request("https://app.example.invalid/assets/app.js", {method:"PUT"}), env);
+    expect(mutation.status).toBe(405);
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+  });
+
 });

@@ -49,3 +49,8 @@
 
 ## 6. Coverage Review
 Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実装／未検証を明確に残す。
+
+## 5.2 Reproducible build and negative authentication (Issue #7)
+- REQ-001/NFR-001: add synthetic negative JWT signatures, identity spoofing, issuer/audience/time validity and all Worker route types; real Cloudflare Access integration remains NOT VERIFIED.
+- CI reproducibility: `package-lock.json` + `npm ci` on both PR and main push (main execution only after separate approved merge). The existing Cloudflare credential GET-only workflow remains separate.
+- No remote D1, Cloudflare Access configuration, Preview/Production deployment or actual user data is modified.

@@ -1,6 +1,9 @@
 name: Life-log local app and D1 CI
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -9,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: life-log-local-ci-${{ github.event.pull_request.number }}
+  group: life-log-local-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,8 +24,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Install isolated dependencies (no Cloudflare credentials)
-        run: npm install --no-audit --no-fund
+      - name: Install pinned npm dependencies (no Cloudflare credentials)
+        run: npm ci --no-audit --no-fund
+      - name: Verify package-lock stays unchanged
+        run: git diff --exit-code -- package-lock.json
       - name: Typecheck and build
         run: npm run build
       - name: Unit security and legacy tests (synthetic)

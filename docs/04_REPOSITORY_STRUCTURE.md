@@ -49,3 +49,9 @@
 
 ## 6. Naming
 Issue専用Branch、設計ID、ADR番号はTemplate規約を継続。本人のデータを含むファイル名・内容は公開Artifactへ出さない。
+
+## 5.2 CI reproducibility and auth negative coverage (Issue #7)
+- `package-lock.json` is the npm 10 resolved dependency-graph integrity lock, committed for deterministic installs.
+- `.github/workflows/life-log-ci.yml` validates both PR and main push with `npm ci`; no Cloudflare Secrets or remote D1 commands.
+- `tests/auth.test.ts`, `tests/worker.test.ts` expand fail-closed negative cases for forged identity, JWT claims, wrong signing key, future validity, unsigned static/API/method variants and D1 read failure.
+- Real Access/production protection remains unverified; main push runs the separate read-only Cloudflare metadata check.

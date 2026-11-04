@@ -39,4 +39,55 @@ describe("signed Cloudflare Access identity", () => {
     expect(await verifyOwner(req, { ...env, ACCESS_AUD: "" }, keys)).toBeNull();
     expect(await verifyOwner(req, { ...env, ACCESS_TEAM_DOMAIN: "attacker.invalid" }, keys)).toBeNull();
   });
+
+  it("rejects signed but invalid claims, missing config, untrusted identity headers, and unsigned tokens", async () => {
+    const { keys, sign } = await fixture();
+    const signed = await sign("owner@example.invalid");
+    const req = (token?: string, extra: Record<string,string> = {}) => new Request("https://app.example.invalid/", {
+      headers: { ...(token ? {"Cf-Access-Jwt-Assertion": token} : {}), ...extra },
+    });
+    const configs = [
+      {...env, ACCESS_AUD: ""},
+      {...env, ACCESS_TEAM_DOMAIN: ""},
+      {...env, ACCESS_TEAM_DOMAIN: "attacker.example.invalid"},
+      {...env, OWNER_EMAIL: ""},
+      {...env, OWNER_EMAIL: "attacker@example.invalid"},
+    ];
+    for (const config of configs) expect(await verifyOwner(req(signed), config, keys)).toBeNull();
+    expect(await verifyOwner(req(undefined, {
+      "Cf-Access-Authenticated-User-Email": "owner@example.invalid",
+      "X-User": "owner@example.invalid",
+      "Cookie": "CF_Authorization=fake",
+    }), env, keys)).toBeNull();
+    expect(await verifyOwner(req("not.a.jwt"), env, keys)).toBeNull();
+  });
+
+  it("rejects future not-before, non-text email, missing email, and wrong signing key", async () => {
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const { privateKey: unauthorizedKey } = await generateKeyPair("RS256");
+    const signer = (claims: Record<string, unknown>, key = privateKey) => new SignJWT(claims)
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer("https://testteam.cloudflareaccess.com")
+      .setAudience("test-audience")
+      .setIssuedAt().setExpirationTime("5m").sign(key);
+    const validJwk = await exportJWK(publicKey);
+    const trustedKeys = createLocalJWKSet({ keys: [{...validJwk, alg: "RS256", kid: "test-key"}] });
+    for (const bad of [
+      await signer({email:123}),
+      await signer({role:"owner"}),
+      await signer({email:"owner@example.invalid"},unauthorizedKey),
+    ]) {
+      expect(await verifyOwner(new Request("https://app.example.invalid/", {
+        headers: {"Cf-Access-Jwt-Assertion":bad}
+      }), env, trustedKeys)).toBeNull();
+    }
+    const future = await new SignJWT({email:"owner@example.invalid"})
+      .setProtectedHeader({alg:"RS256",kid:"test-key"})
+      .setIssuer("https://testteam.cloudflareaccess.com").setAudience("test-audience")
+      .setNotBefore("10m").setExpirationTime("15m").sign(privateKey);
+    expect(await verifyOwner(new Request("https://app.example.invalid/", {
+      headers: {"Cf-Access-Jwt-Assertion":future}
+    }), env, trustedKeys)).toBeNull();
+  });
+
 });
