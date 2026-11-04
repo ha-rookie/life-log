@@ -1,0 +1,60 @@
+name: Cloudflare credential and development D1 read-only check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-cloudflare-readonly-check
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      EXPECTED_D1_ID: '421d0116-5c33-4782-a2b6-28f9684d3956'
+      EXPECTED_D1_NAME: life-log-dev
+    steps:
+      - name: Confirm secrets are populated
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then echo 'CLOUDFLARE_API_TOKEN is missing'; exit 1; fi
+          if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then echo 'CLOUDFLARE_ACCOUNT_ID is missing'; exit 1; fi
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]; then echo 'Cloudflare account ID format is invalid'; exit 1; fi
+          echo 'Cloudflare GitHub Actions secrets are present (values never shown).'
+      - name: Verify token status (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            https://api.cloudflare.com/client/v4/user/tokens/verify)
+          if ! jq -e '.success == true and .result.status == "active"' <<< "$response" > /dev/null; then
+            echo 'Cloudflare token verification failed'; exit 1;
+          fi
+          echo 'Cloudflare API token active.'
+      - name: Check development D1 metadata (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$EXPECTED_D1_ID")
+          if ! jq -e --arg uuid "$EXPECTED_D1_ID" --arg name "$EXPECTED_D1_NAME" \
+            '.success == true and .result.uuid == $uuid and .result.name == $name' <<< "$response" > /dev/null; then
+            echo 'D1 read permission or database metadata mismatch'; exit 1;
+          fi
+          echo 'Development D1 metadata verified: name and UUID match.'
+          {
+            echo '### Read-only Cloudflare validation'
+            echo '- API token: active'
+            echo '- GitHub secrets: present'
+            echo '- Development D1 metadata: name/UUID match'
+            echo '- Remote database writes/migrations/deployments: not executed'
+          } >> "$GITHUB_STEP_SUMMARY"
