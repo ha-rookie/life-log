@@ -10,6 +10,7 @@
 - docs/00_PROJECT_OVERVIEW.md 〜 docs/06_REQUIREMENTS_TRACEABILITY.md
 - docs/adr/, docs/playbooks/, docs/instructions/, docs/workflow-templates/
 - AGENTS.md, README.md, scripts/
+- scripts/verify-production.sh — テンプレート由来のProduction smoke検証スクリプト。現段階では未使用で、個人限定アプリの公開後検証手順が確定するまでは実行しない。
 
 本Issueで新しく追加する:
 - wrangler.jsonc — 開発D1 Bindingの識別値、実運用のdeploy targetではない
