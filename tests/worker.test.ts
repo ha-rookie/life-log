@@ -5,7 +5,7 @@ import { getSummary } from "../src/worker/summary";
 function testEnv(weight: number | null = null): Env {
   return {
     ASSETS: { fetch: vi.fn(async () => new Response("<html>private</html>", { headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=3600" } })) },
-    DB: { prepare: vi.fn((_sql: string) => ({ first: async <T>() => null as T | null, bind: vi.fn((_owner: unknown) => ({ first: async <T>() => (weight === null ? null : { measured_at: "2026-01-02T07:00:00+09:00", weight_kg: weight } as T) })) })), batch: vi.fn(async () => []) },
+    DB: { prepare: vi.fn((_sql: string) => ({ bind: vi.fn((_owner: unknown) => ({ first: async <T>() => (weight === null ? null : { measured_at: "2026-01-02T07:00:00+09:00", weight_kg: weight } as T) })) })) },
   };
 }
 
