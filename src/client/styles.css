@@ -28,3 +28,13 @@
 .trend-period-table{max-width:100%;overflow-x:auto}
 .trend-period-table .trend-table{width:100%;min-width:0}
 .trend-period-table .trend-table th,.trend-period-table .trend-table td{white-space:normal}
+
+/* Fixed-width, keyboard-accessible period navigation in the 390px layout. */
+.trend-period-nav{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:7px;margin:12px 0 16px}
+.trend-period-nav button{min-height:44px;border:1px solid #9db4bc;border-radius:8px;background:#fff;color:#19333d;font:inherit;font-size:.86rem}
+.trend-period-nav button:disabled{opacity:.45}
+.trend-period-nav button:focus-visible{outline:3px solid #2166a5;outline-offset:2px}
+.trend-period-nav>span{grid-column:1/-1;grid-row:1;text-align:center;font-size:.82rem;color:#48636b}
+.trend-period-nav button:nth-of-type(1){grid-column:1;grid-row:2}
+.trend-period-nav button:nth-of-type(2){grid-column:2;grid-row:2}
+.trend-period-nav button:nth-of-type(3){grid-column:3;grid-row:2}
