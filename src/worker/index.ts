@@ -2,6 +2,7 @@ import { verifyOwner, type AccessEnv } from "./auth";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
+import { handleWeightTrend, type TrendDb } from "./weight-trend";
 
 export interface Env extends AccessEnv {
   DB: Database;
@@ -23,6 +24,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
 
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
+        if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
         if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
         if (path === "/api/import/confirm") {
           if (request.method !== "POST") {
