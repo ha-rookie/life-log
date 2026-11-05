@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Summary } from "../shared/legacy";
-import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
+import { previewCsvFileBytes, encodeCsvBytes, MAX_BYTES, type CsvSource, type Preview } from "../shared/csv-import";
 
 type LoadState =
   | { kind: "loading" }
@@ -22,7 +22,7 @@ const showValue=(n:number|null)=>n===null?"欠測（NULL）":String(n);
 export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
-  const [csvText, setCsvText] = useState("");
+  const [csvBase64, setCsvBase64] = useState("");
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [importStatus, setImportStatus] = useState("");
@@ -69,16 +69,18 @@ export function App() {
 
   async function selectCsv(file: File, source: CsvSource) {
     const epoch = ++selectionEpoch.current;
-    setCsvText(""); setCsvPreview(null); setReview(null); setImportStatus("");
-    if (file.size > 65536) {
+    setCsvBase64(""); setCsvPreview(null); setReview(null); setImportStatus("");
+    if (file.size > MAX_BYTES) {
       setImportStatus("CSVのサイズは64KiB以下にしてください。");
       return;
     }
     try {
-      const text = await file.text();
-      const parsed = await previewCsv(source, text);
+      // Preserve the exact uploaded bytes (including UTF-8 BOM / CRLF) until confirmation.
+      // Strict fatal UTF-8 decoding occurs during preview and again inside the Worker.
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const parsed = await previewCsvFileBytes(source, bytes);
       if (epoch !== selectionEpoch.current) return;
-      setCsvText(text);
+      setCsvBase64(encodeCsvBytes(bytes));
       setCsvPreview(parsed);
     } catch {
       if (epoch === selectionEpoch.current) setImportStatus("CSVの形式または列名が不正です。");
@@ -86,7 +88,7 @@ export function App() {
   }
 
   async function submit(keepExisting = false) {
-    if (!csvPreview || csvPreview.errors.length || !csvPreview.rows.length || busy) return;
+    if (!csvPreview || !csvBase64 || csvPreview.errors.length || !csvPreview.rows.length || busy) return;
     if (keepExisting && (!review || review.conflicts.length === 0)) return;
     const epoch = selectionEpoch.current;
     setBusy(true);
@@ -96,7 +98,7 @@ export function App() {
         method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          source: csvSource, csv: csvText, hash: csvPreview.hash, confirmed: true,
+          source: csvSource, csvBase64, hash: csvPreview.hash, confirmed: true,
           ...(keepExisting && review
             ? { resolution: { mode: "keep_existing", token: review.token } }
             : {}),
@@ -182,12 +184,12 @@ export function App() {
       </section>
       <section className="panel" aria-labelledby="csv-title">
         <h2 id="csv-title">合成CSV取込（開発用）</h2>
-        <p>実ECLEARの列仕様は未確認。合成サンプルだけに対応します。</p>
+        <p>日本語列名・既存英語列名の合成UTF-8 CSVに対応します。実ECLEARの原本仕様は未確認です。生活記録の体重列に値がある場合は、複数保存先対応まで取込を拒否します。</p>
         <label>種類{" "}
           <select value={csvSource} disabled={busy} onChange={e => {
             ++selectionEpoch.current;
             setCsvSource(e.target.value as CsvSource);
-            setCsvText(""); setCsvPreview(null); setReview(null); setImportStatus("");
+            setCsvBase64(""); setCsvPreview(null); setReview(null); setImportStatus("");
           }}>
             <option value="lifestyle">生活記録</option>
             <option value="eclear">ECLEAR</option>

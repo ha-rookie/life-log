@@ -1,4 +1,4 @@
-import { hash, previewCsv, MAX_BYTES, type CsvRow, type CsvSource } from "../shared/csv-import";
+import { hash, previewCsv, previewCsvFileBytes, decodeCsvBase64, MAX_BYTES, type CsvRow, type CsvSource } from "../shared/csv-import";
 
 // Defense in depth for the ONLY mutating import route. The trusted runtime flag
 // must never be configured on any remote Worker. Host/Origin can be forged by
@@ -29,7 +29,7 @@ const privateHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-O
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: privateHeaders });
 const reject = (error: string, status = 422) => json({ error }, status);
 type Resolution = { mode: "keep_existing"; token: string };
-type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string; resolution?: Resolution };
+type Payload = { source: CsvSource; csv?: string; csvBase64?: string; confirmed?: boolean; hash?: string; resolution?: Resolution };
 type LifestyleRow = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null };
 type StoredDay = {
   source_id: string; source_row_key: string;
@@ -44,7 +44,11 @@ function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const p = x as Record<string, unknown>;
   if (p.source !== "eclear" && p.source !== "lifestyle") return false;
-  if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
+  const legacyText = typeof p.csv === "string" && p.csvBase64 === undefined;
+  const originalBytes = typeof p.csvBase64 === "string" && p.csv === undefined;
+  if (!legacyText && !originalBytes) return false;
+  if (legacyText && new TextEncoder().encode(p.csv as string).length > MAX_BYTES) return false;
+  if (originalBytes && (p.csvBase64 as string).length > Math.ceil(MAX_BYTES / 3) * 4) return false;
   if (p.confirmed !== undefined && typeof p.confirmed !== "boolean") return false;
   if (p.hash !== undefined && typeof p.hash !== "string") return false;
   if (p.resolution !== undefined) {
@@ -132,11 +136,11 @@ function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, 
   if (source === "eclear") {
     return db.prepare(
       "INSERT OR IGNORE INTO body_measurements"
-      + "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"
+      + "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,skeletal_muscle_pct,"
       + "source_id,source_row_key,reliable_fingerprint,source_kind,import_job_id)"
-      + " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+      + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
     ).bind(job + ":" + row.line, owner, row.timestamp, "Asia/Tokyo", row.weight, row.fat,
-      "csv:eclear", row.key, row.fingerprint, "measured", job);
+      row.muscle ?? null, "csv:eclear", row.key, row.fingerprint, "measured", job);
   }
   return db.prepare(
     "INSERT INTO lifestyle_days"
@@ -221,8 +225,11 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
   } catch { return reject("JSON", 400); }
   if (!valid(payload)) return reject("PAYLOAD", 400);
   let preview;
-  try { preview = await previewCsv(payload.source, payload.csv); }
-  catch { return reject("CSV"); }
+  try {
+    preview = typeof payload.csvBase64 === "string"
+      ? await previewCsvFileBytes(payload.source, decodeCsvBase64(payload.csvBase64))
+      : await previewCsv(payload.source, payload.csv!);
+  } catch { return reject("CSV"); }
 
   if (new URL(request.url).pathname === "/api/import/preview") return json(preview);
   if (payload.confirmed !== true || payload.hash !== preview.hash) return reject("CONFIRM_REQUIRED", 409);
