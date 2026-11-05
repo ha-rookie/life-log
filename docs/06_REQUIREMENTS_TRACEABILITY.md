@@ -78,3 +78,10 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - Newly audited jobs identify themselves with `source_id=csv:audited-v2:<source>`, without schema changes or destination source ID changes. Normal audited replay returns original audit summary.
 - A partial/zero missing audit for new-format jobs, any incomplete audit in either format, or partial legacy jobs with no audit must fail closed (`INCOMPLETE_AUDIT`, 503).
 - Verify on ephemeral local Wrangler D1 with pre-audit confirmed fixture, same-file replay, modern complete/empty/partially removed audits, and previous fault rollback, NULL≠0, owner, race and retry tests. Real personal CSV and Cloudflare remote bindings remain forbidden.
+
+## 5.6 Read-only audit-history UI/API (#15)
+
+- REQ-002/006, NFR-001/002/006: owner-only GET list/detail history pages with bounded offset pagination, deterministic ordering, owner predicate in every SQL query, no mutation API, no raw CSV/ECLEAR values or source row key leak. Unsigned/spoofed JWT rejected before D1; foreign/missing job both 404.
+- Legacy confirmed no-audit job => legacy_unavailable with counts=null; modern audited-v2 missing all rows => incomplete with counts=null. Recorded means some audit rows were persisted, not that the entire audit is complete (expected row total is not persisted).
+- Current inserted lifestyle values are optional and explicitly current, not reconstructed import values. 0 stays numeric 0, unknown remains null; skipped/kept-conflict incoming values are unavailable. Dates and row status remain from audit records.
+- Read-only React job/row pagination with loading, errors, empty results and strict no-cache. Synthetic ephemeral local Wrangler D1 tests cover empty, pagination boundaries, authenticated owner isolation, spoofing, NULL vs zero, legacy/new absent audit, partial audit limitation, ECLEAR privacy, no write SQL, 503 sanitized errors. Mobile actual device and real Access/Remote D1 remain unverified.

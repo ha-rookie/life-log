@@ -95,3 +95,11 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 
 - The pre-audit job marker `csv:<source>` is preserved for recognition only; audited-v2 jobs write `csv:audited-v2:<source>` to `import_jobs.source_id`. The destination's `source_id` is not changed.
 - Confirmed legacy jobs with no audit replays are no-op, marked `auditStatus=legacy_unavailable`; no original row results are guessed. Audited jobs missing all or part of their audit fail closed, and legacy partial jobs without audit are not treated as successful.
+
+## 11.5 Owner-only read-only audit history (#15)
+
+- Auth first: signed Cloudflare Access JWT and exact owner before GET /api/import/history and /api/import/history/rows. API refuses all write methods. No D1/asset access for unauthenticated users.
+- List: owner-scoped parameterized SELECT, deterministic completed_at + ID sorting, pages 1..200 and size 1..20. Returns up to 20 jobs with hasMore and validated page, no raw CSV/values/row-key/email. The internal job ID is required to request detail and remains hidden in UI.
+- Detail: owner-scoped job lookup plus a second owner-scoped join for import_row_audit, with row paging and safe error code allowlist. Current lifestyle readings are displayed **only for rows actually inserted by this job**, if still present, labelled current DB values (never inferred historic CSV). Unknown=null and explicit 0=0; skipped/conflict rows omit readings. ECLEAR body measurements are not exposed.
+- Audit states: old confirmed marker and audit=0 => legacy_unavailable, counts null. Audited-v2 marker and audit=0 => incomplete, counts null. Audited-v2 marker and audit>=1 => recorded, counts observed, but not verified complete because no expected-row count exists in schema. Do not pretend partial audit loss was detected.
+- GET-only routes, strict page limits/input, parameter binding, owner guard in both queries, no-store/no-referrer/nosniff, sanitized 404/503 errors, no user IDs or file hashes printed in the UI, no logs/third-party telemetry. No remote D1/real CSV/Access/Preview/Production changes.
