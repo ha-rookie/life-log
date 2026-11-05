@@ -142,6 +142,7 @@ export function WeightTrendPanel() {
         <strong>観測 {state.trend.observedDays}日</strong> ／
         欠測 {state.trend.missingDays}日 ／
         異常値除外 {state.trend.excludedAnomalies}件 ／
+        値欠落・不正除外 {state.trend.excludedMissingValues}件 ／
         実測以外の除外 {state.trend.excludedNonMeasured}件
       </p>
       {validGoals && <WeightChart trend={state.trend} goalLow={goalLow} goalHigh={goalHigh} />}
