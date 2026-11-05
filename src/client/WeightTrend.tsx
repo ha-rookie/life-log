@@ -91,7 +91,7 @@ export function WeightTrendPanel() {
     return () => { controller.abort(); ++seq.current; };
   }, [range]);
   const trend = state.kind === "ok" ? state.trend : null;
-  const latest = trend?.days.findLast(d => d.weightKg !== null);
+  const latest = trend ? [...trend.days].reverse().find(d => d.weightKg !== null) : undefined;
   const difference = latest?.weightKg !== null && latest?.weightKg !== undefined && validGoal
     ? latest.weightKg < low ? `目標下限より${fmt(low - latest.weightKg)}kg低い`
       : latest.weightKg > high ? `目標上限まで${fmt(latest.weightKg - high)}kg`
