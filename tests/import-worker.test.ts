@@ -251,6 +251,100 @@ describe("real ephemeral local D1 audited import",()=>{
     expect(await count(db,"import_row_audit")).toBe(3);
   },100_000);
 
+
+  it("replays a confirmed pre-audit job with zero audit, preserving historical rows and reporting unavailable audit",async()=>{
+    const csv=hdr+"2026-01-03,0,0,0\n2026-01-04,,,\n";
+    const digest=await hash(csv),job="owner:lifestyle:"+digest;
+    await db.prepare("INSERT INTO import_jobs(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(job,"owner","lifestyle","csv:lifestyle",digest,"confirmed","2026-01-01Z","2026-01-01Z").run();
+    for(const [line,day,presence,cups,steps] of [
+      [2,"2026-01-03",0,0,0],
+      [3,"2026-01-04",null,null,null],
+    ] as const){
+      await db.prepare("INSERT INTO lifestyle_days(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id) VALUES (?,?,?,?,?,?,?,?)")
+        .bind("owner",day,presence,cups,steps,"csv:lifestyle",digest+":"+line,job).run();
+    }
+    const first=await send(db,csv);
+    const second=await send(db,csv);
+    for(const result of [first,second]){
+      expect(result).toMatchObject({code:200,data:{
+        status:"already_imported",inserted:0,skipped:2,conflicted:0,
+        auditStatus:"legacy_unavailable",original:null,
+      }});
+    }
+    const stored=await db.prepare("SELECT source_id,drinking_presence,drink_cups,steps,import_job_id FROM lifestyle_days ORDER BY local_day")
+      .all<{source_id:string;drinking_presence:number|null;drink_cups:number|null;steps:number|null;import_job_id:string}>();
+    expect(stored.results).toEqual([
+      {source_id:"csv:lifestyle",drinking_presence:0,drink_cups:0,steps:0,import_job_id:job},
+      {source_id:"csv:lifestyle",drinking_presence:null,drink_cups:null,steps:null,import_job_id:job},
+    ]);
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"lifestyle_days")).toBe(2);
+    expect(await count(db,"import_row_audit")).toBe(0);
+  },100_000);
+
+  it("recognizes a pre-audit completed ECLEAR job with no row audits even if every row was skipped",async()=>{
+    const csv=ec,digest=await hash(csv),job="owner:eclear:"+digest;
+    await db.prepare("INSERT INTO import_jobs(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(job,"owner","eclear","csv:eclear",digest,"confirmed","2026-01-01Z","2026-01-01Z").run();
+    expect(await send(db,csv,{source:"eclear"})).toMatchObject({code:200,data:{
+      status:"already_imported",auditStatus:"legacy_unavailable",original:null,
+      inserted:0,skipped:1,
+    }});
+    expect(await count(db,"body_measurements")).toBe(0);
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"import_row_audit")).toBe(0);
+  },100_000);
+
+  it("modern audited job missing ALL audit rows fails closed and never invents historical outcomes",async()=>{
+    const csv=hdr+"2026-01-03,0,0,0\n";
+    expect((await send(db,csv)).data.inserted).toBe(1);
+    const job="owner:lifestyle:"+await hash(csv);
+    const meta=await db.prepare("SELECT source_id FROM import_jobs WHERE id=?").bind(job).first<{source_id:string}>();
+    expect(meta?.source_id).toBe("csv:audited-v2:lifestyle");
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=?").bind(job).run();
+    const blocked=await send(db,csv);
+    expect(blocked).toMatchObject({code:503,data:{error:"INCOMPLETE_AUDIT"}});
+    expect(await count(db,"lifestyle_days")).toBe(1);
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"import_row_audit")).toBe(0);
+  },100_000);
+
+  it("partially missing audit is always an error; retry does not write or repair it",async()=>{
+    expect((await send(db,life)).data.inserted).toBe(3);
+    const job="owner:lifestyle:"+await hash(life);
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=? AND source_row_number=?")
+      .bind(job,3).run();
+    for(let i=0;i<2;i++){
+      expect(await send(db,life)).toMatchObject({code:503,data:{error:"INCOMPLETE_AUDIT"}});
+    }
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"lifestyle_days")).toBe(3);
+    expect(await count(db,"import_row_audit")).toBe(2);
+  },100_000);
+
+  it("pre-audit marker with a partly populated audit is not treated as a legacy zero-audit success",async()=>{
+    const csv=hdr+"2026-01-03,0,0,0\n2026-01-04,,,\n";
+    const digest=await hash(csv),job="owner:lifestyle:"+digest;
+    await db.prepare("INSERT INTO import_jobs(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(job,"owner","lifestyle","csv:lifestyle",digest,"confirmed","2026-01-01Z","2026-01-01Z").run();
+    await db.prepare("INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result) VALUES (?,?,?,?,?)")
+      .bind(job+":2",job,2,digest+":2","inserted").run();
+    expect(await send(db,csv)).toMatchObject({code:503,data:{error:"INCOMPLETE_AUDIT"}});
+    expect(await count(db,"import_row_audit")).toBe(1);
+    expect(await count(db,"lifestyle_days")).toBe(0);
+  },100_000);
+
+  it("legacy partial status with no audit must fail closed, not claim completed import",async()=>{
+    const csv=hdr+"2026-01-03,0,0,0\n";
+    const digest=await hash(csv),job="owner:lifestyle:"+digest;
+    await db.prepare("INSERT INTO import_jobs(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(job,"owner","lifestyle","csv:lifestyle",digest,"partial","2026-01-01Z","2026-01-01Z").run();
+    expect(await send(db,csv)).toMatchObject({code:503,data:{error:"INCOMPLETE_AUDIT"}});
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"import_row_audit")).toBe(0);
+  },100_000);
+
   it("owner-scoped rows: same day in another owner is not treated as a conflict",async()=>{
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("other","2026-01-01T00:00:00Z").run();
