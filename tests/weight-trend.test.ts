@@ -83,7 +83,7 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
       days: trend.days, goalLow: 75, goalHigh: 76,
     }));
     expect(markup).toContain('viewBox="0 0 1496 230"');
-    expect(markup).toMatch(/min-width:\\s*1413px/);
+    expect(markup).toMatch(/min-width:\s*1413px/);
     expect(markup).toContain("11/06");
   });
 
