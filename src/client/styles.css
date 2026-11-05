@@ -1,1 +1,15 @@
 *{box-sizing:border-box}html{font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif;background:#f5f7f8;color:#19333d}body{margin:0}.container{max-width:800px;margin:0 auto;padding:clamp(24px,5vw,54px) 18px}.eyebrow{font-size:.75rem;letter-spacing:.12em;font-weight:700;color:#468179}h1{font-size:clamp(1.9rem,5vw,3rem);margin:12px 0 6px}.intro{color:#48636b;margin:0 0 28px}.panel{background:#fff;border:1px solid #dce4e6;border-radius:18px;padding:22px 26px;margin:18px 0;box-shadow:0 6px 24px #19333d08}.panel h2{font-size:1rem;margin:0 0 18px}.metric{font-size:2.4rem;font-weight:750;margin:0}.hint{color:#537078;font-size:.85rem}footer{font-size:.75rem;color:#59767b;margin-top:32px}@media(max-width:480px){.panel{padding:20px}h1{font-size:2rem}}
+
+/* Issue #25: responsive, accessible trend controls and table. */
+.trend-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:14px 0}
+.trend-controls label{display:flex;flex-direction:column;gap:5px;font-size:.85rem;min-width:130px;flex:1}
+.trend-controls input{min-height:42px;max-width:100%;padding:8px;border:1px solid #9db4bc;border-radius:8px;font:inherit}
+.trend-controls button{min-height:42px;padding:8px 14px;border:0;border-radius:8px;background:#2166a5;color:white;font-weight:600}
+.trend-controls button:disabled{background:#9daeb6}
+.trend-scroll,.trend-table-scroll{overflow-x:auto;max-width:100%}
+.trend-scroll svg{display:block;width:100%;min-width:330px;height:auto}
+.trend-table{border-collapse:collapse;font-size:.83rem;width:100%;min-width:620px;text-align:left}
+.trend-table th,.trend-table td{border-bottom:1px solid #dce4e6;padding:9px 7px;white-space:nowrap}
+.trend-table caption{text-align:left;color:#537078;padding:12px 0}
+.trend-difference{font-weight:700}
+@media(max-width:480px){.trend-controls label{min-width:115px}.trend-table{font-size:.78rem}}
