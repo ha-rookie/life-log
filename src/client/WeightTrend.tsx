@@ -25,7 +25,7 @@ function lines(days: TrendDay[], pick: (day: TrendDay) => number | null, y: (kg:
   if (current) paths.push(current);
   return paths;
 }
-function TrendPlot({ days, goalLow, goalHigh }: {
+export function TrendPlot({ days, goalLow, goalHigh }: {
   days: TrendDay[]; goalLow: number; goalHigh: number;
 }) {
   const values = days.flatMap(d => [d.weightKg, d.average7Kg]).filter((n): n is number => n !== null);
@@ -33,7 +33,8 @@ function TrendPlot({ days, goalLow, goalHigh }: {
   const lo = Math.floor(Math.min(...values, goalLow) - 1);
   const hi = Math.ceil(Math.max(...values, goalHigh) + 1);
   const y = (n: number) => 192 - (n - lo) * 156 / Math.max(hi - lo, 1);
-  return <div className="trend-scroll">
+  return <div className="trend-scroll" role="region" tabIndex={0}
+    aria-label="体重推移グラフ。横方向にスクロールできます。">
     <svg viewBox="0 0 720 230" role="img"
       aria-label="体重推移。青線は実測、緑線は観測日4日以上の7日平均。欠測部分は線をつなぎません。">
       <rect x="36" y={y(goalHigh)} width="648" height={Math.max(1, y(goalLow) - y(goalHigh))}
@@ -49,10 +50,17 @@ function TrendPlot({ days, goalLow, goalHigh }: {
           cy={y(d.weightKg)} r="2.8" fill="#2166a5"><title>{d.day} 実測 {fmt(d.weightKg)}kg</title></circle>)}
       {lines(days, d => d.average7Kg, y).map((path, i) =>
         <path key={"a" + i} d={path} fill="none" stroke="#23845c" strokeWidth="2.5" />)}
+      {days.map((d, i) => d.average7Kg === null ? null :
+        <circle key={"avg-" + d.day} className="average-point"
+          cx={36 + i * 648 / Math.max(days.length - 1, 1)}
+          cy={y(d.average7Kg)} r="2.7" fill="#23845c">
+          <title>{d.day} 7日平均 {d.average7Kg.toFixed(2)}kg（実測 {d.measuredDaysInWindow}/7日）</title>
+        </circle>)}
       <text x="36" y="217" fontSize="12" fill="#53636a">{fmtDate(days[0].day)}</text>
       <text x="684" y="217" textAnchor="end" fontSize="12" fill="#53636a">{fmtDate(days[days.length - 1].day)}</text>
     </svg>
-    <p className="hint">青：日次実測　緑：7日平均（4日以上）　淡緑：目標範囲</p>
+    <p className="hint">青：日次実測（欠測で途切れます）　緑：7日平均（4日以上。欠測日にも表示する場合があります）　淡緑：目標範囲</p>
+    <p className="hint">画面が狭い場合、グラフは左右にスクロールできます。</p>
   </div>;
 }
 export function WeightTrendPanel() {
@@ -122,7 +130,7 @@ export function WeightTrendPanel() {
     {trend && <>
       <p aria-live="polite">実測日 {trend.measuredDays} / {trend.days.length}日 · 欠測 {trend.missingDays}日
         · 異常/無効除外 {trend.excludedAnomaly}件 · 非実測除外 {trend.excludedNonMeasured}件</p>
-      {difference && <p className="trend-difference">最新実測 {fmt(latest!.weightKg!)}kg · {difference}</p>}
+      {difference && <p className="trend-difference">期間内の最新実測（{latest!.day}） {fmt(latest!.weightKg!)}kg · {difference}</p>}
       {validGoal && <TrendPlot days={trend.days} goalLow={low} goalHigh={high} />}
       {!validGoal && <p>目標値を修正するとグラフを表示します。</p>}
       <div className="trend-table-scroll">
