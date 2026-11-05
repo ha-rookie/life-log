@@ -9,7 +9,7 @@ type TrendState =
 
 const fmt = (n: number) => n.toFixed(1);
 const fmtDate = (day: string) => day.slice(5).replace("-", "/");
-function lines(days: TrendDay[], pick: (day: TrendDay) => number | null, y: (kg: number) => number): string[] {
+function lines(days: TrendDay[], pick: (day: TrendDay) => number | null, x: (i: number) => number, y: (kg: number) => number): string[] {
   const paths: string[] = [];
   let current = "";
   days.forEach((day, i) => {
@@ -18,7 +18,7 @@ function lines(days: TrendDay[], pick: (day: TrendDay) => number | null, y: (kg:
       if (current) paths.push(current);
       current = "";
     } else {
-      const point = `${(36 + i * 648 / Math.max(days.length - 1, 1)).toFixed(2)},${y(value).toFixed(2)}`;
+      const point = `${x(i).toFixed(2)},${y(value).toFixed(2)}`;
       current += (current ? " L" : "M") + point;
     }
   });
@@ -31,34 +31,40 @@ export function TrendPlot({ days, goalLow, goalHigh, scrollRef }: {
 }) {
   const values = days.flatMap(d => [d.weightKg, d.average7Kg]).filter((n): n is number => n !== null);
   if (values.length === 0) return <p className="hint">グラフに表示できる実測値がありません。</p>;
+  // At 90 days, a fixed 720px viewBox would compress recent points into
+  // a few pixels. Keep approximately 16 SVG units per calendar day.
+  const plotWidth = Math.max(720, 72 + (days.length - 1) * 16);
+  const endX = plotWidth - 36;
+  const x = (i: number) => 36 + i * (plotWidth - 72) / Math.max(days.length - 1, 1);
   const lo = Math.floor(Math.min(...values, goalLow) - 1);
   const hi = Math.ceil(Math.max(...values, goalHigh) + 1);
   const y = (n: number) => 192 - (n - lo) * 156 / Math.max(hi - lo, 1);
   return <div ref={scrollRef} className="trend-scroll" role="region" tabIndex={0}
     aria-label="体重推移グラフ。横方向にスクロールできます。">
-    <svg viewBox="0 0 720 230" role="img"
+    <svg viewBox={`0 0 ${plotWidth} 230`}
+      style={{ minWidth: `${Math.round(plotWidth * 680 / 720)}px` }} role="img"
       aria-label="体重推移。青い実測線は欠測日で途切れます。緑の7日平均は観測日数4日以上の場合に表示され、欠測日にも値が付く場合があります。">
-      <rect x="36" y={y(goalHigh)} width="648" height={Math.max(1, y(goalLow) - y(goalHigh))}
+      <rect x="36" y={y(goalHigh)} width={plotWidth - 72} height={Math.max(1, y(goalLow) - y(goalHigh))}
         fill="#e5f2ec" />
       {[lo, (lo + hi) / 2, hi].map(n => <g key={n}>
-        <line x1="36" x2="684" y1={y(n)} y2={y(n)} stroke="#d9e4e6" strokeDasharray="3 4" />
+        <line x1="36" x2={endX} y1={y(n)} y2={y(n)} stroke="#d9e4e6" strokeDasharray="3 4" />
         <text x="2" y={y(n) + 4} fontSize="11" fill="#53636a">{n.toFixed(0)}</text>
       </g>)}
-      {lines(days, d => d.weightKg, y).map((path, i) =>
+      {lines(days, d => d.weightKg, x, y).map((path, i) =>
         <path key={"w" + i} d={path} fill="none" stroke="#2166a5" strokeWidth="2.5" />)}
       {days.map((d, i) => d.weightKg === null ? null :
-        <circle key={d.day} cx={36 + i * 648 / Math.max(days.length - 1, 1)}
+        <circle key={d.day} cx={x(i)}
           cy={y(d.weightKg)} r="2.8" fill="#2166a5"><title>{d.day} 実測 {fmt(d.weightKg)}kg</title></circle>)}
-      {lines(days, d => d.average7Kg, y).map((path, i) =>
+      {lines(days, d => d.average7Kg, x, y).map((path, i) =>
         <path key={"a" + i} d={path} fill="none" stroke="#23845c" strokeWidth="2.5" />)}
       {days.map((d, i) => d.average7Kg === null ? null :
         <circle key={"avg-" + d.day} className="average-point"
-          cx={36 + i * 648 / Math.max(days.length - 1, 1)}
+          cx={x(i)}
           cy={y(d.average7Kg)} r="2.7" fill="#23845c">
           <title>{d.day} 7日平均 {d.average7Kg.toFixed(2)}kg（実測 {d.measuredDaysInWindow}/7日）</title>
         </circle>)}
       <text x="36" y="217" fontSize="12" fill="#53636a">{fmtDate(days[0].day)}</text>
-      <text x="684" y="217" textAnchor="end" fontSize="12" fill="#53636a">{fmtDate(days[days.length - 1].day)}</text>
+      <text x={endX} y="217" textAnchor="end" fontSize="12" fill="#53636a">{fmtDate(days[days.length - 1].day)}</text>
     </svg>
     <p className="hint">青：日次実測（欠測で途切れます）　緑：7日平均（4日以上。欠測日にも表示する場合があります）　淡緑：目標範囲</p>
     <p className="hint">画面が狭い場合、グラフは左右にスクロールできます。</p>
@@ -74,6 +80,8 @@ export function WeightTrendPanel() {
   const [state, setState] = useState<TrendState>({ kind: "loading" });
   const seq = useRef(0);
   const chartScroller = useRef<HTMLDivElement | null>(null);
+  // Keep the ref callback identity stable across goal-only re-renders.
+  const chartRef = useRef((node: HTMLDivElement | null) => { chartScroller.current = node; });
   const validRange = dateRange(from, to) !== null;
   const low = Number(goalLow), high = Number(goalHigh);
   const validGoal = goalLow.trim() !== "" && goalHigh.trim() !== "" &&
@@ -143,7 +151,7 @@ export function WeightTrendPanel() {
         · 異常/無効除外 {trend.excludedAnomaly}件 · 非実測除外 {trend.excludedNonMeasured}件</p>
       {difference && <p className="trend-difference">期間内の最新実測（{latest!.day}） {fmt(latest!.weightKg!)}kg · {difference}</p>}
       {validGoal && <TrendPlot days={trend.days} goalLow={low} goalHigh={high}
-        scrollRef={node => { chartScroller.current = node; }} />}
+        scrollRef={chartRef.current} />}
       {!validGoal && <p>目標値を修正するとグラフを表示します。</p>}
       <div className="trend-table-scroll" role="region" tabIndex={0}
         aria-label="日別体重一覧。左右にスクロールできます。">
