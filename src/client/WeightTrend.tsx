@@ -39,17 +39,20 @@ export function TrendPlot({ days, goalLow, goalHigh, scrollRef }: {
   const lo = Math.floor(Math.min(...values, goalLow) - 1);
   const hi = Math.ceil(Math.max(...values, goalHigh) + 1);
   const y = (n: number) => 192 - (n - lo) * 156 / Math.max(hi - lo, 1);
-  return <div ref={scrollRef} className="trend-scroll" role="region" tabIndex={0}
-    aria-label="体重推移グラフ。横方向にスクロールできます。">
+  return <div className="trend-viewport">
+    <svg className="trend-fixed-axis" viewBox="0 0 36 230" aria-hidden="true">
+      {[lo, (lo + hi) / 2, hi].map(n =>
+        <text key={n} x="2" y={y(n) + 4} fontSize="11" fill="#53636a">{n.toFixed(0)}</text>)}
+    </svg>
+    <div ref={scrollRef} className="trend-scroll" role="region" tabIndex={0}
+      aria-label="体重推移グラフ。横方向にスクロールできます。">
     <svg viewBox={`0 0 ${plotWidth} 230`}
       style={{ minWidth: `${Math.round(plotWidth * 680 / 720)}px` }} role="img"
       aria-label="体重推移。青い実測線は欠測日で途切れます。緑の7日平均は観測日数4日以上の場合に表示され、欠測日にも値が付く場合があります。">
       <rect x="36" y={y(goalHigh)} width={plotWidth - 72} height={Math.max(1, y(goalLow) - y(goalHigh))}
         fill="#e5f2ec" />
-      {[lo, (lo + hi) / 2, hi].map(n => <g key={n}>
-        <line x1="36" x2={endX} y1={y(n)} y2={y(n)} stroke="#d9e4e6" strokeDasharray="3 4" />
-        <text x="2" y={y(n) + 4} fontSize="11" fill="#53636a">{n.toFixed(0)}</text>
-      </g>)}
+      {[lo, (lo + hi) / 2, hi].map(n => <line key={n} x1="36" x2={endX}
+        y1={y(n)} y2={y(n)} stroke="#d9e4e6" strokeDasharray="3 4" />)}
       {lines(days, d => d.weightKg, x, y).map((path, i) =>
         <path key={"w" + i} d={path} fill="none" stroke="#2166a5" strokeWidth="2.5" />)}
       {days.map((d, i) => d.weightKg === null ? null :
@@ -68,6 +71,7 @@ export function TrendPlot({ days, goalLow, goalHigh, scrollRef }: {
     </svg>
     <p className="hint">青：日次実測（欠測で途切れます）　緑：7日平均（4日以上。欠測日にも表示する場合があります）　淡緑：目標範囲</p>
     <p className="hint">画面が狭い場合、グラフは左右にスクロールできます。</p>
+    </div>
   </div>;
 }
 export function WeightTrendPanel() {
