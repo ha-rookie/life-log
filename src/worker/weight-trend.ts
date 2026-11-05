@@ -1,5 +1,5 @@
 import {
-  addSevenDayAverage, buildWeightTrend, dateRange, parseDay, parseTrendRange,
+  addSevenDayAverage, buildWeightTrend, dateRange, jstDay, parseDay, parseTrendRange,
   type Measurement,
 } from "../shared/weight-trend";
 
@@ -22,6 +22,10 @@ export async function handleWeightTrend(request: Request, db: TrendDb, ownerId: 
   }
   const range = parseTrendRange(new URL(request.url));
   if (!range || !dateRange(range.from, range.to)) {
+    return Response.json({ error: "INVALID_RANGE" }, { status: 400, headers: HEADERS });
+  }
+  // Reject future requests as well as invalid ranges, not just in the UI.
+  if (range.to > jstDay(Date.now())) {
     return Response.json({ error: "INVALID_RANGE" }, { status: 400, headers: HEADERS });
   }
   const from = parseDay(range.from)!;
