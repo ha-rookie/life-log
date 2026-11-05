@@ -5,7 +5,7 @@ import schemaSql from "../migrations/0001_initial.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { verifyOwner } from "../src/worker/auth";
 import type { ImportDb, Statement } from "../src/worker/import";
-import { encodeCsvBytes, hash, hashCsvBytes, previewCsvFileBytes, type CsvSource } from "../src/shared/csv-import";
+import { encodeCsvBytes, hash, hashCsvBytes, type CsvSource } from "../src/shared/csv-import";
 
 interface LocalStatement extends Statement {
   bind(...values: unknown[]): LocalStatement;
