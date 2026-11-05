@@ -25,15 +25,16 @@ function lines(days: TrendDay[], pick: (day: TrendDay) => number | null, y: (kg:
   if (current) paths.push(current);
   return paths;
 }
-export function TrendPlot({ days, goalLow, goalHigh }: {
+export function TrendPlot({ days, goalLow, goalHigh, scrollRef }: {
   days: TrendDay[]; goalLow: number; goalHigh: number;
+  scrollRef?: (node: HTMLDivElement | null) => void;
 }) {
   const values = days.flatMap(d => [d.weightKg, d.average7Kg]).filter((n): n is number => n !== null);
   if (values.length === 0) return <p className="hint">グラフに表示できる実測値がありません。</p>;
   const lo = Math.floor(Math.min(...values, goalLow) - 1);
   const hi = Math.ceil(Math.max(...values, goalHigh) + 1);
   const y = (n: number) => 192 - (n - lo) * 156 / Math.max(hi - lo, 1);
-  return <div className="trend-scroll" role="region" tabIndex={0}
+  return <div ref={scrollRef} className="trend-scroll" role="region" tabIndex={0}
     aria-label="体重推移グラフ。横方向にスクロールできます。">
     <svg viewBox="0 0 720 230" role="img"
       aria-label="体重推移。青い実測線は欠測日で途切れます。緑の7日平均は観測日数4日以上の場合に表示され、欠測日にも値が付く場合があります。">
@@ -72,6 +73,7 @@ export function WeightTrendPanel() {
   const [goalHigh, setGoalHigh] = useState("76");
   const [state, setState] = useState<TrendState>({ kind: "loading" });
   const seq = useRef(0);
+  const chartScroller = useRef<HTMLDivElement | null>(null);
   const validRange = dateRange(from, to) !== null;
   const low = Number(goalLow), high = Number(goalHigh);
   const validGoal = goalLow.trim() !== "" && goalHigh.trim() !== "" &&
@@ -99,6 +101,15 @@ export function WeightTrendPanel() {
     return () => { controller.abort(); ++seq.current; };
   }, [range]);
   const trend = state.kind === "ok" ? state.trend : null;
+  // Recent measurements often occupy the far-right end of the default 90-day
+  // plot. Show the newest days immediately, without scrolling the document.
+  // Do not reset the user's horizontal position on goal-only edits.
+  useEffect(() => {
+    if (trend && chartScroller.current) {
+      chartScroller.current.scrollLeft =
+        chartScroller.current.scrollWidth - chartScroller.current.clientWidth;
+    }
+  }, [trend]);
   const latest = trend ? [...trend.days].reverse().find(d => d.weightKg !== null) : undefined;
   const difference = latest?.weightKg !== null && latest?.weightKg !== undefined && validGoal
     ? latest.weightKg < low ? `目標下限より${fmt(low - latest.weightKg)}kg低い`
@@ -131,7 +142,8 @@ export function WeightTrendPanel() {
       <p aria-live="polite">実測日 {trend.measuredDays} / {trend.days.length}日 · 欠測 {trend.missingDays}日
         · 異常/無効除外 {trend.excludedAnomaly}件 · 非実測除外 {trend.excludedNonMeasured}件</p>
       {difference && <p className="trend-difference">期間内の最新実測（{latest!.day}） {fmt(latest!.weightKg!)}kg · {difference}</p>}
-      {validGoal && <TrendPlot days={trend.days} goalLow={low} goalHigh={high} />}
+      {validGoal && <TrendPlot days={trend.days} goalLow={low} goalHigh={high}
+        scrollRef={node => { chartScroller.current = node; }} />}
       {!validGoal && <p>目標値を修正するとグラフを表示します。</p>}
       <div className="trend-table-scroll" role="region" tabIndex={0}
         aria-label="日別体重一覧。左右にスクロールできます。">
