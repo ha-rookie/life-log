@@ -43,7 +43,8 @@ async function audit(db:LocalDb,source:"eclear"|"lifestyle",csv:string,owner="ow
 }
 describe("CSV Worker signed-identity boundary",()=>{
   it("rejects unauthenticated owner and spoofed identity on preview/confirm before any DB call",async()=>{
-    const env={DB:{prepare:vi.fn(),batch:vi.fn()},ASSETS:{fetch:vi.fn()}} as unknown as Env;
+    const dbSpy={prepare:vi.fn(),batch:vi.fn()};
+    const env={DB:dbSpy,ASSETS:{fetch:vi.fn()}} as unknown as Env;
     for(const path of ["/api/import/preview","/api/import/confirm"]){
       const r=await createHandler(async()=>null).fetch(new Request("https://example.invalid"+path,{
         method:"POST",headers:{"Content-Type":"application/json","Cf-Access-Authenticated-User-Email":"owner@example.invalid"},
@@ -52,7 +53,7 @@ describe("CSV Worker signed-identity boundary",()=>{
       expect(r.status).toBe(403);
     }
     expect(env.DB.prepare).not.toHaveBeenCalled();
-    expect(env.DB.batch).not.toHaveBeenCalled();
+    expect(dbSpy.batch).not.toHaveBeenCalled();
   });
 });
 describe("real ephemeral local D1 audited import",()=>{
