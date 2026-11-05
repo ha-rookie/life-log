@@ -1,171 +1,277 @@
-import { previewCsv, MAX_BYTES, type CsvSource, type CsvRow } from "../shared/csv-import";
+import { hash, previewCsv, MAX_BYTES, type CsvRow, type CsvSource } from "../shared/csv-import";
 
 export interface Statement {
   bind(...values: unknown[]): Statement;
   first<T>(): Promise<T | null>;
+  all<T>(): Promise<{ results: T[] }>;
 }
 export interface ImportDb {
   prepare(sql: string): Statement;
   batch(statements: Statement[]): Promise<unknown[]>;
 }
 
-const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
-const response = (body: unknown, status = 200) => Response.json(body, { status, headers });
-const error = (code: string, status = 422) => response({ error: code }, status);
-type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string };
-type Lifestyle = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null };
-type StoredLifestyle = {
-  local_day: string;
-  drinking_presence: 0 | 1 | null;
-  drink_cups: number | null;
-  steps: number | null;
+const privateHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
+const json = (body: unknown, status = 200) => Response.json(body, { status, headers: privateHeaders });
+const reject = (error: string, status = 422) => json({ error }, status);
+type Resolution = { mode: "keep_existing"; token: string };
+type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string; resolution?: Resolution };
+type LifestyleRow = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null };
+type StoredDay = {
+  source_id: string; source_row_key: string;
+  drinking_presence: 0 | 1 | null; drink_cups: number | null; steps: number | null;
 };
+type SnapshotDay = { incoming: LifestyleRow; existing: StoredDay[] };
 export type LifestyleConflict = { day: string; fields: string[] };
+type AuditCount = { result: string; n: number };
+type Summary = { inserted: number; skipped: number; conflicted: number };
 
 function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const p = x as Record<string, unknown>;
-  return (p.source === "eclear" || p.source === "lifestyle")
-    && typeof p.csv === "string" && new TextEncoder().encode(p.csv).length <= MAX_BYTES
-    && (p.confirmed === undefined || typeof p.confirmed === "boolean")
-    && (p.hash === undefined || typeof p.hash === "string");
+  if (p.source !== "eclear" && p.source !== "lifestyle") return false;
+  if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
+  if (p.confirmed !== undefined && typeof p.confirmed !== "boolean") return false;
+  if (p.hash !== undefined && typeof p.hash !== "string") return false;
+  if (p.resolution !== undefined) {
+    if (!p.resolution || typeof p.resolution !== "object" || Array.isArray(p.resolution)) return false;
+    const r = p.resolution as Record<string, unknown>;
+    if (r.mode !== "keep_existing" || typeof r.token !== "string" || !/^[0-9a-f]{64}$/.test(r.token)) return false;
+  }
+  return true;
 }
-function lifestyleRows(rows: CsvRow[]): Lifestyle[] { return rows as Lifestyle[]; }
+function lifestyle(rows: CsvRow[]): LifestyleRow[] { return rows as LifestyleRow[]; }
 
-// NULL-safe comparison: unknown is NOT zero. This queries all source types for the owner/day.
-async function findLifestyleConflicts(db: ImportDb, owner: string, rows: Lifestyle[]): Promise<LifestyleConflict[]> {
-  const conflicts: LifestyleConflict[] = [];
-  for (const row of rows) {
+async function snapshotDays(db: ImportDb, owner: string, rows: LifestyleRow[]): Promise<SnapshotDay[]> {
+  const out: SnapshotDay[] = [];
+  for (const incoming of rows) {
     const found = await db.prepare(
-      "SELECT local_day, drinking_presence, drink_cups, steps FROM lifestyle_days "
-      + "WHERE owner_id=? AND local_day=? "
-      + "AND (drinking_presence IS NOT ? OR drink_cups IS NOT ? OR steps IS NOT ?) LIMIT 1"
-    ).bind(owner, row.day, row.presence, row.cups, row.steps).first<StoredLifestyle>();
-    if (!found) continue;
-    const fields: string[] = [];
-    if (found.drinking_presence !== row.presence) fields.push("drinking_presence");
-    if (found.drink_cups !== row.cups) fields.push("drink_cups");
-    if (found.steps !== row.steps) fields.push("steps");
-    conflicts.push({ day: row.day, fields });
+      "SELECT source_id,source_row_key,drinking_presence,drink_cups,steps FROM lifestyle_days "
+      + "WHERE owner_id=? AND local_day=? ORDER BY source_id,source_row_key"
+    ).bind(owner, incoming.day).all<StoredDay>();
+    out.push({ incoming, existing: found.results });
+  }
+  return out;
+}
+const same = (a: LifestyleRow, b: StoredDay): boolean =>
+  a.presence === b.drinking_presence && a.cups === b.drink_cups && a.steps === b.steps;
+
+function conflictsOf(snapshots: SnapshotDay[]): LifestyleConflict[] {
+  const conflicts: LifestyleConflict[] = [];
+  for (const { incoming, existing } of snapshots) {
+    if (existing.every(row => same(incoming, row))) continue;
+    const fields = new Set<string>();
+    for (const row of existing) {
+      if (row.drinking_presence !== incoming.presence) fields.add("drinking_presence");
+      if (row.drink_cups !== incoming.cups) fields.add("drink_cups");
+      if (row.steps !== incoming.steps) fields.add("steps");
+    }
+    conflicts.push({ day: incoming.day, fields: [...fields] });
   }
   return conflicts;
 }
-
-// A D1 batch is transactional. Recheck ALL dates in the job INSERT itself so a
-// concurrent import after preflight cannot silently bypass the conflict check.
-// The existing status CHECK rejects the impossible 'conflict' value and forces
-// a rollback of the job AND every row (no schema migration required).
-function createJobStatement(
-  db: ImportDb, job: string, owner: string, source: CsvSource,
-  fileHash: string, now: string, rows: CsvRow[],
-): Statement {
-  const conditions = source === "lifestyle"
-    ? lifestyleRows(rows).map(() =>
-      "(local_day=? AND (drinking_presence IS NOT ? OR drink_cups IS NOT ? OR steps IS NOT ?))"
-    ).join(" OR ")
-    : "";
-  const status = source === "lifestyle"
-    ? "CASE WHEN EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND ("
-      + conditions + ")) THEN 'conflict' ELSE 'confirmed' END"
-    : "'confirmed'";
-  const sql = "INSERT INTO import_jobs"
-    + "(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at) "
-    + "VALUES (?,?,?,?,?," + status + ",?,?)";
-  const guardParams = source === "lifestyle"
-    ? [owner, ...lifestyleRows(rows).flatMap(r => [r.day, r.presence, r.cups, r.steps])]
-    : [];
-  return db.prepare(sql).bind(job, owner, source, "csv:" + source, fileHash, ...guardParams, now, now);
+// A resolution is valid only for the same owner, CSV bytes and exact reviewed DB rows.
+// It is NOT authorization: the Worker must authenticate before calling this function.
+async function reviewToken(owner: string, fileHash: string, snapshots: SnapshotDay[]): Promise<string> {
+  return hash(JSON.stringify([owner, fileHash, snapshots.map(s => [
+    s.incoming.day, s.existing.map(r => [
+      r.source_id, r.source_row_key, r.drinking_presence, r.drink_cups, r.steps,
+    ]),
+  ])]));
 }
-function insert(db: ImportDb, owner: string, source: CsvSource, job: string, r: CsvRow): Statement {
+
+// The job insert checks the preflight state INSIDE the same transactional D1.batch.
+// Count + every source/key/value tuple prevents changed, removed or added records
+// from causing an incorrect inserted/skipped/conflict audit after a concurrent write.
+function jobStatement(
+  db: ImportDb, owner: string, source: CsvSource, fileHash: string,
+  job: string, now: string, snapshots: SnapshotDay[], status: "confirmed" | "partial",
+): Statement {
+  const checks: string[] = [];
+  const params: unknown[] = [];
+  for (const { incoming, existing } of snapshots) {
+    const conditions: string[] = [
+      "(SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND local_day=?)=?",
+    ];
+    params.push(owner, incoming.day, existing.length);
+    for (const row of existing) {
+      conditions.push("EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
+        + "AND source_id=? AND source_row_key=? AND drinking_presence IS ? "
+        + "AND drink_cups IS ? AND steps IS ?)");
+      params.push(owner, incoming.day, row.source_id, row.source_row_key,
+        row.drinking_presence, row.drink_cups, row.steps);
+    }
+    checks.push("(" + conditions.join(" AND ") + ")");
+  }
+  const statusSql = source === "lifestyle"
+    ? "CASE WHEN " + checks.join(" AND ") + " THEN ? ELSE 'stale_guard' END"
+    : "?";
+  const sql = "INSERT INTO import_jobs"
+    + "(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at)"
+    + " VALUES (?,?,?,?,?," + statusSql + ",?,?)";
+  return db.prepare(sql).bind(job, owner, source, "csv:" + source, fileHash,
+    ...(source === "lifestyle" ? params : []), status, now, now);
+}
+function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
   if (source === "eclear") {
     return db.prepare(
       "INSERT OR IGNORE INTO body_measurements"
       + "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"
       + "source_id,source_row_key,reliable_fingerprint,source_kind,import_job_id)"
       + " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-    ).bind(job + ":" + r.line, owner, r.timestamp, "Asia/Tokyo", r.weight, r.fat,
-      "csv:eclear", r.key, r.fingerprint, "measured", job);
+    ).bind(job + ":" + row.line, owner, row.timestamp, "Asia/Tokyo", row.weight, row.fat,
+      "csv:eclear", row.key, row.fingerprint, "measured", job);
   }
-  // One canonical row per owner/day for this import. Equal rows from other
-  // sources are skipped; differing rows are rejected by the transactional job guard.
   return db.prepare(
     "INSERT INTO lifestyle_days"
     + "(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id)"
     + " SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS "
     + "(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=?)"
-  ).bind(owner, r.day, r.presence, r.cups, r.steps,
-    "csv:lifestyle", r.key, job, owner, r.day);
+  ).bind(owner, row.day, row.presence, row.cups, row.steps,
+    "csv:lifestyle", row.key, job, owner, row.day);
 }
-function conflictResponse(conflicts: LifestyleConflict[]) {
-  return response({ error: "LIFESTYLE_CONFLICT", conflicts }, 409);
+
+// Row audit lives in the SAME atomic batch immediately after its destination insert.
+// Classification queries the actual D1 state, not a guessed preflight outcome.
+function auditRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
+  if (source === "eclear") {
+    const inserted = "EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=? AND import_job_id=? AND source_row_key=?)";
+    return db.prepare(
+      "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
+      + " VALUES (?,?,?,?,CASE WHEN " + inserted + " THEN 'inserted' ELSE 'skipped' END,NULL)"
+    ).bind(job + ":" + row.line, job, row.line, row.key, owner, job, row.key);
+  }
+  const inserted = "EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
+    + "AND import_job_id=? AND source_row_key=?)";
+  const differing = "EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
+    + "AND (drinking_presence IS NOT ? OR drink_cups IS NOT ? OR steps IS NOT ?))";
+  const sql = "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
+    + " VALUES (?,?,?,?,CASE WHEN " + inserted
+    + " THEN 'inserted' WHEN " + differing + " THEN 'conflict' ELSE 'skipped' END,"
+    + "CASE WHEN " + differing + " THEN 'LIFESTYLE_CONFLICT_KEPT' ELSE NULL END)";
+  const d = [owner, row.day, row.presence, row.cups, row.steps];
+  return db.prepare(sql).bind(job + ":" + row.line, job, row.line, row.key,
+    owner, row.day, job, row.key, ...d, ...d);
 }
-export async function handleImport(req: Request, db: ImportDb, owner: string): Promise<Response> {
-  if (req.method !== "POST") return error("METHOD", 405);
-  if (!req.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) return error("CONTENT_TYPE", 415);
-  if (Number(req.headers.get("Content-Length") || 0) > MAX_BYTES * 2) return error("SIZE", 413);
+function counts(rows: AuditCount[]): Summary {
+  const result = { inserted: 0, skipped: 0, conflicted: 0 };
+  for (const row of rows) {
+    if (row.result === "inserted") result.inserted += row.n;
+    else if (row.result === "skipped") result.skipped += row.n;
+    else if (row.result === "conflict") result.conflicted += row.n;
+    else throw Error("UNKNOWN_AUDIT_RESULT");
+  }
+  return result;
+}
+async function existingJobResponse(db: ImportDb, job: string, rows: number): Promise<Response> {
+  const result = await db.prepare(
+    "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
+  ).bind(job).all<AuditCount>();
+  const original = counts(result.results);
+  if (original.inserted + original.skipped + original.conflicted !== rows) return reject("INCOMPLETE_AUDIT", 503);
+  return json({ status: "already_imported", inserted: 0, skipped: rows,
+    conflicted: 0, original });
+}
+
+export async function handleImport(request: Request, db: ImportDb, owner: string): Promise<Response> {
+  if (request.method !== "POST") return reject("METHOD", 405);
+  if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+    return reject("CONTENT_TYPE", 415);
+  }
+  if (Number(request.headers.get("Content-Length") || 0) > MAX_BYTES * 2) return reject("SIZE", 413);
   let payload: unknown;
   try {
-    const raw = await req.text();
-    if (new TextEncoder().encode(raw).length > MAX_BYTES * 2) return error("SIZE", 413);
-    payload = JSON.parse(raw);
-  } catch { return error("JSON", 400); }
-  if (!valid(payload)) return error("PAYLOAD", 400);
+    const text = await request.text();
+    if (new TextEncoder().encode(text).length > MAX_BYTES * 2) return reject("SIZE", 413);
+    payload = JSON.parse(text);
+  } catch { return reject("JSON", 400); }
+  if (!valid(payload)) return reject("PAYLOAD", 400);
   let preview;
   try { preview = await previewCsv(payload.source, payload.csv); }
-  catch { return error("CSV"); }
-  if (new URL(req.url).pathname === "/api/import/preview") return response(preview);
-  if (payload.confirmed !== true || payload.hash !== preview.hash) return error("CONFIRM_REQUIRED", 409);
-  if (preview.errors.length || !preview.rows.length) return error("INVALID_ROWS");
-  const keys = new Set<string>();
+  catch { return reject("CSV"); }
+
+  if (new URL(request.url).pathname === "/api/import/preview") return json(preview);
+  if (payload.confirmed !== true || payload.hash !== preview.hash) return reject("CONFIRM_REQUIRED", 409);
+  if (preview.errors.length || preview.rows.length === 0) return reject("INVALID_ROWS");
+  const distinct = new Set<string>();
   for (const row of preview.rows) {
     const key = payload.source === "eclear" ? row.fingerprint! : row.day!;
-    if (keys.has(key)) return error("DUPLICATE_IN_FILE");
-    keys.add(key);
+    if (distinct.has(key)) return reject("DUPLICATE_IN_FILE");
+    distinct.add(key);
   }
+  if (payload.source !== "lifestyle" && payload.resolution) return reject("RESOLUTION_NOT_APPLICABLE", 409);
   const job = owner + ":" + payload.source + ":" + preview.hash;
+
   try {
     const existing = await db.prepare(
       "SELECT status FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
     ).bind(owner, payload.source, preview.hash).first<{ status: string }>();
-    if (existing) return existing.status === "confirmed"
-      ? response({ status: "already_imported", inserted: 0, skipped: preview.rows.length })
-      : error("JOB_CONFLICT", 409);
+    if (existing) {
+      if (existing.status === "confirmed" || existing.status === "partial") {
+        return existingJobResponse(db, job, preview.rows.length);
+      }
+      return reject("JOB_CONFLICT", 409);
+    }
+    const snapshots = payload.source === "lifestyle"
+      ? await snapshotDays(db, owner, lifestyle(preview.rows)) : [];
+    const conflicts = conflictsOf(snapshots);
+    const token = payload.source === "lifestyle"
+      ? await reviewToken(owner, preview.hash, snapshots) : null;
 
-    if (payload.source === "lifestyle") {
-      const conflicts = await findLifestyleConflicts(db, owner, lifestyleRows(preview.rows));
-      if (conflicts.length) return conflictResponse(conflicts);
+    if (payload.resolution) {
+      if (!conflicts.length || payload.resolution.token !== token) {
+        return json({ error: "REVIEW_STALE", conflicts, reviewToken: token }, 409);
+      }
+    } else if (conflicts.length) {
+      return json({ error: "LIFESTYLE_CONFLICT", conflicts, reviewToken: token }, 409);
     }
 
+    const status = conflicts.length ? "partial" : "confirmed";
     const now = new Date().toISOString();
     const ops: Statement[] = [
       db.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES (?,?)").bind(owner, now),
-      createJobStatement(db, job, owner, payload.source, preview.hash, now, preview.rows),
-      ...preview.rows.map(row => insert(db, owner, payload.source, job, row)),
+      jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status),
     ];
-    const result = await db.batch(ops);
-    if (result.length !== ops.length) throw Error("INCOMPLETE_BATCH");
-    const changes = result.slice(2).map(x => (x as { meta?: { changes?: number } }).meta?.changes);
-    if (changes.some(x => typeof x !== "number")) return error("UNVERIFIED_BATCH", 503);
-    const inserted = changes.reduce<number>((sum, n) => sum + (n === 1 ? 1 : 0), 0);
-    return response({ status: "confirmed", inserted, skipped: preview.rows.length - inserted });
+    for (const row of preview.rows) {
+      ops.push(insertRow(db, owner, payload.source, job, row));
+      ops.push(auditRow(db, owner, payload.source, job, row));
+    }
+    ops.push(db.prepare(
+      "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
+    ).bind(job));
+    const batches = await db.batch(ops);
+    if (batches.length !== ops.length) return reject("INCOMPLETE_BATCH", 503);
+    const audit = (batches[batches.length - 1] as { results?: AuditCount[] }).results;
+    if (!Array.isArray(audit)) return reject("UNVERIFIED_AUDIT", 503);
+    const summary = counts(audit);
+    if (summary.inserted + summary.skipped + summary.conflicted !== preview.rows.length) {
+      return reject("INCOMPLETE_AUDIT", 503);
+    }
+    return json({ status, ...summary });
   } catch {
-    // The transactional guard catches a race between the SELECT and batch.
-    // Report a true conflict explicitly; all writes were rolled back by D1.
+    // If a concurrent change invalidated our in-batch snapshot guard, the
+    // entire D1 batch (including audit) was rolled back. Require fresh review.
     if (payload.source === "lifestyle") {
       try {
-        const conflicts = await findLifestyleConflicts(db, owner, lifestyleRows(preview.rows));
-        if (conflicts.length) return conflictResponse(conflicts);
-      } catch { /* Failing DB reads cannot authorize retry or persistence. */ }
+        const now = await snapshotDays(db, owner, lifestyle(preview.rows));
+        const token = await reviewToken(owner, preview.hash, now);
+        const conflicts = conflictsOf(now);
+        if (conflicts.length) {
+          if (payload.resolution && token !== payload.resolution.token) {
+            return json({ error: "REVIEW_STALE", conflicts, reviewToken: token }, 409);
+          }
+          return json({ error: "LIFESTYLE_CONFLICT", conflicts, reviewToken: token }, 409);
+        }
+      } catch { /* fail closed; no health data in the response */ }
     }
-    // A concurrent identical upload can win the unique job insertion.
+    // A parallel identical job may have committed first. Do not create another.
     try {
       const winner = await db.prepare(
         "SELECT status FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
       ).bind(owner, payload.source, preview.hash).first<{ status: string }>();
-      if (winner?.status === "confirmed") {
-        return response({ status: "already_imported", inserted: 0, skipped: preview.rows.length });
+      if (winner?.status === "confirmed" || winner?.status === "partial") {
+        return existingJobResponse(db, job, preview.rows.length);
       }
-    } catch { /* Don't expose database internals. */ }
-    return error("IMPORT_FAILED", 503);
+    } catch { /* fail closed */ }
+    return reject("IMPORT_FAILED", 503);
   }
 }
