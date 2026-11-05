@@ -60,12 +60,12 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     const other=await seed("other","eclear");
     const list=await get(db);
     expect(list.code).toBe(200);
-    expect(list.body.jobs.map((j:{id:string})=>j.id)).toEqual([own]);
+    expect(list.body.jobs).toHaveLength(1);\n    const handle=list.body.jobs[0].id as string;\n    expect(handle).toMatch(/^[1-9][0-9]*$/);
     expect(JSON.stringify(list.body)).not.toContain(other);
     expect(list.headers.get("Cache-Control")).toBe("private, no-store");
     expect(list.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect((await get(db,"/"+other)).code).toBe(404);
-    const detail=await get(db,"/"+own);
+    const detail=await get(db,"/"+handle);
     expect(detail.code).toBe(200);
     expect(detail.body.rows).toHaveLength(2);
     expect(JSON.stringify(detail.body)).not.toContain("source_row_key");
@@ -87,17 +87,17 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
       expect((await get(db,"",query)).code).toBe(400);
     }
     const id=await seed("owner","lifestyle");
-    const r1=await get(db,"/"+id,"?limit=1");
-    const r2=await get(db,"/"+id,"?limit=1&cursor="+encodeURIComponent(r1.body.nextCursor));
+    const listing=await get(db);\n    const handle=(listing.body.jobs.find((j:{source:string})=>j.source==="lifestyle") as {id:string}).id;\n    const r1=await get(db,"/"+handle,"?limit=1");
+    const r2=await get(db,"/"+handle,"?limit=1&cursor="+encodeURIComponent(r1.body.nextCursor));
     expect(r1.body.rows[0].line).toBe(2);
     expect(r2.body.rows[0].line).toBe(3);
     expect(r2.body.nextCursor).toBeNull();
-    expect((await get(db,"/"+id,"?cursor=bad!")).code).toBe(400);
-    expect((await get(db,"/"+id,"?limit=25")).code).toBe(200);
+    expect((await get(db,"/"+handle,"?cursor=bad!")).code).toBe(400);
+    expect((await get(db,"/"+handle,"?limit=25")).code).toBe(200);
   },100_000);
   it("marks legacy zero-audit explicitly and modern missing audit incomplete without guessing",async()=>{
-    const legacy=await seed("owner","eclear","confirmed","csv:", "2026-01-02",0);
-    const modern=await seed("owner","lifestyle","confirmed","csv:audited-v2:","2026-01-03",0);
+    await seed("owner","eclear","confirmed","csv:", "2026-01-02",0);
+    await seed("owner","lifestyle","confirmed","csv:audited-v2:","2026-01-03",0);\n    const list=await get(db);\n    const modern=(list.body.jobs.find((j:{source:string})=>j.source==="lifestyle") as {id:string}).id;\n    const legacy=(list.body.jobs.find((j:{source:string})=>j.source==="eclear") as {id:string}).id;
     expect((await get(db,"/"+legacy)).body).toMatchObject({job:{auditStatus:"legacy_unavailable",counts:null},rows:[]});
     expect((await get(db,"/"+modern)).body).toMatchObject({job:{auditStatus:"incomplete",counts:null},rows:[]});
     const listing=await get(db);

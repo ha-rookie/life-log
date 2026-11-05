@@ -9,3 +9,4 @@ Return minimal audit metadata, no raw CSV, file hashes, source row keys, owner I
 
 ## Constraints
 Synthetic/local D1 only; real vendor CSV unknown; Remote D1, Access changes, Preview/Production deploy and main merge prohibited until separate human approval.
+\nOpaque job handles are local SQLite rowids, not the import_job.id (which embeds the file SHA-256). Keyset cursors contain only a handle and timestamp; all handles are owner-bound before use.\n

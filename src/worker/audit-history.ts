@@ -2,7 +2,7 @@ import type { ImportDb } from "./import";
 
 const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 const reply = (body: unknown, status = 200) => Response.json(body, { status, headers });
-type Job = { id: string; source_type: string; source_id: string; status: string; started_at: string; completed_at: string | null };
+type Job = { handle: number; id: string; source_type: string; source_id: string; status: string; started_at: string; completed_at: string | null };
 type Count = { n: number };
 type Outcome = { result: string; n: number };
 type Row = { source_row_number: number; result: string; error_code: string | null;
@@ -20,7 +20,7 @@ function decode(input: string, kind: "jobs" | "rows"): Cursor | null {
     const v = value as Record<string, unknown>;
     if (kind === "jobs" && Object.keys(v).sort().join(",") === "id,time"
       && typeof v.time === "string" && v.time.length <= 40 && typeof v.id === "string"
-      && /^[A-Za-z0-9:_-]{1,180}$/.test(v.id)) return { time: v.time, id: v.id };
+      && /^[1-9][0-9]{0,15}$/.test(v.id)) return { time: v.time, id: v.id };
     if (kind === "rows" && Object.keys(v).join(",") === "row"
       && Number.isSafeInteger(v.row) && Number(v.row) >= 1) return { row: Number(v.row) };
   } catch { /* malformed cursor */ }
@@ -60,8 +60,8 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
   const prefix = "/api/import/history";
   const tail = pathname.slice(prefix.length);
   if (tail && (!tail.startsWith("/") || tail.slice(1).includes("/") || !tail.slice(1))) return reply({ error: "NOT_FOUND" }, 404);
-  const detail = tail ? decodeURIComponent(tail.slice(1)) : null;
-  if (detail && !/^[A-Za-z0-9:_-]{1,180}$/.test(detail)) return reply({ error: "NOT_FOUND" }, 404);
+  const detail = tail ? tail.slice(1) : null;
+  if (detail && !/^[1-9][0-9]{0,15}$/.test(detail)) return reply({ error: "NOT_FOUND" }, 404);
   const args = pageArgs(request, detail ? "rows" : "jobs");
   if (!args) return reply({ error: "INVALID_PAGE" }, 400);
   try {
@@ -69,15 +69,15 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       const cursor = args.cursor as {time:string;id:string} | null;
       // Cursor must refer to a job owned by the authenticated owner, not merely a syntactically valid tuple.
       if (cursor) {
-        const anchor = await db.prepare("SELECT id FROM import_jobs WHERE owner_id=? AND id=? AND started_at=?")
-          .bind(owner, cursor.id, cursor.time).first<{id:string}>();
+        const anchor = await db.prepare("SELECT rowid AS handle FROM import_jobs WHERE owner_id=? AND rowid=? AND started_at=?")
+          .bind(owner, Number(cursor.id), cursor.time).first<{handle:number}>();
         if (!anchor) return reply({ error: "INVALID_PAGE" }, 400);
       }
       const rows = await db.prepare(
-        "SELECT id,source_type,source_id,status,started_at,completed_at FROM import_jobs WHERE owner_id=?"
-        + (cursor ? " AND (started_at<? OR (started_at=? AND id<?))" : "")
-        + " ORDER BY started_at DESC,id DESC LIMIT ?"
-      ).bind(owner, ...(cursor ? [cursor.time,cursor.time,cursor.id] : []), args.limit + 1).all<Job>();
+        "SELECT rowid AS handle,id,source_type,source_id,status,started_at,completed_at FROM import_jobs WHERE owner_id=?"
+        + (cursor ? " AND (started_at<? OR (started_at=? AND rowid<?))" : "")
+        + " ORDER BY started_at DESC,rowid DESC LIMIT ?"
+      ).bind(owner, ...(cursor ? [cursor.time,cursor.time,Number(cursor.id)] : []), args.limit + 1).all<Job>();
       const selected = rows.results.slice(0,args.limit);
       const jobs = [];
       for (const job of selected) {
@@ -87,17 +87,17 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
           "SELECT (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND import_job_id=?)"
           + "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?) AS n"
         ).bind(owner,job.id,owner,job.id).first<Count>();
-        jobs.push({ id:job.id,source:job.source_type,status:job.status,startedAt:job.started_at,
+        jobs.push({ id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
           completedAt:job.completed_at,auditStatus: audit.total===0&&job.status==="confirmed"&&job.source_id==="csv:"+job.source_type
             ? "legacy_unavailable" : audit.total<0||audit.total===0 ? "incomplete" : "available",
           auditCount:audit.total<0?0:audit.total,insertedRecords:destinations?.n??0 });
       }
       const last=selected.at(-1);
       return reply({ jobs,nextCursor:rows.results.length>args.limit&&last
-        ?encode({time:last.started_at,id:last.id}):null });
+        ?encode({time:last.started_at,id:String(last.handle)}):null });
     }
-    const job=await db.prepare("SELECT id,source_type,source_id,status,started_at,completed_at FROM import_jobs WHERE owner_id=? AND id=?")
-      .bind(owner,detail).first<Job>();
+    const job=await db.prepare("SELECT rowid AS handle,id,source_type,source_id,status,started_at,completed_at FROM import_jobs WHERE owner_id=? AND rowid=?")
+      .bind(owner,Number(detail)).first<Job>();
     if (!job) return reply({error:"NOT_FOUND"},404);
     const stats=await countAudit(db,job.id);
     // Count is not recoverable from historical jobs; only detect missing modern audits here.
@@ -122,7 +122,7 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     ).bind(owner,job.source_type,owner,job.source_type,job.id,...(cursor?[cursor.row]:[]),args.limit+1).all<Row>();
     const selected=rows.results.slice(0,args.limit);
     const last=selected.at(-1);
-    return reply({job:{id:job.id,source:job.source_type,status:job.status,startedAt:job.started_at,
+    return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
       auditStatus,counts:auditStatus==="available"?stats.counts:null},
       rows:selected.map(r=>({line:r.source_row_number,result:r.result,errorCode:r.error_code,
         values:r.result!=="inserted"?null:job.source_type==="lifestyle"
