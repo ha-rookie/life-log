@@ -192,7 +192,10 @@ export async function handleHistory(request: Request, db: AuditDb, owner: string
   }
 
   try {
-    if (isRows) return await listRows(db, owner, jobIds[0], paging.page, paging.limit, paging.offset);
+    if (isRows) {
+      const result = await listRows(db, owner, jobIds[0], paging.page, paging.limit, paging.offset);
+      return result instanceof Response ? result : respond(result);
+    }
     return respond(await listJobs(db, owner, paging.page, paging.limit, paging.offset));
   } catch {
     // Never leak SQL, raw stored values, or auth details via exceptions.
