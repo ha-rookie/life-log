@@ -113,3 +113,72 @@ export function addSevenDayAverage(trend: WeightTrend, prefetch: readonly Measur
   });
   return { ...trend, days };
 }
+
+/** Chart granularity is a view concern: the API still returns actual JST daily observations. */
+export type TrendGranularity = "day" | "week" | "month";
+export type TrendPeriod = {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+  meanKg: number | null;
+  observedDays: number;
+  calendarDays: number;
+};
+
+/** A convenient window, never a persisted change to the user's measurements. */
+export function rangeForGranularity(scale: TrendGranularity, now = Date.now()): { from: string; to: string } {
+  const to = jstDay(now);
+  if (scale === "day") return defaultRange(now);
+  const current = parseDay(to)!;
+  if (scale === "month") {
+    const utc = new Date(current);
+    const from = new Date(Date.UTC(utc.getUTCFullYear(), utc.getUTCMonth() - 11, 1))
+      .toISOString().slice(0, 10);
+    return { from, to };
+  }
+  // 26 calendar weeks, Monday as the first weekday.
+  const weekday = (new Date(current).getUTCDay() + 6) % 7;
+  const monday = current - (weekday + 25 * 7) * DAY_MS;
+  return { from: new Date(monday).toISOString().slice(0, 10), to };
+}
+
+function mondayOf(day: string): string {
+  const utc = parseDay(day)!;
+  const weekday = (new Date(utc).getUTCDay() + 6) % 7;
+  return new Date(utc - weekday * DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Every JST day contributes at most one valid body-weight measurement.
+ * A period's mean is the arithmetic average of its *observed days*, not a
+ * daily-weighted average across duplicated source rows or fabricated zeros.
+ * Empty weeks/months remain explicit gaps (meanKg = null).
+ */
+export function groupTrendDays(days: readonly TrendDay[], scale: "week" | "month"): TrendPeriod[] {
+  const grouped = new Map<string, TrendPeriod & { sum: number }>();
+  for (const day of days) {
+    const key = scale === "month" ? day.day.slice(0, 7) : mondayOf(day.day);
+    let period = grouped.get(key);
+    if (!period) {
+      period = {
+        key,
+        label: scale === "month" ? key.replace("-", "/") : key.slice(5).replace("-", "/") + "週",
+        from: day.day, to: day.day, meanKg: null, observedDays: 0, calendarDays: 0, sum: 0,
+      };
+      grouped.set(key, period);
+    }
+    period.calendarDays++;
+    period.to = day.day;
+    if (day.weightKg !== null) {
+      period.sum += day.weightKg;
+      period.observedDays++;
+    }
+  }
+  return [...grouped.values()].map(({ sum, ...period }) => ({
+    ...period,
+    meanKg: period.observedDays > 0
+      ? Math.round((sum / period.observedDays + Number.EPSILON) * 100) / 100
+      : null,
+  }));
+}
