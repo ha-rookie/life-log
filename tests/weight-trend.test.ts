@@ -69,8 +69,8 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     // Under a 390px viewport, the parent panel has approximately 312px of
     // inner width; the 680px SVG therefore scrolls instead of shrinking
     // its axis font below an accessible reading size.
-    expect(styles).toMatch(/\\.trend-scroll,\\.trend-table-scroll\\{overflow-x:auto;max-width:100%\\}/);
-    expect(styles).toMatch(/\\.trend-scroll svg\\{[^}]*min-width:680px;/);
+    expect(styles).toMatch(/\.trend-scroll,\.trend-table-scroll\{overflow-x:auto;max-width:100%\}/);
+    expect(styles).toMatch(/\.trend-scroll svg\{[^}]*min-width:680px;/);
   });
 
   it("returns full empty days and excludes null, anomaly and non-measured", () => {
