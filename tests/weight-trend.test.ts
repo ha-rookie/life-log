@@ -90,7 +90,8 @@ describe("MVP-α: deterministic daily weight trends in Asia/Tokyo", () => {
       row("n", "2026-01-02T11:00:00+09:00", 72.4, { source_id: "SENSITIVE_SOURCE_ID" }),
     ], "2026-01-02", "2026-01-02");
     expect(t.observedDays).toBe(1);
-    expect(t.excludedAnomalies).toBe(2);
+    expect(t.excludedAnomalies).toBe(1);
+    expect(t.excludedMissingValues).toBe(1);
     expect(t.excludedNonMeasured).toBe(1);
     expect(t.days[0].weightKg).toBe(72.4);
     expect(t.days[0].source).toBe("その他");
