@@ -88,7 +88,7 @@ function decodeStrictCsvBytes(bytes: Uint8Array): string {
   const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bom ? bytes.subarray(3) : bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bom ? bytes.subarray(3) : bytes);
   } catch { throw Error("ENCODING"); }
   if (!text || text.includes("\0") || text.includes("\uFEFF")) throw Error("ENCODING");
   return text;
