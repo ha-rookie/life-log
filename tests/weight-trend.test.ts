@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TrendPlot } from "../src/client/WeightTrend";
+import { PeriodPlot, TrendPlot, WeightTrendPanel } from "../src/client/WeightTrend";
 import {
-  addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, parseTrendRange,
+  addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, groupTrendDays, parseTrendRange, rangeForGranularity,
   type Measurement,
 } from "../src/shared/weight-trend";
 const row = (day: string, kg: number | null, id = day, extras: Partial<Measurement> = {}): Measurement => ({
@@ -88,6 +88,77 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(markup).toContain('viewBox="0 0 1496 230"');
     expect(markup).toMatch(/min-width:\s*1413px/);
     expect(markup).toContain("11/06");
+  });
+
+
+  it("switches to 12 calendar months within the API 366-day limit, including a year boundary", () => {
+    const now = Date.parse("2026-11-05T15:01:00Z"); // Nov 6 in Japan
+    const monthRange = rangeForGranularity("month", now);
+    expect(monthRange).toEqual({ from: "2025-12-01", to: "2026-11-06" });
+    expect(dateRange(monthRange.from,monthRange.to)?.days).toBeLessThanOrEqual(366);
+    const weekly = rangeForGranularity("week",now);
+    expect(weekly.to).toBe("2026-11-06");
+    expect(weekly.from).toBe("2026-05-11"); // Monday, 26 calendar weeks
+    expect(rangeForGranularity("day", now)).toEqual(defaultRange(now));
+  });
+
+  it("groups monthly by calendar month, averaging one daily representative and retaining missing months", () => {
+    const range = {from:"2025-12-01",to:"2026-11-06"};
+    const rows = [
+      row("2025-12-30",70,"first"),
+      row("2025-12-30",100,"second"), // same-day representative is latest stable ID
+      row("2026-01-01",74),row("2026-01-03",78),
+      row("2026-11-06",80),
+    ];
+    const periods = groupTrendDays(buildWeightTrend(rows,range.from,range.to).days,"month");
+    expect(periods).toHaveLength(12);
+    expect(periods[0]).toMatchObject({
+      key:"2025-12",meanKg:100,observedDays:1,calendarDays:31,
+    });
+    expect(periods[1]).toMatchObject({
+      key:"2026-01",meanKg:76,observedDays:2,calendarDays:31,
+    });
+    expect(periods[2]).toMatchObject({
+      key:"2026-02",meanKg:null,observedDays:0,calendarDays:28,
+    });
+    expect(periods[11]).toMatchObject({
+      key:"2026-11",meanKg:80,observedDays:1,calendarDays:6,
+    });
+    const html=renderToStaticMarkup(createElement(PeriodPlot,{
+      periods,granularity:"month",goalLow:75,goalHigh:76,
+    }));
+    expect(html).toContain('viewBox="0 0 360 230"');
+    expect(html).toContain('class="trend-month-fit"');
+    expect(html).toContain("12か月");
+    expect(html).toContain("2025/12");
+    expect(html).toContain("2026/11");
+    expect((html.match(/<circle/g)??[])).toHaveLength(3);
+  });
+
+  it("uses Monday-start calendar weeks and does not connect missing weeks", () => {
+    const trend = buildWeightTrend([
+      row("2025-12-31",72),row("2026-01-01",74),row("2026-01-10",77),
+    ],"2025-12-29","2026-01-18");
+    const weekly=groupTrendDays(trend.days,"week");
+    expect(weekly.map(p=>p.key)).toEqual(["2025-12-29","2026-01-05","2026-01-12"]);
+    expect(weekly.map(p=>p.meanKg)).toEqual([73,77,null]);
+    expect(weekly.map(p=>p.observedDays)).toEqual([2,1,0]);
+    const html=renderToStaticMarkup(createElement(PeriodPlot,{
+      periods:weekly,granularity:"week",goalLow:75,goalHigh:76,
+    }));
+    expect(html).toContain("週ごとの平均体重");
+    expect(html).toContain('tabindex="0"');
+  });
+
+  it("renders all three viewing controls and monthly non-scroll CSS on narrow devices", async () => {
+    const html=renderToStaticMarkup(createElement(WeightTrendPanel));
+    expect(html).toContain('aria-label="グラフの表示単位"');
+    expect(html).toContain('aria-pressed="true"');
+    for(const label of [">日</button>",">週</button>",">月</button>"]) expect(html).toContain(label);
+    const { readFileSync }=await vi.importActual<{readFileSync(path:string,enc:string):string}>("node:fs");
+    const css=readFileSync("src/client/styles.css","utf8");
+    expect(css).toContain(".trend-month-fit>svg{display:block;width:100%;max-width:100%;min-width:0;height:auto}");
+    expect(css).toContain(".trend-period-table .trend-table{width:100%;min-width:0}");
   });
 
   it("returns full empty days and excludes null, anomaly and non-measured", () => {
