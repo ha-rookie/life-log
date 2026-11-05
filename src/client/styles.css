@@ -7,7 +7,9 @@
 .trend-controls button{min-height:42px;padding:8px 14px;border:0;border-radius:8px;background:#2166a5;color:white;font-weight:600}
 .trend-controls button:disabled{background:#9daeb6}
 .trend-scroll,.trend-table-scroll{overflow-x:auto;max-width:100%}
-.trend-scroll svg{display:block;width:100%;min-width:330px;height:auto}
+.trend-scroll svg{display:block;width:100%;min-width:680px;height:auto}
+.trend-scroll:focus-visible{outline:3px solid #2166a5;outline-offset:2px}
+.trend-scroll{scrollbar-gutter:stable}
 .trend-table{border-collapse:collapse;font-size:.83rem;width:100%;min-width:620px;text-align:left}
 .trend-table th,.trend-table td{border-bottom:1px solid #dce4e6;padding:9px 7px;white-space:nowrap}
 .trend-table caption{text-align:left;color:#537078;padding:12px 0}
