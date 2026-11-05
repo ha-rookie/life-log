@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { goalGapLabel } from "../src/client/WeightTrend";
 import {
   dayNumber, dayText, startInstantJst, summarizeWeightTrend, todayTokyo, tokyoDay,
   type MeasurementRow,
@@ -97,6 +98,18 @@ describe("MVP-α: deterministic daily weight trends in Asia/Tokyo", () => {
     expect(t.days[0].source).toBe("その他");
     expect(JSON.stringify(t)).not.toContain("SENSITIVE_SOURCE_ID");
     expect(JSON.stringify(t)).not.toContain('"id"');
+  });
+
+  it("shows the latest actual body weight's numerical distance from editable goal range", () => {
+    const result = summarizeWeightTrend([
+      row("d1", "2026-01-02T07:00:00+09:00", 76.5),
+      row("d2", "2026-01-03T07:00:00+09:00", 73.2),
+    ], "2026-01-02", "2026-01-03");
+    expect(goalGapLabel(result, 75, 76)).toContain("目標下限より 1.8 kg低い");
+    expect(goalGapLabel(result, 73, 74)).toContain("現在の表示目標範囲内");
+    expect(goalGapLabel(result, 70, 72)).toContain("目標上限より 1.2 kg高い");
+    expect(goalGapLabel(summarizeWeightTrend([], "2026-01-02", "2026-01-03"), 75, 76))
+      .toContain("比較できる実測なし");
   });
 
   it("rejects reversed or greater than 366-day range before any calculation", () => {
