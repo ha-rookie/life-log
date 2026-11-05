@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PeriodPlot, TrendPlot, WeightTrendPanel } from "../src/client/WeightTrend";
 import {
-  addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, groupTrendDays, parseTrendRange, rangeForGranularity,
+  addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, groupTrendDays, moveGranularityRange, parseTrendRange, rangeFitsGranularity, rangeForGranularity,
   type Measurement,
 } from "../src/shared/weight-trend";
 const row = (day: string, kg: number | null, id = day, extras: Partial<Measurement> = {}): Measurement => ({
@@ -77,29 +77,64 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(styles).toMatch(/\.trend-scroll svg\{[^}]*min-width:680px;/);
   });
 
-  it("expands the 90-day plot so daily points and axis labels retain legible spacing", () => {
+  it("renders the 30-day daily plot with retained 7-day average and axis spacing", () => {
     const trend = buildWeightTrend(
-      [row("2026-11-06", 78.3)], "2026-08-09", "2026-11-06",
+      [row("2026-11-06", 78.3)], "2026-10-08", "2026-11-06",
     );
-    expect(trend.days).toHaveLength(90);
+    expect(trend.days).toHaveLength(30);
     const markup = renderToStaticMarkup(createElement(TrendPlot, {
       days: trend.days, goalLow: 75, goalHigh: 76,
     }));
-    expect(markup).toContain('viewBox="0 0 1496 230"');
-    expect(markup).toMatch(/min-width:\s*1413px/);
+    expect(markup).toContain('viewBox="0 0 720 230"');
+    expect(markup).toMatch(/min-width:\s*680px/);
     expect(markup).toContain("11/06");
   });
 
 
-  it("switches to 12 calendar months within the API 366-day limit, including a year boundary", () => {
+  it("switches to 30 days, 12 Monday-based weeks and 12 months, including a year boundary", () => {
     const now = Date.parse("2026-11-05T15:01:00Z"); // Nov 6 in Japan
     const monthRange = rangeForGranularity("month", now);
     expect(monthRange).toEqual({ from: "2025-12-01", to: "2026-11-06" });
     expect(dateRange(monthRange.from,monthRange.to)?.days).toBeLessThanOrEqual(366);
     const weekly = rangeForGranularity("week",now);
     expect(weekly.to).toBe("2026-11-06");
-    expect(weekly.from).toBe("2026-05-11"); // Monday, 26 calendar weeks
+    expect(weekly.from).toBe("2026-08-17"); // Monday, 12 calendar weeks
     expect(rangeForGranularity("day", now)).toEqual(defaultRange(now));
+  });
+
+  it("bounds custom date inputs to 30 days, 12 Monday weeks or 12 months and rejects future dates", () => {
+    const now = Date.parse("2026-11-05T15:01:00Z");
+    expect(rangeFitsGranularity("day", "2026-10-08", "2026-11-06",now)).toBe(true);
+    expect(rangeFitsGranularity("day", "2026-10-07", "2026-11-06",now)).toBe(false);
+    expect(rangeFitsGranularity("week", "2026-08-17", "2026-11-06",now)).toBe(true);
+    expect(rangeFitsGranularity("week", "2026-08-16", "2026-11-06",now)).toBe(false);
+    expect(rangeFitsGranularity("month", "2025-12-01", "2026-11-06",now)).toBe(true);
+    expect(rangeFitsGranularity("month", "2025-11-30", "2026-11-06",now)).toBe(false);
+    expect(rangeFitsGranularity("month", "2025-12-01", "2026-11-07",now)).toBe(false);
+    expect(rangeFitsGranularity("day", "2026-11-07", "2026-11-07",now)).toBe(false);
+    expect(rangeFitsGranularity("month", "2023-03-01","2024-02-29",
+      Date.parse("2024-02-29T12:00:00Z"))).toBe(true);
+  });
+
+  it("navigates 30-day, 12-week and 12-month windows across year boundaries, never beyond JST today", () => {
+    const now = Date.parse("2026-11-05T15:01:00Z");
+    const cases = [
+      {scale:"day" as const, current:{from:"2026-10-08",to:"2026-11-06"},
+        previous:{from:"2026-09-08",to:"2026-10-07"}},
+      {scale:"week" as const, current:{from:"2026-08-17",to:"2026-11-06"},
+        previous:{from:"2026-05-25",to:"2026-08-16"}},
+      {scale:"month" as const, current:{from:"2025-12-01",to:"2026-11-06"},
+        previous:{from:"2024-12-01",to:"2025-11-30"}},
+    ];
+    for (const {scale,current,previous} of cases) {
+      expect(moveGranularityRange(scale,current,-1,now)).toEqual(previous);
+      expect(moveGranularityRange(scale,previous,1,now)).toEqual(current);
+      expect(moveGranularityRange(scale,current,1,now)).toBeNull();
+      expect(rangeFitsGranularity(scale,previous.from,previous.to,now)).toBe(true);
+    }
+    const prior={from:"2026-11-01",to:"2026-11-05"};
+    expect(moveGranularityRange("day",prior,-1,now)).toEqual({from:"2026-10-27",to:"2026-10-31"});
+    expect(moveGranularityRange("day",{from:"2026-10-27",to:"2026-10-31"},1,now)).toEqual(prior);
   });
 
   it("groups monthly by calendar month, averaging one daily representative and retaining missing months", () => {
@@ -157,6 +192,9 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     for(const label of [">日</button>",">週</button>",">月</button>"]) expect(html).toContain(label);
     const { readFileSync }=await vi.importActual<{readFileSync(path:string,enc:string):string}>("node:fs");
     const css=readFileSync("src/client/styles.css","utf8");
+    expect(html).toContain('aria-label="表示期間の移動"');
+    for (const label of ["前の期間","次の期間","最新へ"]) expect(html).toContain(label);
+    expect(css).toContain(".trend-period-nav{display:grid;");
     expect(css).toContain(".trend-month-fit>svg{display:block;width:100%;max-width:100%;min-width:0;height:auto}");
     expect(css).toContain(".trend-period-table .trend-table{width:100%;min-width:0}");
   });
