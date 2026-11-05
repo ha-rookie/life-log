@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TrendPlot } from "../src/client/WeightTrend";
+import styles from "../src/client/styles.css?raw";
 import {
   addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, parseTrendRange,
   type Measurement,
@@ -49,6 +53,26 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     const few = addSevenDayAverage(buildWeightTrend(pre,"2026-01-01","2026-01-03"));
     expect(few.days.every(d=>d.average7Kg===null)).toBe(true);
   });
+  it("renders isolated 7-day average points and keyboard-scrollable chart at 390px CSS contract", () => {
+    const observations = [
+      row("2026-01-01", 70), row("2026-01-02", 71),
+      row("2026-01-03", 72), row("2026-01-04", 73),
+    ];
+    const days = addSevenDayAverage(buildWeightTrend(observations, "2026-01-01", "2026-01-04")).days;
+    expect(days.filter(d => d.average7Kg !== null)).toHaveLength(1);
+    const html = renderToStaticMarkup(createElement(TrendPlot, { days, goalLow: 75, goalHigh: 76 }));
+    expect(html).toContain('role="region"');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('role="img"');
+    expect((html.match(/class="average-point"/g) ?? [])).toHaveLength(1);
+    expect(html).toContain("左右にスクロール");
+    // Under a 390px viewport, the parent panel has approximately 312px of
+    // inner width; the 680px SVG therefore scrolls instead of shrinking
+    // its axis font below an accessible reading size.
+    expect(styles).toMatch(/\\.trend-scroll,\\.trend-table-scroll\\{overflow-x:auto;max-width:100%\\}/);
+    expect(styles).toMatch(/\\.trend-scroll svg\\{[^}]*min-width:680px;/);
+  });
+
   it("returns full empty days and excludes null, anomaly and non-measured", () => {
     const t=buildWeightTrend([
       row("2026-02-01",null),row("2026-02-02",70,"anomaly",{anomaly_flag:1}),
