@@ -206,6 +206,113 @@ describe("Issue #20 Stage 1 — signed Worker and ephemeral local D1 byte import
     expect(await count("import_jobs")).toBe(0);
   }, 100_000);
 
+  it("rejects duplicate or embedded UTF-8 BOM before any D1 query", async () => {
+    const raw = textBytes(lifestyle);
+    for (const bad of [
+      Uint8Array.from([...BOM, ...BOM, ...raw]),
+      textBytes("日付,飲酒,歩数\n2026/01/02,0,\uFEFF1"),
+    ]) {
+      const { response, prepare, batch } = await request("lifestyle", bad);
+      expect(response.status).toBe(422);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(batch).not.toHaveBeenCalled();
+    }
+    expect(await count("import_jobs")).toBe(0);
+    expect(await count("import_row_audit")).toBe(0);
+  }, 100_000);
+
+  it("reproduces ECLEAR v1/v2 mismatch and rejects both orders without any overwrite or extra job", async () => {
+    const v1 = "年月日,時刻,体重,体脂肪率\n2026/01/02,07:30,72.4,18.2";
+    const v2 = "年月日,時刻,体重,体脂肪率,骨格筋率\n2026/01/02,07:30,72.4,18.2,35.5";
+    const first = await request("eclear", textBytes(v1));
+    expect(first.response.status).toBe(200);
+    const second = await request("eclear", textBytes(v2));
+    expect(second.response.status).toBe(409);
+    expect(await second.response.json()).toEqual({ error: "ECLEAR_MEASUREMENT_VARIANT" });
+    expect(second.batch).not.toHaveBeenCalled();
+    expect(await count("body_measurements")).toBe(1);
+    expect(await count("import_jobs")).toBe(1);
+    expect(await count("import_row_audit")).toBe(1);
+    expect(await db.prepare("SELECT skeletal_muscle_pct AS muscle FROM body_measurements").first<{ muscle: number | null }>())
+      .toEqual({ muscle: null });
+
+    // Inverse order on a distinct timestamp: v2 is authoritative, v1 cannot
+    // silently convert it to a second measurement or remove its muscle value.
+    const v2Later = v2.replace("07:30", "19:30");
+    const v1Later = v1.replace("07:30", "19:30");
+    expect((await request("eclear", textBytes(v2Later))).response.status).toBe(200);
+    const reverse = await request("eclear", textBytes(v1Later));
+    expect(reverse.response.status).toBe(409);
+    expect(await reverse.response.json()).toEqual({ error: "ECLEAR_MEASUREMENT_VARIANT" });
+    expect(reverse.batch).not.toHaveBeenCalled();
+    expect(await count("body_measurements")).toBe(2);
+    expect(await count("import_jobs")).toBe(2);
+    expect(await count("import_row_audit")).toBe(2);
+    const measurements = await db.prepare(
+      "SELECT measured_at,weight_kg,body_fat_pct,skeletal_muscle_pct FROM body_measurements ORDER BY measured_at"
+    ).all<{ measured_at: string; weight_kg: number; body_fat_pct: number | null; skeletal_muscle_pct: number | null }>();
+    expect(measurements.results).toEqual([
+      { measured_at: "2026-01-02T07:30:00+09:00", weight_kg: 72.4, body_fat_pct: 18.2, skeletal_muscle_pct: null },
+      { measured_at: "2026-01-02T19:30:00+09:00", weight_kg: 72.4, body_fat_pct: 18.2, skeletal_muscle_pct: 35.5 },
+    ]);
+    // Exact same file replay still retains the existing audited job.
+    const replay = await request("eclear", textBytes(v1));
+    expect(replay.response.status).toBe(200);
+    expect(await replay.response.json()).toMatchObject({ status: "already_imported" });
+    expect(await count("body_measurements")).toBe(2);
+  }, 100_000);
+
+  it("rejects conflicting ECLEAR variants inside one CSV before any D1 access", async () => {
+    const raw = textBytes("年月日,時刻,体重,体脂肪率,骨格筋率\n"
+      + "2026/01/02,07:30,72.4,18.2,\n"
+      + "2026/01/02,07:30,72.4,18.2,35.5");
+    const { response, prepare, batch } = await request("eclear", raw);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "ECLEAR_MEASUREMENT_VARIANT" });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(batch).not.toHaveBeenCalled();
+    expect(await count("import_jobs")).toBe(0);
+    expect(await count("body_measurements")).toBe(0);
+  }, 100_000);
+
+  it("rolls back a racing ECLEAR variant inside the atomic D1 batch", async () => {
+    const csv = "年月日,時刻,体重,体脂肪率\n2026/01/02,07:30,72.4,18.2";
+    const watched = guardedEnv("true");
+    const originalDb = watched.env.DB as unknown as ImportDb;
+    const insertedByRacer = "synthetic-racing-variant";
+    originalDb.batch = async statements => {
+      // Simulate a concurrent transaction between the preflight SELECT
+      // and the atomic INSERT job + destination + row audit batch.
+      await db.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES (?,?)")
+        .bind("owner", "2026-01-01T00:00:00Z").run();
+      await db.prepare("INSERT INTO body_measurements"
+        + "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"
+        + "skeletal_muscle_pct,source_id,source_row_key,source_kind)"
+        + " VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .bind(insertedByRacer, "owner", "2026-01-02T07:30:00+09:00",
+          "Asia/Tokyo", 72.4, 18.2, 35.5, "synthetic", insertedByRacer, "measured").run();
+      return db.batch(statements);
+    };
+    const requestRaw = textBytes(csv);
+    const response = await handler().fetch(new Request(URL_LOCAL, {
+      method: "POST", headers: {
+        "Content-Type": "application/json", Origin: "http://127.0.0.1:8787",
+        "Cf-Access-Jwt-Assertion": jwt, "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({
+        source: "eclear", csvBase64: encodeCsvBytes(requestRaw),
+        hash: await hashCsvBytes(requestRaw), confirmed: true,
+      }),
+    }), watched.env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "ECLEAR_MEASUREMENT_VARIANT" });
+    expect(await count("body_measurements")).toBe(1);
+    expect(await count("import_jobs")).toBe(0);
+    expect(await count("import_row_audit")).toBe(0);
+    expect(await db.prepare("SELECT skeletal_muscle_pct AS muscle FROM body_measurements")
+      .first<{ muscle: number | null }>()).toEqual({ muscle: 35.5 });
+  }, 100_000);
+
   it("supports the unmodified existing canonical text-CSV request shape", async () => {
     const csv = "local_day,drinking_presence,drink_cups,steps\n2026-01-02,0,0,0\n";
     const env = guardedEnv("true");
