@@ -24,6 +24,18 @@ describe("Issue #20 Stage 1 — raw-byte Japanese CSV mapping", () => {
     expect((await previewCsvFileBytes("lifestyle", bytes(lf))).hash).not.toBe(a.hash);
   });
 
+  it("permits zero or one leading UTF-8 BOM but rejects two and any embedded BOM", async () => {
+    const input = "日付,飲酒\n2026/01/02,0\n";
+    expect((await previewCsvFileBytes("lifestyle", bytes(input))).errors).toEqual([]);
+    expect((await previewCsvFileBytes("lifestyle", withBom(input))).errors).toEqual([]);
+    const doubled = Uint8Array.from([...BOM, ...BOM, ...bytes(input)]);
+    const inside = bytes("日付,飲酒\n2026/01/02,\uFEFF0\n");
+    const byteOrderAfterHeader = bytes("日付,飲酒\n\uFEFF2026/01/02,0\n");
+    for (const invalid of [doubled, inside, byteOrderAfterHeader, withBom("日付,飲酒\n\uFEFF2026/01/02,0\n")]) {
+      await expect(previewCsvFileBytes("lifestyle", invalid)).rejects.toThrow("ENCODING");
+    }
+  });
+
   it("rejects invalid UTF-8, truncated multi-byte, replacement bytes, UTF-16 and Shift_JIS", async () => {
     for (const input of [
       Uint8Array.from([0xc0, 0xaf]),
