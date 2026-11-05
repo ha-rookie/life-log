@@ -3,11 +3,11 @@ import { getPlatformProxy } from "wrangler";
 import schemaSql from "../migrations/0001_initial.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { handleAuditHistory } from "../src/worker/audit-history";
-import type { ImportDb } from "../src/worker/import";
+import type { ImportDb, Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
 
-interface Statement { bind(...values:unknown[]):Statement;run():Promise<unknown>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}> }
-type LocalDb = ImportDb & {prepare(sql:string):Statement};
+interface LocalStatement extends Statement { bind(...values:unknown[]):LocalStatement;run():Promise<unknown> }
+interface LocalDb extends ImportDb {prepare(sql:string):LocalStatement}
 const prefix="https://example.invalid/api/import/history";
 const req=(path="",query="")=>new Request(prefix+path+query,{method:"GET"});
 const get=async(db:ImportDb,path="",query="",owner="owner")=>{
