@@ -19,6 +19,7 @@ export interface TrendDay {
   source: "ECLEAR" | "その他";
   observations: number;
   excludedAnomalies: number;
+  excludedMissingValues: number;
   excludedNonMeasured: number;
   average7Kg: number | null;
   observed7Days: number;
@@ -32,6 +33,7 @@ export interface WeightTrend {
   observedDays: number;
   missingDays: number;
   excludedAnomalies: number;
+  excludedMissingValues: number;
   excludedNonMeasured: number;
   days: TrendDay[];
 }
@@ -79,6 +81,7 @@ export function summarizeWeightTrend(
   type DayBucket = {
     eligible: Array<MeasurementRow & { epoch: number }>;
     excludedAnomalies: number;
+    excludedMissingValues: number;
     excludedNonMeasured: number;
   };
   const buckets = new Map<number, DayBucket>();
@@ -89,13 +92,14 @@ export function summarizeWeightTrend(
     if (n < fetchedStart || n > end) continue;
     let bucket = buckets.get(n);
     if (!bucket) {
-      bucket = { eligible: [], excludedAnomalies: 0, excludedNonMeasured: 0 };
+      bucket = { eligible: [], excludedAnomalies: 0, excludedMissingValues: 0, excludedNonMeasured: 0 };
       buckets.set(n, bucket);
     }
     if (row.source_kind !== "measured") { bucket.excludedNonMeasured++; continue; }
-    if (row.anomaly_flag !== 0 || row.weight_kg === null
-      || !Number.isFinite(row.weight_kg) || row.weight_kg <= 0 || row.weight_kg >= 500) {
-      bucket.excludedAnomalies++;
+    if (row.anomaly_flag !== 0) { bucket.excludedAnomalies++; continue; }
+    if (row.weight_kg === null || !Number.isFinite(row.weight_kg)
+      || row.weight_kg <= 0 || row.weight_kg >= 500) {
+      bucket.excludedMissingValues++;
       continue;
     }
     bucket.eligible.push({ ...row, epoch: Date.parse(row.measured_at) });
@@ -108,7 +112,7 @@ export function summarizeWeightTrend(
   }
 
   const days: TrendDay[] = [];
-  let observedDays = 0, excludedAnomalies = 0, excludedNonMeasured = 0;
+  let observedDays = 0, excludedAnomalies = 0, excludedMissingValues = 0, excludedNonMeasured = 0;
   for (let n = start; n <= end; n++) {
     const chosen = representatives.get(n);
     const bucket = buckets.get(n);
@@ -122,6 +126,7 @@ export function summarizeWeightTrend(
     }
     if (chosen) observedDays++;
     excludedAnomalies += bucket?.excludedAnomalies ?? 0;
+    excludedMissingValues += bucket?.excludedMissingValues ?? 0;
     excludedNonMeasured += bucket?.excludedNonMeasured ?? 0;
     days.push({
       day: dayText(n),
@@ -130,6 +135,7 @@ export function summarizeWeightTrend(
       source: labelForSource(chosen?.source_id ?? ""),
       observations: bucket?.eligible.length ?? 0,
       excludedAnomalies: bucket?.excludedAnomalies ?? 0,
+      excludedMissingValues: bucket?.excludedMissingValues ?? 0,
       excludedNonMeasured: bucket?.excludedNonMeasured ?? 0,
       // Never manufacture an observation on a missing day.
       average7Kg: chosen && observed7Days >= MIN_MEASURED_DAYS_FOR_AVERAGE
@@ -144,6 +150,7 @@ export function summarizeWeightTrend(
     observedDays,
     missingDays: days.length - observedDays,
     excludedAnomalies,
+    excludedMissingValues,
     excludedNonMeasured,
     days,
   };
