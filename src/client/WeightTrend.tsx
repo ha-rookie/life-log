@@ -81,6 +81,20 @@ function WeightChart({ trend, goalLow, goalHigh }: {
   </div>;
 }
 
+export function goalGapLabel(trend: WeightTrend, low: number, high: number): string {
+  const recent = [...trend.days].reverse().find(d => d.weightKg !== null);
+  if (!recent || recent.weightKg === null) return "目標との差：比較できる実測なし";
+  if (recent.weightKg > high) {
+    return recent.day + "の代表体重 " + kg(recent.weightKg)
+      + "：目標上限より " + numeric(recent.weightKg - high) + " kg高い";
+  }
+  if (recent.weightKg < low) {
+    return recent.day + "の代表体重 " + kg(recent.weightKg)
+      + "：目標下限より " + numeric(low - recent.weightKg) + " kg低い";
+  }
+  return recent.day + "の代表体重 " + kg(recent.weightKg) + "：現在の表示目標範囲内";
+}
+
 export function WeightTrendPanel() {
   const toDefault = todayTokyo();
   const [from, setFrom] = useState(() => dayText(dayNumber(toDefault) - 89));
@@ -145,6 +159,7 @@ export function WeightTrendPanel() {
         値欠落・不正除外 {state.trend.excludedMissingValues}件 ／
         実測以外の除外 {state.trend.excludedNonMeasured}件
       </p>
+      {validGoals && <p className="goal-gap" role="status">{goalGapLabel(state.trend, goalLow, goalHigh)}</p>}
       {validGoals && <WeightChart trend={state.trend} goalLow={goalLow} goalHigh={goalHigh} />}
       <p className="hint">7日平均は直近7暦日の実測日が4日以上ある場合だけ表示。欠測日を0kgとして補完せず、線でも接続しません。体重の増減から原因は確定できません。</p>
       <details>
