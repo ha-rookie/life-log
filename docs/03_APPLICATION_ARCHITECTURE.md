@@ -98,3 +98,5 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 
 ## Audit history read-only slice (#17)
 GET /api/import/history and /api/import/history/:jobId are gated by signed Access owner identity before DB access. Owner-bound SQL returns bounded keyset pages (max 25), no raw CSV, file hashes, source keys or owner selectors. Legacy zero-audit jobs are explicitly unavailable. Inserted rows may show persisted NULL vs 0; skipped/conflicted rows never fabricate original values. No migrations or remote changes.
+
+Both list and detail now reconcile owner-scoped destination row count with recorded inserted audit outcomes. Any mismatch is labeled incomplete, and unverified detail summary counts are null. This detects missing inserted audits while destination rows remain. Legacy confirmed zero-audit jobs still read legacy_unavailable. Missing skipped/conflict audit records cannot be proven without an original expected-row count.

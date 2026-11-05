@@ -47,6 +47,22 @@ async function countAudit(db: ImportDb, job: string) {
   }
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
+// Compare persisted inserted destinations with their recorded audit outcomes.
+// Without an original expected-row count, missing skipped/conflict audits remain undetectable.
+async function countDestinations(db: ImportDb, owner: string, job: string): Promise<number> {
+  const result = await db.prepare(
+    "SELECT (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND import_job_id=?)"
+    + "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?) AS n"
+  ).bind(owner, job, owner, job).first<Count>();
+  if (!result || !Number.isSafeInteger(result.n) || result.n < 0) throw Error("DESTINATION_COUNT_UNAVAILABLE");
+  return result.n;
+}
+function auditStatus(job: Job, audit: Awaited<ReturnType<typeof countAudit>>, insertedRecords: number) {
+  if (audit.total === 0 && job.status === "confirmed" && job.source_id === "csv:" + job.source_type) {
+    return "legacy_unavailable";
+  }
+  return audit.total <= 0 || audit.counts.inserted !== insertedRecords ? "incomplete" : "available";
+}
 export async function handleAuditHistory(request: Request, db: ImportDb, owner: string): Promise<Response> {
   if (request.method !== "GET") return reply({ error: "METHOD" }, 405);
   const pathname = new URL(request.url).pathname;
@@ -75,15 +91,10 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       const jobs = [];
       for (const job of selected) {
         const audit = await countAudit(db,job.id);
-        // Count the actual destination rows, including a legacy job whose original per-row outcomes are unavailable.
-        const destinations = await db.prepare(
-          "SELECT (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND import_job_id=?)"
-          + "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?) AS n"
-        ).bind(owner,job.id,owner,job.id).first<Count>();
+        const insertedRecords = await countDestinations(db,owner,job.id);
         jobs.push({ id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
-          completedAt:job.completed_at,auditStatus: audit.total===0&&job.status==="confirmed"&&job.source_id==="csv:"+job.source_type
-            ? "legacy_unavailable" : audit.total<0||audit.total===0 ? "incomplete" : "available",
-          auditCount:audit.total<0?0:audit.total,insertedRecords:destinations?.n??0 });
+          completedAt:job.completed_at,auditStatus:auditStatus(job,audit,insertedRecords),
+          auditCount:audit.total<0?0:audit.total,insertedRecords });
       }
       const last=selected.at(-1);
       return reply({ jobs,nextCursor:rows.results.length>args.limit&&last
@@ -93,9 +104,8 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       .bind(owner,Number(detail)).first<Job>();
     if (!job) return reply({error:"NOT_FOUND"},404);
     const stats=await countAudit(db,job.id);
-    // Count is not recoverable from historical jobs; only detect missing modern audits here.
-    const auditStatus=stats.total===0&&job.status==="confirmed"&&job.source_id==="csv:"+job.source_type
-      ? "legacy_unavailable" : stats.total<=0 ? "incomplete" : "available";
+    const insertedRecords=await countDestinations(db,owner,job.id);
+    const status=auditStatus(job,stats,insertedRecords);
     const cursor=args.cursor as {row:number}|null;
     if (cursor) {
       const anchor=await db.prepare("SELECT source_row_number FROM import_row_audit WHERE import_job_id=? AND source_row_number=?")
@@ -116,7 +126,7 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     const selected=rows.results.slice(0,args.limit);
     const last=selected.at(-1);
     return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
-      auditStatus,counts:auditStatus==="available"?stats.counts:null},
+      auditStatus:status,counts:status==="available"?stats.counts:null},
       rows:selected.map(r=>({line:r.source_row_number,result:r.result,errorCode:r.error_code,
         values:r.result!=="inserted"?null:job.source_type==="lifestyle"
           ?{drinkingPresence:r.drinking_presence,drinkCups:r.drink_cups,steps:r.steps}

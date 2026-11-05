@@ -37,6 +37,11 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
       if(source==="lifestyle"){
         await db.prepare("INSERT INTO lifestyle_days(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id) VALUES (?,?,?,?,?,?,?,?)")
           .bind(owner,i===0?"2026-01-02":"2026-01-03",i===0?0:null,i===0?0:null,i===0?0:null,"csv:lifestyle",key,id).run();
+      } else {
+        await db.prepare(
+          "INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,body_fat_pct,"
+          + "source_id,source_row_key,source_kind,import_job_id) VALUES (?,?,?,?,?,?,?,?,?)"
+        ).bind(id+":"+i,owner,day+"T0"+i+":00:00Z",72+i,i===0?0:null,"csv:eclear",key,"measured",id).run();
       }
       await db.prepare("INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result) VALUES (?,?,?,?,?)")
         .bind(id+":"+i,id,i+2,key,"inserted").run();
@@ -109,14 +114,52 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     const listing=await get(db);
     expect(listing.body.jobs.map((j:{auditStatus:string})=>j.auditStatus)).toEqual(["incomplete","legacy_unavailable"]);
   },100_000);
+  it("flags partially missing inserted audit for lifestyle on list and detail",async()=>{
+    const id=await seed("owner","lifestyle");
+    // Delete only the second audit; both imported destination rows remain.
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=? AND source_row_number=3").bind(id).run();
+    const list=await get(db);
+    expect(list.body.jobs).toHaveLength(1);
+    expect(list.body.jobs[0]).toMatchObject({auditStatus:"incomplete",auditCount:1,insertedRecords:2});
+    const detail=await get(db,"/"+list.body.jobs[0].id);
+    expect(detail.body.job).toMatchObject({auditStatus:"incomplete",counts:null});
+    expect(detail.body.rows).toHaveLength(1);
+    expect(detail.body.rows[0].line).toBe(2);
+    expect(detail.body.rows[0].values).toEqual({drinkingPresence:0,drinkCups:0,steps:0});
+    expect(detail.headers.get("Cache-Control")).toBe("private, no-store");
+  },100_000);
+  it("flags partially missing inserted audit for eclear on list and detail",async()=>{
+    const id=await seed("owner","eclear");
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=? AND source_row_number=2").bind(id).run();
+    const list=await get(db);
+    expect(list.body.jobs[0]).toMatchObject({auditStatus:"incomplete",auditCount:1,insertedRecords:2});
+    const detail=await get(db,"/"+list.body.jobs[0].id);
+    expect(detail.body.job).toMatchObject({auditStatus:"incomplete",counts:null});
+    expect(detail.body.rows).toHaveLength(1);
+    expect(detail.body.rows[0].line).toBe(3);
+    expect(detail.body.rows[0].values).toEqual({weightKg:73,bodyFatPct:null});
+  },100_000);
+  it("preserves legacy_unavailable with confirmed pre-audit destination records",async()=>{
+    const id=await seed("owner","eclear","confirmed","csv:");
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=?").bind(id).run();
+    const list=await get(db);
+    expect(list.body.jobs[0]).toMatchObject({auditStatus:"legacy_unavailable",auditCount:0,insertedRecords:2});
+    const detail=await get(db,"/"+list.body.jobs[0].id);
+    expect(detail.body.job).toMatchObject({auditStatus:"legacy_unavailable",counts:null});
+    expect(detail.body.rows).toEqual([]);
+  },100_000);
   it("does not invent skipped or conflict values and does not write any DB state",async()=>{
     const id=await seed("owner","lifestyle");
     await db.prepare("UPDATE import_row_audit SET result='conflict',error_code='LIFESTYLE_CONFLICT_KEPT' WHERE import_job_id=? AND source_row_number=2").bind(id).run();
     await db.prepare("UPDATE import_row_audit SET result='skipped' WHERE import_job_id=? AND source_row_number=3").bind(id).run();
+    // Skipped/conflicted rows legitimately have no inserted destinations in this job.
+    await db.prepare("DELETE FROM lifestyle_days WHERE import_job_id=?").bind(id).run();
     const before=await db.prepare("SELECT COUNT(*) AS n FROM import_row_audit").first<{n:number}>();
     const list=await get(db);
     const handle=list.body.jobs[0].id as string;
     const detail=await get(db,"/"+handle);
+    expect(list.body.jobs[0]).toMatchObject({auditStatus:"available",auditCount:2,insertedRecords:0});
+    expect(detail.body.job).toMatchObject({auditStatus:"available",counts:{inserted:0,skipped:1,conflict:1,invalid:0}});
     expect(detail.body.rows.map((r:{values:unknown})=>r.values)).toEqual([null,null]);
     expect(detail.body.rows.map((r:{result:string})=>r.result)).toEqual(["conflict","skipped"]);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM import_row_audit").first<{n:number}>())?.n).toBe(before?.n);

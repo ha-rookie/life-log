@@ -10,3 +10,5 @@ Return minimal audit metadata, no raw CSV, file hashes, source row keys, owner I
 ## Constraints
 Synthetic/local D1 only; real vendor CSV unknown; Remote D1, Access changes, Preview/Production deploy and main merge prohibited until separate human approval.
 \nOpaque job handles are local SQLite rowids, not the import_job.id (which embeds the file SHA-256). Keyset cursors contain only a handle and timestamp; all handles are owner-bound before use.\n
+## Partial-audit integrity follow-up
+Both history list and detail compare the authenticated owner's persisted destination count with that job's audit outcome count marked inserted. A mismatch reports incomplete, not available, and never exposes verified summary counts. Confirmed pre-audit jobs with zero audit retain legacy_unavailable. This detects missing inserted audit rows while destination rows survive; it does not prove completeness of skipped/conflict outcomes or historical imports without an original expected input-row count.
