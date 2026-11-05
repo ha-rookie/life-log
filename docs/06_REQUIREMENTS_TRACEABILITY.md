@@ -78,3 +78,11 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - Newly audited jobs identify themselves with `source_id=csv:audited-v2:<source>`, without schema changes or destination source ID changes. Normal audited replay returns original audit summary.
 - A partial/zero missing audit for new-format jobs, any incomplete audit in either format, or partial legacy jobs with no audit must fail closed (`INCOMPLETE_AUDIT`, 503).
 - Verify on ephemeral local Wrangler D1 with pre-audit confirmed fixture, same-file replay, modern complete/empty/partially removed audits, and previous fault rollback, NULL≠0, owner, race and retry tests. Real personal CSV and Cloudflare remote bindings remain forbidden.
+
+## Issue #17 audit history
+- Owner-only GET job list and row detail; no unauthenticated DB access; SQL parameter binding and owner filter.
+- Bounded cursor pagination (10 default, 25 max), invalid cursor rejection, no raw CSV/file hash/source key in API.
+- Legacy confirmed zero-audit shown as unavailable; modern missing audit as incomplete; no fabricated skipped/conflict values; inserted lifestyle NULL distinct from zero.
+- Synthetic local D1 integration and security regression tests; no merge or remote operations.
+
+- Issue #17 follow-up: list/detail reconcile owner-bound persisted destination count against inserted audit outcomes; mismatch => incomplete and null summary counts. Synthetic ephemeral local D1 tests cover partially missing inserted audits for both sources, legitimate skipped/conflict non-inserts, and legacy zero-audit with persisted rows. Missing skipped/conflict audit records remain unprovable without the original expected-row count.

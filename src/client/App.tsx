@@ -14,6 +14,11 @@ type ImportResult = {
   auditStatus?: "legacy_unavailable" | "complete";
 };
 
+type HistoryJob = { id:string;source:string;status:string;startedAt:string;auditStatus:string;auditCount:number;insertedRecords:number };
+type HistoryRow = {line:number;result:string;errorCode:string|null;values:null|Record<string,number|null>};
+type JobPage = {jobs:HistoryJob[];nextCursor:string|null};
+type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;counts:null|Record<string,number>};rows:HistoryRow[];nextCursor:string|null};
+const showValue=(n:number|null)=>n===null?"欠測（NULL）":String(n);
 export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
@@ -23,6 +28,44 @@ export function App() {
   const [importStatus, setImportStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const selectionEpoch = useRef(0);
+  const [history,setHistory]=useState<HistoryJob[]>([]);
+  const [historyCursor,setHistoryCursor]=useState<string|null>(null);
+  const [selectedJob,setSelectedJob]=useState<string|null>(null);
+  const [auditRows,setAuditRows]=useState<HistoryRow[]>([]);
+  const [rowCursor,setRowCursor]=useState<string|null>(null);
+  const [auditState,setAuditState]=useState("");
+  const [historyError,setHistoryError]=useState("");
+  const [historyBusy,setHistoryBusy]=useState(false);
+  const historyEpoch=useRef(0);
+  async function loadHistory(next:string|null=null) {
+    if(historyBusy)return;
+    const epoch=++historyEpoch.current;
+    setHistoryBusy(true);setHistoryError("");
+    try{
+      const res=await fetch("/api/import/history?limit=10"+(next?"&cursor="+encodeURIComponent(next):""),{credentials:"same-origin",cache:"no-store"});
+      if(!res.ok)throw Error(String(res.status));
+      const data=await res.json() as JobPage;
+      if(epoch!==historyEpoch.current)return;
+      setHistory(prev=>next?[...prev,...data.jobs]:data.jobs);
+      setHistoryCursor(data.nextCursor);
+    }catch{if(epoch===historyEpoch.current)setHistoryError("監査履歴を取得できません。認証と接続を確認してください。");}
+    finally{setHistoryBusy(false);}
+  }
+  async function loadAudit(job:string,next:string|null=null) {
+    if(historyBusy)return;
+    const epoch=++historyEpoch.current;
+    setHistoryBusy(true);setHistoryError("");
+    try{
+      const res=await fetch("/api/import/history/"+encodeURIComponent(job)+"?limit=10"+(next?"&cursor="+encodeURIComponent(next):""),{credentials:"same-origin",cache:"no-store"});
+      if(!res.ok)throw Error(String(res.status));
+      const data=await res.json() as RowPage;
+      if(epoch!==historyEpoch.current)return;
+      setSelectedJob(job);setAuditState(data.job.auditStatus);
+      setAuditRows(prev=>next?[...prev,...data.rows]:data.rows);
+      setRowCursor(data.nextCursor);
+    }catch{if(epoch===historyEpoch.current)setHistoryError("監査行を取得できません。");}
+    finally{setHistoryBusy(false);}
+  }
 
   async function selectCsv(file: File, source: CsvSource) {
     const epoch = ++selectionEpoch.current;
@@ -179,6 +222,28 @@ export function App() {
           }}>取込を中止する</button>
         </div>}
         {importStatus && <p role="alert">{importStatus}</p>}
+      </section>
+      <section className="panel" aria-labelledby="history-title">
+        <h2 id="history-title">CSV取込監査履歴（本人専用）</h2>
+        <p>監査は読み取り専用。過去の取込結果が存在しない場合、推測して補完しません。</p>
+        <button type="button" disabled={historyBusy} onClick={()=>{setSelectedJob(null);setAuditRows([]);void loadHistory();}}>履歴を表示・更新</button>
+        {historyError&&<p role="alert">{historyError}</p>}
+        <ul>{history.map(j=><li key={j.id}>
+          {j.startedAt} · {j.source} · {j.status} · 監査 {j.auditStatus==="legacy_unavailable"?"旧形式・記録なし":j.auditStatus==="incomplete"?"不完全":j.auditCount+"件"}
+          <button type="button" disabled={historyBusy} onClick={()=>void loadAudit(j.id)}>行を表示</button>
+        </li>)}</ul>
+        {historyCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyCursor)}>さらに履歴を表示</button>}
+        {selectedJob&&<div aria-live="polite">
+          <h3>選択した取込の監査行</h3>
+          {auditState==="legacy_unavailable"&&<p>旧形式のため行単位監査は存在しません。過去の結果は推定しません。</p>}
+          {auditState==="incomplete"&&<p role="alert">監査記録が欠落しています。結果は確定できません。</p>}
+          <ol>{auditRows.map(r=><li key={r.line}>CSV {r.line}行：{r.result}
+            {r.errorCode?" ("+r.errorCode+")":""}
+            {r.values&&<span> · {Object.entries(r.values).map(([k,v])=>k+"="+showValue(v)).join(" / ")}</span>}
+            {!r.values&&" · 元の値は監査に保存されていません"}
+          </li>)}</ol>
+          {rowCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,rowCursor)}>さらに監査行を表示</button>}
+        </div>}
       </section>
       <footer>本人限定・認証未設定では配信とAPIを拒否 · 実データ未登録</footer>
     </main>
