@@ -1,6 +1,7 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { getSummary, type Database } from "./summary";
 import { handleImport, type ImportDb } from "./import";
+import { handleAuditHistory } from "./audit-history";
 
 export interface Env extends AccessEnv {
   DB: Database;
@@ -20,6 +21,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
 
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
+        if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
         if (path === "/api/import/preview" || path === "/api/import/confirm") return handleImport(request,env.DB as unknown as ImportDb,ownerId);
         if (path !== "/api/summary") return Response.json({ error: "Not found" }, { status: 404, headers: privateHeaders });
         if (request.method !== "GET") return Response.json({ error: "Method not allowed" }, { status: 405, headers: { ...privateHeaders, Allow: "GET" } });

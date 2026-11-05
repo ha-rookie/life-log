@@ -95,3 +95,6 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 
 - The pre-audit job marker `csv:<source>` is preserved for recognition only; audited-v2 jobs write `csv:audited-v2:<source>` to `import_jobs.source_id`. The destination's `source_id` is not changed.
 - Confirmed legacy jobs with no audit replays are no-op, marked `auditStatus=legacy_unavailable`; no original row results are guessed. Audited jobs missing all or part of their audit fail closed, and legacy partial jobs without audit are not treated as successful.
+
+## Audit history read-only slice (#17)
+GET /api/import/history and /api/import/history/:jobId are gated by signed Access owner identity before DB access. Owner-bound SQL returns bounded keyset pages (max 25), no raw CSV, file hashes, source keys or owner selectors. Legacy zero-audit jobs are explicitly unavailable. Inserted rows may show persisted NULL vs 0; skipped/conflicted rows never fabricate original values. No migrations or remote changes.
