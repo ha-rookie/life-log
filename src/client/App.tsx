@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { WeightTrendPanel } from "./WeightTrend";
 import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
 
@@ -176,6 +177,7 @@ export function App() {
           {state.summary.measuredAt ?? "測定日時は不明"} · 記録のない日は0kgとして扱いません
         </p>}
       </section>
+      <WeightTrendPanel />
       <section className="panel" aria-labelledby="next-title">
         <h2 id="next-title">次の一手</h2>
         <p>行動実験・飲酒+1は後続Issueで実装予定です。</p>
