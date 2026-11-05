@@ -180,7 +180,184 @@ export function App() {
         </div>}
         {importStatus && <p role="alert">{importStatus}</p>}
       </section>
+      <ImportHistory />
       <footer>本人限定・認証未設定では配信とAPIを拒否 · 実データ未登録</footer>
     </main>
+  );
+}
+
+
+type AuditState = "recorded" | "legacy_unavailable" | "incomplete";
+type HistoryJob = {
+  id: string; source: "lifestyle" | "eclear";
+  status: "confirmed" | "partial";
+  startedAt: string; completedAt: string | null;
+  auditState: AuditState; auditCount: number | null;
+  counts: { inserted: number; skipped: number; conflicted: number } | null;
+};
+type HistoryPage = { jobs: HistoryJob[]; page: number; limit: number; hasMore: boolean };
+type HistoryAuditRow = {
+  line: number; result: "inserted" | "skipped" | "conflict" | "invalid";
+  errorCode: string | null;
+  currentLifestyle: {
+    drinkingPresence: number | null; drinkCups: number | null; steps: number | null;
+  } | null;
+};
+type RowPage = { job: HistoryJob; rows: HistoryAuditRow[]; page: number; limit: number; hasMore: boolean };
+
+const showAuditState = (job: HistoryJob) => {
+  if (job.auditState === "legacy_unavailable") {
+    return "旧形式：行監査なし（過去の結果は復元・推測しません）";
+  }
+  if (job.auditState === "incomplete") return "監査欠落または不整合：要確認";
+  return "監査 " + (job.auditCount ?? "不明") + " 件（元CSV行数との完全照合は未実施）";
+};
+const showResult = (result: HistoryAuditRow["result"]) => ({
+  inserted: "登録", skipped: "重複スキップ",
+  conflict: "競合：既存値を維持", invalid: "不正",
+})[result];
+const showPresence = (value: number | null) =>
+  value === null ? "不明" : value === 0 ? "なし（0）" : "あり（1）";
+const showAmount = (value: number | null) => value === null ? "不明" : String(value);
+
+function ImportHistory() {
+  const [page, setPage] = useState(1);
+  const [version, setVersion] = useState(0);
+  const [jobs, setJobs] = useState<HistoryJob[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadState, setLoadState] = useState<"loading" | "loaded" | "failed">("loading");
+  const [chosen, setChosen] = useState<HistoryJob | null>(null);
+  const [rowPage, setRowPage] = useState(1);
+  const [rows, setRows] = useState<HistoryAuditRow[]>([]);
+  const [rowsMore, setRowsMore] = useState(false);
+  const [rowState, setRowState] = useState<"loading" | "loaded" | "failed">("loaded");
+
+  useEffect(() => {
+    const abort = new AbortController();
+    setLoadState("loading");
+    setJobs([]);
+    void (async () => {
+      try {
+        const response = await fetch("/api/import/history?page=" + page + "&limit=10", {
+          credentials: "same-origin", cache: "no-store", signal: abort.signal,
+        });
+        if (!response.ok) throw Error("HISTORY_REQUEST");
+        const body = await response.json() as HistoryPage;
+        if (!abort.signal.aborted) {
+          setJobs(body.jobs);
+          setHasMore(body.hasMore);
+          setLoadState("loaded");
+        }
+      } catch {
+        if (!abort.signal.aborted) setLoadState("failed");
+      }
+    })();
+    return () => abort.abort();
+  }, [page, version]);
+
+  useEffect(() => {
+    if (!chosen) { setRows([]); setRowsMore(false); setRowState("loaded"); return; }
+    const abort = new AbortController();
+    setRowState("loading");
+    setRows([]);
+    void (async () => {
+      try {
+        const url = "/api/import/history/rows?job=" + encodeURIComponent(chosen.id)
+          + "&page=" + rowPage + "&limit=10";
+        const response = await fetch(url, {
+          credentials: "same-origin", cache: "no-store", signal: abort.signal,
+        });
+        if (!response.ok) throw Error("AUDIT_REQUEST");
+        const body = await response.json() as RowPage;
+        if (!abort.signal.aborted) {
+          setRows(body.rows);
+          setRowsMore(body.hasMore);
+          setRowState("loaded");
+        }
+      } catch {
+        if (!abort.signal.aborted) setRowState("failed");
+      }
+    })();
+    return () => abort.abort();
+  }, [chosen, rowPage]);
+
+  const changePage = (next: number) => {
+    setChosen(null);
+    setPage(next);
+    setRowPage(1);
+  };
+  const choose = (job: HistoryJob) => {
+    setChosen(job);
+    setRows([]);
+    setRowPage(1);
+  };
+
+  return (
+    <section className="panel" aria-labelledby="history-title">
+      <div className="history-top">
+        <h2 id="history-title">CSV取込監査履歴（本人専用）</h2>
+        <button type="button" onClick={() => {
+          setChosen(null); setPage(1); setVersion(v => v + 1);
+        }}>再読み込み</button>
+      </div>
+      <p className="hint">監査履歴は読み取り専用。個人情報・CSV本文は表示しません。
+        保存値は取得できる場合の現在値であり、当時のCSVの複製ではありません。</p>
+      {loadState === "loading" && <p role="status">履歴を読み込み中…</p>}
+      {loadState === "failed" && <p role="alert">履歴を取得できません。認証・通信状態を確認してください。</p>}
+      {loadState === "loaded" && jobs.length === 0 && <p>このページに取込履歴はありません。</p>}
+      {loadState === "loaded" && jobs.length > 0 && <ul className="history-list">
+        {jobs.map(job => <li className="history-item" key={job.id}>
+          <p><strong>{job.source === "lifestyle" ? "生活記録" : "ECLEAR"}</strong>
+            {" · "}{job.status === "partial" ? "競合を残して確定" : "確定"}
+            {" · "}{job.completedAt ?? "確定日時不明"}</p>
+          <p className="hint">{showAuditState(job)}</p>
+          {job.counts !== null && <p className="hint">
+            追加 {job.counts.inserted} / スキップ {job.counts.skipped}
+            {" / "}競合 {job.counts.conflicted}
+          </p>}
+          <button type="button" aria-pressed={chosen?.id === job.id} onClick={() => choose(job)}>
+            行監査を表示
+          </button>
+        </li>)}
+      </ul>}
+      <div className="history-pager">
+        <button type="button" disabled={loadState !== "loaded" || page <= 1}
+          onClick={() => changePage(page - 1)}>前の履歴</button>
+        <span>ページ {page}</span>
+        <button type="button" disabled={loadState !== "loaded" || !hasMore}
+          onClick={() => changePage(page + 1)}>次の履歴</button>
+      </div>
+      {chosen && <div className="history-detail" aria-live="polite">
+        <div className="history-top">
+          <h3>{chosen.source === "lifestyle" ? "生活記録" : "ECLEAR"} の行監査</h3>
+          <button type="button" onClick={() => setChosen(null)}>閉じる</button>
+        </div>
+        <p className="hint">{showAuditState(chosen)}</p>
+        {rowState === "loading" && <p role="status">行監査を読み込み中…</p>}
+        {rowState === "failed" && <p role="alert">行監査を取得できません。</p>}
+        {rowState === "loaded" && rows.length === 0 && <p>表示できる行監査記録はありません。</p>}
+        {rowState === "loaded" && rows.length > 0 && <ul className="history-list">
+          {rows.map(row => <li key={row.line} className="history-item">
+            <strong>元CSV {row.line}行：{showResult(row.result)}</strong>
+            {row.errorCode === "LIFESTYLE_CONFLICT_KEPT" && <p className="hint">
+              既存の値を優先した記録です。</p>}
+            {row.currentLifestyle !== null && <p className="hint">
+              現在の保存値：飲酒 {showPresence(row.currentLifestyle.drinkingPresence)}
+              {" / "}杯数 {showAmount(row.currentLifestyle.drinkCups)}
+              {" / "}歩数 {showAmount(row.currentLifestyle.steps)}
+            </p>}
+            {row.result !== "inserted" && <p className="hint">
+              この行の取込時の値は保存されていません。</p>}
+          </li>)}
+        </ul>}
+        <div className="history-pager">
+          <button type="button" disabled={rowState !== "loaded" || rowPage <= 1}
+            onClick={() => setRowPage(p => p - 1)}>前の行</button>
+          <span>行ページ {rowPage}</span>
+          <button type="button" disabled={rowState !== "loaded" || !rowsMore}
+            onClick={() => setRowPage(p => p + 1)}>次の行</button>
+        </div>
+      </div>}
+    </section>
   );
 }
