@@ -15,7 +15,7 @@ function cells(text:string):string[][] {
     else{if(closed)throw Error("BAD_QUOTE");value+=c;}
   }
   if(quoted)throw Error("UNCLOSED_QUOTE");
-  if(row.length||value)rows.push([...row,value]);
+  if(row.length||value){rows.push([...row,value]);if(rows.length>MAX_ROWS+1)throw Error("TOO_MANY_ROWS");}
   return rows;
 }
 const num=(s:string,max:number,integer=false):number|null=>{
