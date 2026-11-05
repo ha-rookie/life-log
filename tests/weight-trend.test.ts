@@ -74,6 +74,19 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(styles).toMatch(/\.trend-scroll svg\{[^}]*min-width:680px;/);
   });
 
+  it("expands the 90-day plot so daily points and axis labels retain legible spacing", () => {
+    const trend = buildWeightTrend(
+      [row("2026-11-06", 78.3)], "2026-08-09", "2026-11-06",
+    );
+    expect(trend.days).toHaveLength(90);
+    const markup = renderToStaticMarkup(createElement(TrendPlot, {
+      days: trend.days, goalLow: 75, goalHigh: 76,
+    }));
+    expect(markup).toContain('viewBox="0 0 1496 230"');
+    expect(markup).toMatch(/min-width:\\s*1413px/);
+    expect(markup).toContain("11/06");
+  });
+
   it("returns full empty days and excludes null, anomaly and non-measured", () => {
     const t=buildWeightTrend([
       row("2026-02-01",null),row("2026-02-02",70,"anomaly",{anomaly_flag:1}),
