@@ -38,13 +38,13 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
   it("uses calendar days and six-day prefetch; 1-3 observations are insufficient", () => {
     const pre = [row("2026-01-01", 70),row("2026-01-02", 71),row("2026-01-03", 72)];
     const requested = [row("2026-01-04", 73),row("2026-01-06", 75)];
-    const trend = addSevenDayAverage(buildWeightTrend(requested,"2026-01-04","2026-01-08"),pre);
+    const trend = addSevenDayAverage(buildWeightTrend(requested,"2026-01-04","2026-01-09"),pre);
     expect(trend.days[0].measuredDaysInWindow).toBe(4);
     expect(trend.days[0].average7Kg).toBe(71.5);
     expect(trend.days[2].measuredDaysInWindow).toBe(5);
     expect(trend.days[2].average7Kg).toBe(72.2);
-    expect(trend.days[4].measuredDaysInWindow).toBe(3);
-    expect(trend.days[4].average7Kg).toBeNull();
+    expect(trend.days[5].measuredDaysInWindow).toBe(3);
+    expect(trend.days[5].average7Kg).toBeNull();
     expect(trend.days[1].weightKg).toBeNull();
     const few = addSevenDayAverage(buildWeightTrend(pre,"2026-01-01","2026-01-03"));
     expect(few.days.every(d=>d.average7Kg===null)).toBe(true);
