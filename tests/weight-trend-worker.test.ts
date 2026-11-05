@@ -133,6 +133,7 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       ["?from=2026-02-30&to=2026-03-01","GET",400],
       ["?from=2026-01-01&to=2027-12-31","GET",400],
       ["?from=2026-01-01&to=2026-01-02&owner=other","GET",400],
+      ["?from=2099-01-01&to=2099-01-30","GET",400],
       ["","POST",405],
     ] as const) {
       const w=watched();
@@ -141,6 +142,26 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       expect(w.prepare).not.toHaveBeenCalled();
     }
   });
+  it("returns up to one year of signed-owner JST daily data without altering the stored source", async () => {
+    await insert("early","owner","2025-11-15T23:30:00+09:00",76);
+    await insert("late","owner","2026-01-03T06:00:00+09:00",74);
+    await insert("another","owner","2026-10-31T23:59:00+09:00",73);
+    await insert("other","other","2026-03-01T08:00:00+09:00",99);
+    const watchedEnv = watched();
+    const res = await handler().fetch(
+      await request(URL + "?from=2025-11-01&to=2026-10-31", await sign(AUTH.OWNER_EMAIL)),
+      watchedEnv.env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { days:{day:string;weightKg:number|null}[];measuredDays:number;missingDays:number };
+    expect(body.days).toHaveLength(365);
+    expect(body.measuredDays).toBe(3);
+    expect(body.missingDays).toBe(362);
+    expect(body.days.filter(d=>d.weightKg!==null).map(d=>d.weightKg)).toEqual([76,74,73]);
+    expect(JSON.stringify(body)).not.toContain("other");
+    expect(watchedEnv.prepare).toHaveBeenCalledTimes(1);
+  }, 100_000);
+
   it("returns safe 503 for D1 failure and 422 rather than truncating excessive rows", async () => {
     const bad=watched();
     bad.env.DB.prepare=vi.fn(()=>{throw Error("sensitive SQL error");}) as unknown as Env["DB"]["prepare"];
