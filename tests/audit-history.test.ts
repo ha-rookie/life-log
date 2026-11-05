@@ -6,7 +6,7 @@ import { handleAuditHistory } from "../src/worker/audit-history";
 import type { ImportDb } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
 
-type Statement = { bind(...values:unknown[]):Statement;run():Promise<unknown>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}> };
+interface Statement { bind(...values:unknown[]):Statement;run():Promise<unknown>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}> }
 type LocalDb = ImportDb & {prepare(sql:string):Statement};
 const prefix="https://example.invalid/api/import/history";
 const req=(path="",query="")=>new Request(prefix+path+query,{method:"GET"});
@@ -14,7 +14,6 @@ const get=async(db:ImportDb,path="",query="",owner="owner")=>{
   const r=await handleAuditHistory(req(path,query),db,owner);
   return {code:r.status,body:await r.json() as Record<string,any>,headers:r.headers};
 };
-const csv="local_day,drinking_presence,drink_cups,steps\n2026-01-02,0,0,0\n2026-01-03,,,\n";
 describe("owner-only CSV audit history on ephemeral local D1",()=>{
   let platform:Awaited<ReturnType<typeof getPlatformProxy<{DB:LocalDb}>>>;
   let db:LocalDb;
@@ -56,7 +55,7 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect(spy.batch).not.toHaveBeenCalled();
   });
   it("lists only own jobs, owner-scoped detail, and does not leak CSV hash or row keys",async()=>{
-    const own=await seed("owner","lifestyle");
+    await seed("owner","lifestyle");
     const other=await seed("other","eclear");
     const list=await get(db);
     expect(list.code).toBe(200);
@@ -88,7 +87,7 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     for(const query of ["?limit=26","?limit=0","?limit=1&limit=2","?cursor=bad!","?foo=x"]){
       expect((await get(db,"",query)).code).toBe(400);
     }
-    const id=await seed("owner","lifestyle");
+    await seed("owner","lifestyle");
     const listing=await get(db);
     const handle=(listing.body.jobs.find((j:{source:string})=>j.source==="lifestyle") as {id:string}).id;
     const r1=await get(db,"/"+handle,"?limit=1");
@@ -115,7 +114,9 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     await db.prepare("UPDATE import_row_audit SET result='conflict',error_code='LIFESTYLE_CONFLICT_KEPT' WHERE import_job_id=? AND source_row_number=2").bind(id).run();
     await db.prepare("UPDATE import_row_audit SET result='skipped' WHERE import_job_id=? AND source_row_number=3").bind(id).run();
     const before=await db.prepare("SELECT COUNT(*) AS n FROM import_row_audit").first<{n:number}>();
-    const detail=await get(db,"/"+id);
+    const list=await get(db);
+    const handle=list.body.jobs[0].id as string;
+    const detail=await get(db,"/"+handle);
     expect(detail.body.rows.map((r:{values:unknown})=>r.values)).toEqual([null,null]);
     expect(detail.body.rows.map((r:{result:string})=>r.result)).toEqual(["conflict","skipped"]);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM import_row_audit").first<{n:number}>())?.n).toBe(before?.n);

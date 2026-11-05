@@ -9,7 +9,6 @@ type Row = { source_row_number: number; result: string; error_code: string | nul
   drinking_presence: number | null; drink_cups: number | null; steps: number | null;
   weight_kg: number | null; body_fat_pct: number | null };
 type Cursor = { time: string; id: string } | { row: number };
-const PAGE_MAX = 25;
 const encode = (value: Cursor) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 function decode(input: string, kind: "jobs" | "rows"): Cursor | null {
   if (!/^[A-Za-z0-9_-]{1,600}$/.test(input)) return null;
@@ -47,12 +46,6 @@ async function countAudit(db: ImportDb, job: string) {
     counts[item.result as keyof typeof counts] += item.n;
   }
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
-}
-function auditState(job: Job, total: number, expected: number) {
-  if (total === 0 && job.status === "confirmed" && job.source_id === "csv:" + job.source_type)
-    return "legacy_unavailable";
-  if (total !== expected || total < 0) return "incomplete";
-  return "complete";
 }
 export async function handleAuditHistory(request: Request, db: ImportDb, owner: string): Promise<Response> {
   if (request.method !== "GET") return reply({ error: "METHOD" }, 405);
