@@ -107,9 +107,8 @@ export function PeriodPlot({ periods, granularity, goalLow, goalHigh, scrollRef 
       <path key={i} d={d} stroke="#2166a5" strokeWidth="2.5" fill="none" />)}
     {periods.map((p,i) => p.meanKg === null ? null :
       <circle key={p.key} cx={x(i)} cy={y(p.meanKg)} r={monthly ? 4 : 3.5}
-        fill="#2166a5">
-        <title>{p.label} 平均 {p.meanKg.toFixed(2)}kg · 実測 {p.observedDays}/{p.calendarDays}日</title>
-      </circle>)}
+        fill="#2166a5" role="img"
+        aria-label={`${p.label} 平均 ${p.meanKg.toFixed(2)}kg · 実測 ${p.observedDays}/${p.calendarDays}日`} />)}
     {periods.map((p,i) => {
       const show = monthly
         ? (i === 0 || i === periods.length - 1 || (i % 2 === 0 && i < periods.length - 2))
