@@ -94,3 +94,9 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - **Not verified / prohibited:** Cloudflare Access live routing, real health CSV, Remote D1 SQL/reads/writes/Migrations, GitHub Secrets or Access configuration, Preview/Production deploy and main merge.
 
 - **Runtime flag exposure note:** The runtime opt-in is deliberately absent from committed `wrangler.jsonc`, GitHub Actions configuration and deployment configuration. Enable it only in a locally controlled Wrangler process bound to loopback for synthetic UAT, then stop the process; request headers/cookies cannot supply the opt-in. The PR uses exactly the Issue #19 `Planned Files` paths and must pass its repository Scope Guard on the latest event/HEAD.
+
+
+## Issue #25 — MVP-α daily weight trend (Draft PR; implementation pending CI)
+- **REQ-003, NFR-002/NFR-004/NFR-006:** Owner-scoped bounded GET trend, JST day representative, 7-calendar-day average with 4/7 minimum, missing vs 0, measured-only and anomaly exclusion, 390px responsive chart plus accessible table, goal difference. Depends on existing signed JWT/owner gate and no-store.
+- **Tests planned/added:** `tests/weight-trend.test.ts` covers day parsing, timezone boundaries, tie-break, 0/1–3/4+ observations and six-day prefetch; `tests/weight-trend-worker.test.ts` uses signed synthetic JWT and ephemeral Wrangler D1 with owner isolation, invalid params, no writes and safe errors.
+- **Acceptance status:** Not accepted until the latest Draft PR HEAD has all required GitHub CI SUCCESS, repository Scope Guard, and browser evidence. Real Android UAT, real CSV, Remote D1, Cloudflare Access and deployment are not executed. M02/M03 are separate future issues.
