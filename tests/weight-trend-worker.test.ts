@@ -98,6 +98,36 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
     expect(JSON.stringify(data)).not.toContain("other");
     expect(JSON.stringify(data)).not.toContain("synthetic");
   }, 100_000);
+  it("computes the first-window average from exactly six preceding JST days, then drops stale observations", async () => {
+    const weight = [
+      ["early-1","2026-01-01T08:00:00+09:00",70],
+      ["early-2","2026-01-02T08:00:00+09:00",71],
+      ["early-3","2026-01-03T08:00:00+09:00",72],
+      ["late-6","2026-01-06T23:59:59.999+09:00",73],
+      ["a-same","2026-01-07T00:00:00+09:00",74],
+      ["z-same","2026-01-06T15:00:00Z",75],
+    ] as const;
+    for (const [id, timestamp, kg] of weight) await insert(id,"owner",timestamp,kg);
+    await insert("other-owner","other","2026-01-07T08:00:00+09:00",99);
+    const w = watched();
+    const res = await handler().fetch(await request(
+      URL + "?from=2026-01-07&to=2026-01-09", await sign(AUTH.OWNER_EMAIL)
+    ),w.env);
+    expect(res.status).toBe(200);
+    const data = await res.json() as {
+      days: { day:string;weightKg:number|null;average7Kg:number|null;measuredDaysInWindow:number;measuredAt:string|null }[];
+      measuredDays:number;missingDays:number;
+    };
+    expect(data.days.map(d => d.weightKg)).toEqual([75,null,null]);
+    expect(data.days.map(d => d.measuredDaysInWindow)).toEqual([5,4,3]);
+    expect(data.days.map(d => d.average7Kg)).toEqual([72.2,72.75,null]);
+    expect(data.days[0].measuredAt).toBe("2026-01-06T15:00:00Z");
+    expect(data.measuredDays).toBe(1);
+    expect(data.missingDays).toBe(2);
+    expect(JSON.stringify(data)).not.toContain("other-owner");
+    expect(w.prepare).toHaveBeenCalledTimes(1);
+  }, 100_000);
+
   it("rejects invalid dates and non-GET without database calls", async () => {
     for (const [suffix,method,code] of [
       ["?from=2026-02-30&to=2026-03-01","GET",400],
