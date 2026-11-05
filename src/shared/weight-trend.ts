@@ -45,7 +45,7 @@ export function dateRange(from: string, to: string): { start: number; end: numbe
 export function defaultRange(now: number): { from: string; to: string } {
   const to = jstDay(now);
   const end = parseDay(to)!;
-  return { from: new Date(end - 89 * DAY_MS).toISOString().slice(0, 10), to };
+  return { from: new Date(end - 29 * DAY_MS).toISOString().slice(0, 10), to };
 }
 export function parseTrendRange(url: URL, now = Date.now()): { from: string; to: string } | null {
   const params = [...url.searchParams.keys()];
@@ -137,9 +137,9 @@ export function rangeForGranularity(scale: TrendGranularity, now = Date.now()): 
       .toISOString().slice(0, 10);
     return { from, to };
   }
-  // 26 calendar weeks, Monday as the first weekday.
+  // 12 calendar weeks, Monday as the first weekday.
   const weekday = (new Date(current).getUTCDay() + 6) % 7;
-  const monday = current - (weekday + 25 * 7) * DAY_MS;
+  const monday = current - (weekday + 11 * 7) * DAY_MS;
   return { from: new Date(monday).toISOString().slice(0, 10), to };
 }
 
@@ -147,6 +147,62 @@ function mondayOf(day: string): string {
   const utc = parseDay(day)!;
   const weekday = (new Date(utc).getUTCDay() + 6) % 7;
   return new Date(utc - weekday * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** Bound user-selected windows to the configured graph density and to JST today. */
+export function rangeFitsGranularity(
+  scale: TrendGranularity, from: string, to: string, now = Date.now(),
+): boolean {
+  const range = dateRange(from, to);
+  if (!range || to > jstDay(now)) return false;
+  if (scale === "day") return range.days <= 30;
+  if (scale === "week") {
+    const start = parseDay(mondayOf(from))!;
+    const end = parseDay(mondayOf(to))!;
+    return (end - start) / (7 * DAY_MS) < 12;
+  }
+  const fm = Number(from.slice(0, 4)) * 12 + Number(from.slice(5, 7));
+  const tm = Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7));
+  return tm - fm < 12;
+}
+
+/** Move by the displayed block, without inventing future or partial-month rows. */
+export function moveGranularityRange(
+  scale: TrendGranularity, current: { from: string; to: string },
+  direction: -1 | 1, now = Date.now(),
+): { from: string; to: string } | null {
+  if (!rangeFitsGranularity(scale, current.from, current.to, now)) return null;
+  const today = parseDay(jstDay(now))!;
+  const start = parseDay(current.from)!;
+  const end = parseDay(current.to)!;
+  let nextStart: number;
+  let nextEnd: number;
+  if (scale === "day") {
+    const days = dateRange(current.from, current.to)!.days;
+    nextStart = direction === -1 ? start - days * DAY_MS : end + DAY_MS;
+    nextEnd = nextStart + (days - 1) * DAY_MS;
+  } else if (scale === "week") {
+    const first = parseDay(mondayOf(current.from))!;
+    const last = parseDay(mondayOf(current.to))!;
+    const weeks = Math.round((last - first) / (7 * DAY_MS)) + 1;
+    nextStart = direction === -1 ? first - weeks * 7 * DAY_MS : last + 7 * DAY_MS;
+    nextEnd = nextStart + (weeks * 7 - 1) * DAY_MS;
+  } else {
+    const first = new Date(Date.UTC(Number(current.from.slice(0,4)), Number(current.from.slice(5,7))-1,1));
+    const last = new Date(Date.UTC(Number(current.to.slice(0,4)), Number(current.to.slice(5,7))-1,1));
+    const months = (last.getUTCFullYear()-first.getUTCFullYear())*12 + last.getUTCMonth()-first.getUTCMonth()+1;
+    const startMonth = direction === -1
+      ? new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth()-months, 1))
+      : new Date(Date.UTC(last.getUTCFullYear(), last.getUTCMonth()+1, 1));
+    nextStart = startMonth.getTime();
+    nextEnd = Date.UTC(startMonth.getUTCFullYear(),startMonth.getUTCMonth()+months,1)-DAY_MS;
+  }
+  if (nextStart > today) return null;
+  const result = {
+    from: new Date(nextStart).toISOString().slice(0,10),
+    to: new Date(Math.min(nextEnd,today)).toISOString().slice(0,10),
+  };
+  return rangeFitsGranularity(scale,result.from,result.to,now) ? result : null;
 }
 
 /**
