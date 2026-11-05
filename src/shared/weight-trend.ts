@@ -28,7 +28,7 @@ const DAY_MS = 86_400_000;
 const JST_MS = 9 * 3_600_000;
 export const DEFAULT_GOAL = { lowKg: 75, highKg: 76, targetDate: "2026-12-22" } as const;
 export function parseDay(day: string): number | null {
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
   const time = Date.parse(day + "T00:00:00.000Z");
   return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === day ? time : null;
 }
