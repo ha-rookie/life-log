@@ -1,9 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TrendPlot } from "../src/client/WeightTrend";
-import { readFileSync } from "node:fs";
-const styles = readFileSync(new URL("../src/client/styles.css", import.meta.url), "utf8");
 import {
   addSevenDayAverage, buildWeightTrend, dateRange, defaultRange, parseTrendRange,
   type Measurement,
@@ -54,7 +52,7 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     const few = addSevenDayAverage(buildWeightTrend(pre,"2026-01-01","2026-01-03"));
     expect(few.days.every(d=>d.average7Kg===null)).toBe(true);
   });
-  it("renders isolated 7-day average points and keyboard-scrollable chart at 390px CSS contract", () => {
+  it("renders isolated 7-day average points and keyboard-scrollable chart at 390px CSS contract", async () => {
     const observations = [
       row("2026-01-01", 70), row("2026-01-02", 71),
       row("2026-01-03", 72), row("2026-01-04", 73),
@@ -70,6 +68,8 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     // Under a 390px viewport, the parent panel has approximately 312px of
     // inner width; the 680px SVG therefore scrolls instead of shrinking
     // its axis font below an accessible reading size.
+    const { readFileSync } = await vi.importActual<{ readFileSync(path: string, encoding: string): string }>("node:fs");
+    const styles = readFileSync("src/client/styles.css", "utf8");
     expect(styles).toMatch(/\.trend-scroll,\.trend-table-scroll\{overflow-x:auto;max-width:100%\}/);
     expect(styles).toMatch(/\.trend-scroll svg\{[^}]*min-width:680px;/);
   });
