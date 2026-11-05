@@ -108,7 +108,9 @@ function jobStatement(
   const sql = "INSERT INTO import_jobs"
     + "(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at)"
     + " VALUES (?,?,?,?,?," + statusSql + ",?,?)";
-  return db.prepare(sql).bind(job, owner, source, "csv:" + source, fileHash,
+  // The job source marker differentiates audited-v2 jobs from confirmed pre-audit jobs.
+  // Destination row source_id remains the same, preserving existing deduplication.
+  return db.prepare(sql).bind(job, owner, source, "csv:audited-v2:" + source, fileHash,
     ...(source === "lifestyle" ? params : []), status, now, now);
 }
 function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
@@ -162,14 +164,32 @@ function counts(rows: AuditCount[]): Summary {
   }
   return result;
 }
-async function existingJobResponse(db: ImportDb, job: string, rows: number): Promise<Response> {
+// Pre-audit confirmed jobs used the exact marker "csv:<source>" and legitimately
+// have NO import_row_audit rows. Modern jobs carry "csv:audited-v2:<source>".
+// This deliberately does not guess historical inserted/skipped/conflict counts.
+type ExistingJob = { status: string; source_id: string };
+async function existingJobResponse(
+  db: ImportDb, job: string, rows: number, existing: ExistingJob, source: CsvSource,
+): Promise<Response> {
   const result = await db.prepare(
     "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
   ).bind(job).all<AuditCount>();
+  if (result.results.length === 0
+      && existing.status === "confirmed"
+      && existing.source_id === "csv:" + source) {
+    return json({
+      status: "already_imported", inserted: 0, skipped: rows, conflicted: 0,
+      auditStatus: "legacy_unavailable", original: null,
+    });
+  }
+  // An audited job with missing records, a partially missing audit, or a
+  // partial legacy job is corrupt/ambiguous: do NOT backfill or re-import.
   const original = counts(result.results);
-  if (original.inserted + original.skipped + original.conflicted !== rows) return reject("INCOMPLETE_AUDIT", 503);
+  if (original.inserted + original.skipped + original.conflicted !== rows) {
+    return reject("INCOMPLETE_AUDIT", 503);
+  }
   return json({ status: "already_imported", inserted: 0, skipped: rows,
-    conflicted: 0, original });
+    conflicted: 0, auditStatus: "complete", original });
 }
 
 export async function handleImport(request: Request, db: ImportDb, owner: string): Promise<Response> {
@@ -203,11 +223,11 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
 
   try {
     const existing = await db.prepare(
-      "SELECT status FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
-    ).bind(owner, payload.source, preview.hash).first<{ status: string }>();
+      "SELECT status,source_id FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
+    ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
     if (existing) {
       if (existing.status === "confirmed" || existing.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length);
+        return existingJobResponse(db, job, preview.rows.length, existing, payload.source);
       }
       return reject("JOB_CONFLICT", 409);
     }
@@ -266,10 +286,10 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     // A parallel identical job may have committed first. Do not create another.
     try {
       const winner = await db.prepare(
-        "SELECT status FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
-      ).bind(owner, payload.source, preview.hash).first<{ status: string }>();
+        "SELECT status,source_id FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
+      ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
       if (winner?.status === "confirmed" || winner?.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length);
+        return existingJobResponse(db, job, preview.rows.length, winner, payload.source);
       }
     } catch { /* fail closed */ }
     return reject("IMPORT_FAILED", 503);

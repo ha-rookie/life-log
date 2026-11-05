@@ -19,3 +19,11 @@ File-level import status concealed which input rows were actually inserted, skip
 - An unconfirmed or rejected conflict creates no audit: audits describe **committed import decisions**, not every attempted preview.
 - Replacing/merging historical records, a complete audit-history UI and real vendor CSV column mapping are future work requiring separate scope.
 - Local Wrangler D1 is tested with synthetic data; no Cloudflare Access live verification, Remote D1, Migration, Access change, Production/Preview deployment or real data use in Issue #13.
+
+## Legacy import-job compatibility (Issue #13)
+
+- Previously merged PR #12 wrote completed `import_jobs` with `status=confirmed`, `source_id=csv:<source>`, and **zero** `import_row_audit` records; a successful old import could also have skipped every row as an existing duplicate.
+- Newly committed audited jobs mark only `import_jobs.source_id=csv:audited-v2:<source>`. Destination row source IDs remain unchanged for cross-file dedup. This provides a schema-free, explicit job-version discriminator. Neither remote migration nor data backfill is needed.
+- Replaying a confirmed old-marker job with **zero** audit rows returns `already_imported`, `auditStatus=legacy_unavailable`, and `original=null`. No row, job or audit is inserted, altered, inferred or backfilled. The UI explicitly explains that earlier row-level audit does not exist.
+- Partial audit counts (one or more entries but fewer than expected), audited-v2 jobs with zero entries, and an un-audited legacy `partial` job always fail closed with `INCOMPLETE_AUDIT` (503), without modification.
+- Legacy marker is based on historical code identity, not a claim of independently verified remote database state. Manual manipulation of a job to impersonate an old confirmed marker cannot be distinguished without extra provenance; production data integrity requires a separately approved audit/UAT.

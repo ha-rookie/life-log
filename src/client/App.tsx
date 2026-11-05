@@ -11,6 +11,7 @@ type Review = { token: string; conflicts: Conflict[] };
 type ImportResult = {
   status?: string; error?: string; inserted?: number; skipped?: number;
   conflicted?: number; reviewToken?: string | null; conflicts?: Conflict[];
+  auditStatus?: "legacy_unavailable" | "complete";
 };
 
 export function App() {
@@ -70,7 +71,9 @@ export function App() {
       } else if (res.ok) {
         setReview(null);
         setImportStatus(data.status === "already_imported"
-          ? "このCSVはすでに取込済みです。二重登録はしていません。"
+          ? data.auditStatus === "legacy_unavailable"
+            ? "このCSVは旧形式で取込済みです。二重登録はしていません。過去の行単位監査は存在せず、推測による補完もしていません。"
+            : "このCSVはすでに取込済みです。二重登録はしていません。"
           : "登録完了：追加 " + (data.inserted ?? 0) + "件 / 同値スキップ "
             + (data.skipped ?? 0) + "件 / 競合を維持 "
             + (data.conflicted ?? 0) + "件。行単位の監査証跡を保存しました。");

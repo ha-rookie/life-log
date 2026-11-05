@@ -90,3 +90,8 @@ External identity、Application user、Sessionを分離し、失効・不一致�
 - All preflight owner/day snapshots are revalidated in the **same transaction** as job, destination rows and audit inserts: each date's expected row count and every stored source/key/NULL-safe value must match. Stale snapshots produce an invalid job status rejected by existing `import_jobs.status` CHECK; atomic rollback covers rows and audit. No Migration.
 - Conflict resolution creates a `partial` job. Both `confirmed` and `partial` are idempotent by owner/source/file hash. The original per-row audit persists; retry creates none. Matching duplicate records are skipped, not double-counted.
 - User choice in UI is not authorization. Worker-first signed Cloudflare Access issuer/audience/owner verification remains mandatory. No real CSV files, remote D1, Access, Preview/Production or main merge in this Issue.
+
+## 11.4 Audit compatibility and no historical fabrication (#13)
+
+- The pre-audit job marker `csv:<source>` is preserved for recognition only; audited-v2 jobs write `csv:audited-v2:<source>` to `import_jobs.source_id`. The destination's `source_id` is not changed.
+- Confirmed legacy jobs with no audit replays are no-op, marked `auditStatus=legacy_unavailable`; no original row results are guessed. Audited jobs missing all or part of their audit fail closed, and legacy partial jobs without audit are not treated as successful.
