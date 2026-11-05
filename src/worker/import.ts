@@ -60,6 +60,33 @@ function valid(x: unknown): x is Payload {
 }
 function lifestyle(rows: CsvRow[]): LifestyleRow[] { return rows as LifestyleRow[]; }
 
+// Treat an identical observed instant + weight + body-fat value as the same
+// measurement identity. A different muscle value (including NULL vs measured)
+// is an unresolved variant, not another record or an automatic enrichment.
+function hasEclearVariantsWithinFile(rows: CsvRow[]): boolean {
+  const observed = new Map<string, number | null>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.timestamp, row.weight, row.fat ?? null]);
+    const muscle = row.muscle ?? null;
+    if (observed.has(key) && observed.get(key) !== muscle) return true;
+    observed.set(key, muscle);
+  }
+  return false;
+}
+async function hasExistingEclearVariant(db: ImportDb, owner: string, rows: CsvRow[]): Promise<boolean> {
+  for (const row of rows) {
+    const found = await db.prepare(
+      "SELECT 1 AS matching FROM body_measurements "
+      + "WHERE owner_id=? AND measured_at=? AND weight_kg IS ? AND body_fat_pct IS ? "
+      + "AND skeletal_muscle_pct IS NOT ? LIMIT 1"
+    ).bind(owner, row.timestamp, row.weight, row.fat ?? null, row.muscle ?? null)
+      .first<{ matching: number }>();
+    if (found) return true;
+  }
+  return false;
+}
+
+
 async function snapshotDays(db: ImportDb, owner: string, rows: LifestyleRow[]): Promise<SnapshotDay[]> {
   const out: SnapshotDay[] = [];
   for (const incoming of rows) {
@@ -104,6 +131,7 @@ async function reviewToken(owner: string, fileHash: string, snapshots: SnapshotD
 function jobStatement(
   db: ImportDb, owner: string, source: CsvSource, fileHash: string,
   job: string, now: string, snapshots: SnapshotDay[], status: "confirmed" | "partial",
+  importRows: CsvRow[],
 ): Statement {
   const checks: string[] = [];
   const params: unknown[] = [];
@@ -121,7 +149,17 @@ function jobStatement(
     }
     checks.push("(" + conditions.join(" AND ") + ")");
   }
-  const statusSql = source === "lifestyle"
+  // Recheck variant absence INSIDE the atomic D1 batch, closing the race between
+  // preflight SELECT and INSERT without changing the schema or existing records.
+  if (source === "eclear") {
+    for (const row of importRows) {
+      checks.push("NOT EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=? "
+        + "AND measured_at=? AND weight_kg IS ? AND body_fat_pct IS ? "
+        + "AND skeletal_muscle_pct IS NOT ?)");
+      params.push(owner, row.timestamp, row.weight, row.fat ?? null, row.muscle ?? null);
+    }
+  }
+  const statusSql = checks.length
     ? "CASE WHEN " + checks.join(" AND ") + " THEN ? ELSE 'stale_guard' END"
     : "?";
   const sql = "INSERT INTO import_jobs"
@@ -130,7 +168,7 @@ function jobStatement(
   // The job source marker differentiates audited-v2 jobs from confirmed pre-audit jobs.
   // Destination row source_id remains the same, preserving existing deduplication.
   return db.prepare(sql).bind(job, owner, source, "csv:audited-v2:" + source, fileHash,
-    ...(source === "lifestyle" ? params : []), status, now, now);
+    ...params, status, now, now);
 }
 function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
   if (source === "eclear") {
@@ -241,6 +279,10 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     distinct.add(key);
   }
   if (payload.source !== "lifestyle" && payload.resolution) return reject("RESOLUTION_NOT_APPLICABLE", 409);
+  // A single file must not introduce two competing variants of one measurement.
+  if (payload.source === "eclear" && hasEclearVariantsWithinFile(preview.rows)) {
+    return reject("ECLEAR_MEASUREMENT_VARIANT", 409);
+  }
   const job = owner + ":" + payload.source + ":" + preview.hash;
 
   try {
@@ -252,6 +294,11 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
         return existingJobResponse(db, job, preview.rows.length, existing, payload.source);
       }
       return reject("JOB_CONFLICT", 409);
+    }
+    // Same measurement with a changed muscle field is ambiguous. Never merge,
+    // overwrite or silently create a second record; require a later explicit policy.
+    if (payload.source === "eclear" && await hasExistingEclearVariant(db, owner, preview.rows)) {
+      return reject("ECLEAR_MEASUREMENT_VARIANT", 409);
     }
     const snapshots = payload.source === "lifestyle"
       ? await snapshotDays(db, owner, lifestyle(preview.rows)) : [];
@@ -271,7 +318,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     const now = new Date().toISOString();
     const ops: Statement[] = [
       db.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES (?,?)").bind(owner, now),
-      jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status),
+      jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status, preview.rows),
     ];
     for (const row of preview.rows) {
       ops.push(insertRow(db, owner, payload.source, job, row));
@@ -290,6 +337,16 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     }
     return json({ status, ...summary });
   } catch {
+    // If a concurrent ECLEAR insert changed the variant set during the batch,
+    // the 'stale_guard' CHECK rolls back the entire transaction. Explain it as
+    // a safe 409 without creating a job, audit or destination record.
+    if (payload.source === "eclear") {
+      try {
+        if (await hasExistingEclearVariant(db, owner, preview.rows)) {
+          return reject("ECLEAR_MEASUREMENT_VARIANT", 409);
+        }
+      } catch { /* masked to IMPORT_FAILED below */ }
+    }
     // If a concurrent change invalidated our in-batch snapshot guard, the
     // entire D1 batch (including audit) was rolled back. Require fresh review.
     if (payload.source === "lifestyle") {
