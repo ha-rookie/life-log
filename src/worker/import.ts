@@ -1,5 +1,20 @@
 import { hash, previewCsv, MAX_BYTES, type CsvRow, type CsvSource } from "../shared/csv-import";
 
+// Defense in depth for the ONLY mutating import route. The trusted runtime flag
+// must never be configured on any remote Worker. Host/Origin can be forged by
+// non-browser clients, so they are NOT substitutes for local-only deployment.
+export function isSafeLocalImport(request: Request, enabled: string | undefined): boolean {
+  if (enabled !== "true" || request.method !== "POST") return false;
+  const url = new URL(request.url);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1"
+      && url.hostname !== "[::1]") return false;
+  // Reject missing/null/cross-origin Origin rather than treating it as a safe CLI call.
+  if (request.headers.get("Origin") !== url.origin) return false;
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  return fetchSite === null || fetchSite === "same-origin";
+}
+
 export interface Statement {
   bind(...values: unknown[]): Statement;
   first<T>(): Promise<T | null>;
