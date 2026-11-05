@@ -1,10 +1,12 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { getSummary, type Database } from "./summary";
-import { handleImport, type ImportDb } from "./import";
+import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
 
 export interface Env extends AccessEnv {
   DB: Database;
+  // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
+  IMPORT_LOCAL_ONLY?: string;
   ASSETS: { fetch(input: Request): Promise<Response> };
 }
 
@@ -22,7 +24,18 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
         if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
-        if (path === "/api/import/preview" || path === "/api/import/confirm") return handleImport(request,env.DB as unknown as ImportDb,ownerId);
+        if (path === "/api/import/confirm") {
+          if (request.method !== "POST") {
+            return Response.json({ error: "METHOD" }, { status: 405, headers: { ...privateHeaders, Allow: "POST" } });
+          }
+          // Signed owner verification above AND a trusted local-runtime opt-in
+          // are required before ANY confirm-path D1 read or write.
+          if (!isSafeLocalImport(request, env.IMPORT_LOCAL_ONLY)) {
+            return Response.json({ error: "LOCAL_IMPORT_DISABLED" }, { status: 403, headers: privateHeaders });
+          }
+          return handleImport(request,env.DB as unknown as ImportDb,ownerId);
+        }
+        if (path === "/api/import/preview") return handleImport(request,env.DB as unknown as ImportDb,ownerId);
         if (path !== "/api/summary") return Response.json({ error: "Not found" }, { status: 404, headers: privateHeaders });
         if (request.method !== "GET") return Response.json({ error: "Method not allowed" }, { status: 405, headers: { ...privateHeaders, Allow: "GET" } });
         try {

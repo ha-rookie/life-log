@@ -86,3 +86,9 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - Synthetic local D1 integration and security regression tests; no merge or remote operations.
 
 - Issue #17 follow-up: list/detail reconcile owner-bound persisted destination count against inserted audit outcomes; mismatch => incomplete and null summary counts. Synthetic ephemeral local D1 tests cover partially missing inserted audits for both sources, legitimate skipped/conflict non-inserts, and legacy zero-audit with persisted rows. Missing skipped/conflict audit records remain unprovable without the original expected-row count.
+
+## Issue #19 — CSV confirmation local-only security gate (Draft PR)
+- **NFR-001, NFR-006, REQ-002/006:** Signed owner JWT still gates all routes first. A trusted runtime opt-in `IMPORT_LOCAL_ONLY=true` plus loopback URL, exact same `Origin`, valid fetch-site context and POST method is required for `/api/import/confirm`. Missing or forged opt-in cannot be provided by the client. Disabled/mismatched confirm requests return 403 **before any D1 access**.
+- **APP-004/005/006:** Preview requires signed identity but is still DB-write-free and does not require the new opt-in. Existing conflict, audit, idempotence and atomic synthetic local-D1 behavior is deliberately unchanged.
+- **Evidence:** `tests/import-local-guard.test.ts` contains signed synthetic JWT acceptance/rejection and ephemeral Wrangler local D1 confirmation, replay, conflict, NULL-vs-zero and no-DB-on-denial tests. Existing `tests/import-worker.test.ts`, `tests/audit-history.test.ts` and required TypeScript/Vite, Vitest, Python SQLite, Wrangler `--local`, repository validation and app/D1 CI must remain successful on the Draft PR HEAD. Actual CI result is reported separately, never assumed from source code.
+- **Not verified / prohibited:** Cloudflare Access live routing, real health CSV, Remote D1 SQL/reads/writes/Migrations, GitHub Secrets or Access configuration, Preview/Production deploy and main merge.
