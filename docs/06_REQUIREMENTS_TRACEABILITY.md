@@ -65,3 +65,16 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - Concurrency: a transactional job-status CHECK guard revalidates every day inside the D1 batch, closing the read-to-write race. SQL failure rolls back the entire batch. Main and remote still unchanged.
 - `tests/import-worker.test.ts` runs actual ephemeral Wrangler D1, not only an in-memory mock, and verifies preview no-write, NULL vs zero, same-file retry, cross-file duplicate, conflict persistence, raced insertion, mid-batch SQL failure/rollback and clean retry.
 - Actual user data, actual CSV vendor layout, remote D1, Cloudflare Access setup and deployment remain NOT VERIFIED / NOT EXECUTED.
+
+## 5.4 Row-level audit and safe conflict decision (Issue #13)
+- REQ-002/006, NFR-002: per-row `import_row_audit` has result inserted/skipped/conflict, source row number/key and conflict code; same D1 transaction as imported rows/job. Rejected and stale conflicts create no committed audit by design.
+- APP-004/UI-004: explicit two-stage conflict resolution; owner selects Keep existing/skip conflicts or Cancel. No automatic replacement; no confirmation means no write. Review token binds owner, file hash and owner-scoped DB snapshots.
+- APP-005/006/NFR-001: signed Worker-first owner auth unchanged; server recomputes token and D1 batch rechecks row count and NULL-safe stored source values for all dates, preventing preflight/write race. All job/data/audit rolled back on SQL failure. Partial same-file imports remain idempotent.
+- Evidence: actual ephemeral local Wrangler D1 with synthetic CSV, authorization/invalid/stale/rollback/retry tests; TypeScript/Vite, SQLite Python and GitHub PR CI on final HEAD. Real vendor mapping, Cloudflare Access live UAT, Remote D1 and deployment not executed.
+
+## 5.5 Backward-compatible idempotence for PR #12 jobs (Issue #13)
+
+- Legacy discriminator: confirmed `import_jobs.source_id=csv:<source>` and no `import_row_audit` rows, matching the already-merged pre-audit code path, return `already_imported` + `auditStatus=legacy_unavailable` + `original=null`. Never fabricate counts, write audit backfills or reinsert rows.
+- Newly audited jobs identify themselves with `source_id=csv:audited-v2:<source>`, without schema changes or destination source ID changes. Normal audited replay returns original audit summary.
+- A partial/zero missing audit for new-format jobs, any incomplete audit in either format, or partial legacy jobs with no audit must fail closed (`INCOMPLETE_AUDIT`, 503).
+- Verify on ephemeral local Wrangler D1 with pre-audit confirmed fixture, same-file replay, modern complete/empty/partially removed audits, and previous fault rollback, NULL≠0, owner, race and retry tests. Real personal CSV and Cloudflare remote bindings remain forbidden.
