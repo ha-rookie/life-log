@@ -36,7 +36,7 @@ export function TrendPlot({ days, goalLow, goalHigh }: {
   return <div className="trend-scroll" role="region" tabIndex={0}
     aria-label="体重推移グラフ。横方向にスクロールできます。">
     <svg viewBox="0 0 720 230" role="img"
-      aria-label="体重推移。青線は実測、緑線は観測日4日以上の7日平均。欠測部分は線をつなぎません。">
+      aria-label="体重推移。青い実測線は欠測日で途切れます。緑の7日平均は観測日数4日以上の場合に表示され、欠測日にも値が付く場合があります。">
       <rect x="36" y={y(goalHigh)} width="648" height={Math.max(1, y(goalLow) - y(goalHigh))}
         fill="#e5f2ec" />
       {[lo, (lo + hi) / 2, hi].map(n => <g key={n}>
@@ -133,7 +133,8 @@ export function WeightTrendPanel() {
       {difference && <p className="trend-difference">期間内の最新実測（{latest!.day}） {fmt(latest!.weightKg!)}kg · {difference}</p>}
       {validGoal && <TrendPlot days={trend.days} goalLow={low} goalHigh={high} />}
       {!validGoal && <p>目標値を修正するとグラフを表示します。</p>}
-      <div className="trend-table-scroll">
+      <div className="trend-table-scroll" role="region" tabIndex={0}
+        aria-label="日別体重一覧。左右にスクロールできます。">
         <table className="trend-table">
           <caption>日次体重と7日平均（古い日付から順に表示）</caption>
           <thead><tr><th scope="col">日付</th><th scope="col">実測kg</th>
