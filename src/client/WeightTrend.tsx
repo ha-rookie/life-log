@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { WeightTrend, TrendDay, TrendGranularity, TrendPeriod } from "../shared/weight-trend";
-import { dateRange, groupTrendDays, rangeForGranularity } from "../shared/weight-trend";
+import { groupTrendDays, moveGranularityRange, rangeFitsGranularity, rangeForGranularity } from "../shared/weight-trend";
 
 type TrendState =
   | { kind: "loading" }
@@ -149,7 +149,10 @@ export function WeightTrendPanel() {
   const chartScroller = useRef<HTMLDivElement | null>(null);
   // Keep the ref callback identity stable across goal-only re-renders.
   const chartRef = useRef((node: HTMLDivElement | null) => { chartScroller.current = node; });
-  const validRange = dateRange(from, to) !== null;
+  const validRange = rangeFitsGranularity(granularity, from, to);
+  const before = moveGranularityRange(granularity, range, -1);
+  const after = moveGranularityRange(granularity, range, 1);
+  const newest = rangeForGranularity(granularity);
   const low = Number(goalLow), high = Number(goalHigh);
   const validGoal = goalLow.trim() !== "" && goalHigh.trim() !== "" &&
     Number.isFinite(low) && Number.isFinite(high) && low > 0 && high < 500 && low <= high;
@@ -179,7 +182,7 @@ export function WeightTrendPanel() {
     state.trend.from === range.from && state.trend.to === range.to ? state.trend : null;
   const periods = trend && granularity !== "day"
     ? groupTrendDays(trend.days, granularity) : null;
-  // Recent measurements often occupy the far-right end of the default 90-day
+  // Recent measurements often occupy the far-right end of a calendar-day
   // plot. Show the newest days immediately, without scrolling the document.
   // Do not reset the user's horizontal position on goal-only edits.
   useEffect(() => {
@@ -210,7 +213,7 @@ export function WeightTrendPanel() {
           {{ day: "日", week: "週", month: "月" }[value]}
         </button>)}
     </div>
-    <p className="hint">日：実測と7日平均 ／ 週：月曜始まりの平均 ／ 月：直近12か月の平均。集計は欠測を0kgにしません。</p>
+    <p className="hint">日：直近30日（実測＋7日平均） ／ 週：直近12週（月曜始まり） ／ 月：直近12か月。欠測を0kgにはしません。</p>
     <p className="hint">日本時間（JST）の1日ごとに最後の正常な実測を採用します。欠測は0kgに置き換えません。</p>
     <form className="trend-controls" onSubmit={e => {
       e.preventDefault();
@@ -219,8 +222,21 @@ export function WeightTrendPanel() {
       <label>開始日<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
       <label>終了日<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
       <button type="submit" disabled={!validRange}>期間を表示</button>
-      {!validRange && <p role="alert">日付を確認してください（最大366日）。</p>}
+      {!validRange && <p role="alert">期間を確認してください（日は30日以内、週は12週以内、月は12か月以内。未来日は指定できません）。</p>}
     </form>
+    <nav className="trend-period-nav" aria-label="表示期間の移動">
+      <button type="button" disabled={!before} onClick={() => {
+        if (!before) return;
+        setFrom(before.from); setTo(before.to); setRange(before);
+      }}>前の期間</button>
+      <span aria-live="polite">{range.from} ～ {range.to}</span>
+      <button type="button" disabled={!after} onClick={() => {
+        if (!after) return;
+        setFrom(after.from); setTo(after.to); setRange(after);
+      }}>次の期間</button>
+      <button type="button" disabled={range.from === newest.from && range.to === newest.to}
+        onClick={() => { setFrom(newest.from); setTo(newest.to); setRange(newest); }}>最新へ</button>
+    </nav>
     <div className="trend-controls">
       <label>目標下限（kg）<input type="number" min="1" max="499" step="0.1"
         value={goalLow} onChange={e => setGoalLow(e.target.value)} /></label>
