@@ -61,6 +61,9 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(days.filter(d => d.average7Kg !== null)).toHaveLength(1);
     const html = renderToStaticMarkup(createElement(TrendPlot, { days, goalLow: 75, goalHigh: 76 }));
     expect(html).toContain('role="region"');
+    expect(html).toContain('class="trend-viewport"');
+    expect(html).toContain('class="trend-fixed-axis"');
+    expect(html).toContain('aria-hidden="true"');
     expect(html).toMatch(/tabindex="0"/i);
     expect(html).toContain('role="img"');
     expect((html.match(/class="average-point"/g) ?? [])).toHaveLength(1);
