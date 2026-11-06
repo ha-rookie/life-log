@@ -349,7 +349,7 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       const dailyArrow = await keyRight(".trend-table-scroll");
       await click("週", ".trend-granularity button");
       await until('document.querySelector(".trend-period-table tbody")?.children.length===12'
-        + '&&document.querySelector(".trend-scroll")', "12 weekly rows");
+        + '&&!!document.querySelector(".trend-scroll")', "12 weekly rows");
       const weeklyArrow = await keyRight(".trend-scroll");
       await click("月", ".trend-granularity button");
       await until('document.querySelector(".trend-month-fit svg")'
