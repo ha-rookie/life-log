@@ -57,14 +57,14 @@ export function TrendPlot({ days, goalLow, goalHigh, scrollRef }: {
         <path key={"w" + i} d={path} fill="none" stroke="#2166a5" strokeWidth="2.5" />)}
       {days.map((d, i) => d.weightKg === null ? null :
         <circle key={d.day} cx={x(i)}
-          cy={y(d.weightKg)} r="2.8" fill="#2166a5"><title>{d.day} 実測 {fmt(d.weightKg)}kg</title></circle>)}
+          cy={y(d.weightKg)} r="2.8" fill="#2166a5"><title>{`${d.day} 実測 ${fmt(d.weightKg)}kg`}</title></circle>)}
       {lines(days, d => d.average7Kg, x, y).map((path, i) =>
         <path key={"a" + i} d={path} fill="none" stroke="#23845c" strokeWidth="2.5" />)}
       {days.map((d, i) => d.average7Kg === null ? null :
         <circle key={"avg-" + d.day} className="average-point"
           cx={x(i)}
           cy={y(d.average7Kg)} r="2.7" fill="#23845c">
-          <title>{d.day} 7日平均 {d.average7Kg.toFixed(2)}kg（実測 {d.measuredDaysInWindow}/7日）</title>
+          <title>{`${d.day} 7日平均 ${d.average7Kg.toFixed(2)}kg（実測 ${d.measuredDaysInWindow}/7日）`}</title>
         </circle>)}
       <text x="36" y="217" fontSize="12" fill="#53636a">{fmtDate(days[0].day)}</text>
       <text x={endX} y="217" textAnchor="end" fontSize="12" fill="#53636a">{fmtDate(days[days.length - 1].day)}</text>
