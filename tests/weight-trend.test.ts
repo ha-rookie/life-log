@@ -501,8 +501,8 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
       await click("日");
       await until("document.querySelectorAll('.trend-table-scroll tbody tr').length",
         v => v === 30);
-      const target = await evaluate("document.querySelector('.trend-difference')?.textContent");
-      expect(target).toContain("目標上限");
+      const goalTarget = await evaluate("document.querySelector('.trend-difference')?.textContent");
+      expect(goalTarget).toContain("目標上限");
       await evaluate("window.__e2e.mode = 'error'");
       await click("週");
       const errorText = await until(
