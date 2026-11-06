@@ -166,7 +166,7 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
   it("runs React19 Chromium through a signed synthetic Access JWT, real Worker and ephemeral local D1", async () => {
     // This test has no remote bindings or credentials. The HTTP edge below only
     // injects test-signed assertions, as Cloudflare Access would in production.
-    if (process.env.CI !== "true") return;
+    if ((globalThis as any).process?.env?.CI !== "true") return;
     const fs = await vi.importActual<any>("node:fs");
     const path = await vi.importActual<any>("node:path");
     const http = await vi.importActual<any>("node:http");
@@ -174,7 +174,7 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
     const vite = await vi.importActual<any>("vite");
     const { jstDay, parseDay } = await import("../src/shared/weight-trend");
     const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-    const work = fs.mkdtempSync(path.join(process.cwd(), ".pr33-jwt-d1-e2e-"));
+    const work = fs.mkdtempSync(path.join(path.resolve("."), ".pr33-jwt-d1-e2e-"));
     const dist = path.join(work, "dist");
     const profile = fs.mkdtempSync(path.join(work, "chrome-"));
     let server: any, chrome: any, ws: WebSocket | undefined;
@@ -204,7 +204,7 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       let dbReads = 0;
       const apiStatuses: number[] = [];
       const asset = async (request: Request) => {
-        const url = new URL(request.url);
+        const url = new globalThis.URL(request.url);
         const relative = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
         const resolved = path.resolve(dist, relative);
         if (!resolved.startsWith(dist + path.sep)) return new Response("Not found", { status: 404 });
@@ -246,8 +246,8 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
           if (identity !== "missing") headers.set("Cf-Access-Jwt-Assertion",
             identity === "owner" ? signedOwner : signedOther);
           const result = await worker.fetch(new Request(url, { method: req.method, headers }), env);
-          if (new URL(url).pathname === "/api/weight/trend") apiStatuses.push(result.status);
-          const output = Buffer.from(await result.arrayBuffer());
+          if (new globalThis.URL(url).pathname === "/api/weight/trend") apiStatuses.push(result.status);
+          const output = new Uint8Array(await result.arrayBuffer());
           res.writeHead(result.status, Object.fromEntries(result.headers.entries()));
           res.end(output);
         } catch {
