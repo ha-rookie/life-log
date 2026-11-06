@@ -210,4 +210,90 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(t.excludedAnomaly).toBe(2);
     expect(t.excludedNonMeasured).toBe(1);
   });
+  it("runs the pinned React 19 component in real 390px Chromium with synthetic weight API", async () => {
+    if ((globalThis as any).process?.env?.CI !== "true") return;
+    const fs=await vi.importActual<any>("node:fs"), path=await vi.importActual<any>("node:path");
+    const http=await vi.importActual<any>("node:http"), cp=await vi.importActual<any>("node:child_process");
+    const vite=await vi.importActual<any>("vite");
+    const sleep=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
+    const work=fs.mkdtempSync(new URL("../.pr33-e2e-",import.meta.url).pathname);
+    const profile=fs.mkdtempSync(path.join(work,"chrome-"));
+    let server:any,chrome:any,ws:WebSocket|undefined;
+    try {
+      const entry=[
+        'import React,{StrictMode} from "react";',
+        'import {createRoot} from "react-dom/client";',
+        'import {WeightTrendPanel} from "../src/client/WeightTrend";',
+        'import {buildWeightTrend,addSevenDayAverage,jstDay,parseDay} from "../src/shared/weight-trend";',
+        'import "../src/client/styles.css";',
+        'const now=parseDay(jstDay(Date.now()));const rows=[];',
+        'for(let i=0;i<370;i+=2){if(i>110&&i<170)continue;const d=new Date(now-i*86400000).toISOString().slice(0,10);rows.push({id:"test-"+i,measured_at:d+"T08:15:00+09:00",weight_kg:Math.round((77+Math.sin(i/20))*10)/10,source_kind:"measured",anomaly_flag:0});}',
+        'window.__apiMode="normal";window.__apiCalls=0;window.__jsErrors=[];',
+        'window.addEventListener("error",e=>window.__jsErrors.push(String(e.message)));',
+        'window.addEventListener("unhandledrejection",e=>window.__jsErrors.push(String(e.reason)));',
+        'window.fetch=async function(input){const u=new URL(typeof input==="string"?input:input.url,location.href);if(u.pathname!=="/api/weight/trend")return new Response("missing",{status:404});window.__apiCalls++;if(window.__apiMode==="error")return new Response("error",{status:503});const rec=window.__apiMode==="empty"?[]:rows;const x=addSevenDayAverage(buildWeightTrend(rec,u.searchParams.get("from"),u.searchParams.get("to")),rec);return new Response(JSON.stringify(x),{status:200,headers:{"Content-Type":"application/json"}});};',
+        'createRoot(document.getElementById("root")).render(<StrictMode><WeightTrendPanel/></StrictMode>);',
+        'const checks=[];const verify=(name,value)=>checks.push({name,pass:Boolean(value)});',
+        'const pause=ms=>new Promise(r=>setTimeout(r,ms));',
+        'async function until(fn){for(let i=0;i<60;i++){if(fn())return;await pause(100)}throw Error("waiting for UI");}',
+        'function click(label,selector){const el=[...document.querySelectorAll(selector)].find(e=>e.textContent===label);if(!el)throw Error("button:"+label);el.click();}',
+        'async function run(){try{await until(()=>document.querySelector(".trend-table-scroll tbody")?.children.length===30);',
+        'verify("React19.3.1",React.version==="19.3.1");verify("390 viewport",innerWidth===390);',
+        'verify("30 daily rows",document.querySelector(".trend-table-scroll tbody").children.length===30);verify("7-day mean plotted",document.querySelectorAll(".average-point").length>0);verify("daily keyboard region",document.querySelector(".trend-table-scroll").tabIndex===0);',
+        'click("週",".trend-granularity button");await until(()=>document.querySelector(".trend-period-table tbody")?.children.length===12);',
+        'verify("12 weekly rows",document.querySelector(".trend-period-table tbody").children.length===12);verify("weekly keyboard region",document.querySelector(".trend-scroll")?.tabIndex===0);',
+        'click("月",".trend-granularity button");await until(()=>document.querySelector(".trend-month-fit svg")&&document.querySelector(".trend-period-table tbody")?.children.length===12);',
+        'const box=document.querySelector(".trend-month-fit");verify("12 monthly rows",document.querySelector(".trend-period-table tbody").children.length===12);verify("monthly no overflow",document.documentElement.scrollWidth<=390&&box.scrollWidth===box.clientWidth);verify("monthly within viewport",box.getBoundingClientRect().width<=390);verify("missing month kept",[...document.querySelectorAll(".trend-period-table td")].some(n=>n.textContent==="欠測"));',
+        'const start=document.querySelector(".trend-period-nav span").textContent;click("前の期間",".trend-period-nav button");await until(()=>document.querySelector(".trend-period-nav span").textContent!==start);verify("previous period",document.querySelector(".trend-period-nav span").textContent!==start);',
+        'click("最新へ",".trend-period-nav button");await until(()=>document.querySelector(".trend-period-nav span").textContent===start);verify("latest reset",document.querySelector(".trend-period-nav button:last-child").disabled);',
+        'const input=document.querySelectorAll("input[type=number]")[1];Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(input,"79");input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}));await pause(150);verify("goal edit",document.querySelector(".trend-difference")?.textContent.includes("目標範囲内"));',
+        'window.__apiMode="error";click("日",".trend-granularity button");await until(()=>document.querySelector("[role=alert]")?.textContent.includes("取得できません"));verify("503 error visible",true);',
+        'window.__apiMode="empty";click("週",".trend-granularity button");await until(()=>document.body.textContent.includes("この期間には表示できる実測値がありません"));verify("empty data visible",true);',
+        'verify("no JS errors",window.__jsErrors.length===0);',
+        '}catch(e){checks.push({name:"unexpected failure",pass:false,details:String(e)})}window.__e2e={done:true,checks,react:React.version,width:innerWidth,calls:window.__apiCalls};}',
+        'void run();',
+      ].join("\n");
+      fs.writeFileSync(path.join(work,"entry.tsx"),entry);
+      fs.writeFileSync(path.join(work,"index.html"),'<!doctype html><html lang="ja"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div class="container"><div id="root"></div></div><script type="module" src="/entry.tsx"></script></body></html>');
+      await vite.build({configFile:false,root:work,logLevel:"error",build:{outDir:path.join(work,"dist"),emptyOutDir:true}});
+      server=http.createServer((req:any,res:any)=>{
+        const u=new URL(req.url,"http://127.0.0.1");const file=path.join(work,"dist",u.pathname==="/"?"index.html":u.pathname.slice(1));
+        if(!file.startsWith(path.join(work,"dist"))||!fs.existsSync(file)){res.writeHead(404);res.end();return;}
+        res.setHeader("Content-Type",file.endsWith(".js")?"text/javascript":file.endsWith(".css")?"text/css":"text/html");res.end(fs.readFileSync(file));
+      });
+      await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+      const bin=["/usr/bin/google-chrome","/usr/bin/google-chrome-stable","/usr/bin/chromium","/usr/bin/chromium-browser"].find((n:string)=>fs.existsSync(n));
+      if(!bin)throw Error("Chrome not found on CI runner");
+      chrome=cp.spawn(bin,["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--remote-debugging-port=0","--user-data-dir="+profile,"about:blank"],{stdio:"ignore"});
+      let info="";for(let i=0;i<100;i++){const f=path.join(profile,"DevToolsActivePort");if(fs.existsSync(f)){info=fs.readFileSync(f,"utf8");break;}await sleep(100)}
+      if(!info)throw Error("Chrome debugging port not available");
+      const port=Number(info.split("\n")[0]);const tabs=await (await fetch("http://127.0.0.1:"+port+"/json/list")).json() as any[];
+      ws=new WebSocket(tabs.find(x=>x.type==="page").webSocketDebuggerUrl);
+      await new Promise<void>((resolve,reject)=>{ws!.addEventListener("open",()=>resolve(),{once:true});ws!.addEventListener("error",()=>reject(Error("Chrome websocket error")),{once:true});});
+      let id=0;const pending=new Map<number,(v:any)=>void>();
+      ws.addEventListener("message",e=>{const m=JSON.parse(String(e.data));if(m.id&&pending.has(m.id)){pending.get(m.id)!(m);pending.delete(m.id)}});
+      async function call(method:string,params:any={}){const n=++id;const result=new Promise<any>(resolve=>pending.set(n,resolve));ws!.send(JSON.stringify({id:n,method,params}));const r=await result;if(r.error)throw Error(JSON.stringify(r.error));return r.result;}
+      await call("Page.enable");await call("Runtime.enable");
+      await call("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+      await call("Page.navigate",{url:"http://127.0.0.1:"+server.address().port+"/"});
+      let report:any;
+      for(let i=0;i<130;i++){
+        const r=await call("Runtime.evaluate",{expression:"window.__e2e",returnByValue:true});
+        if(r.result?.value?.done){report=r.result.value;break;}
+        await sleep(100);
+      }
+      if(!report)throw Error("React19 browser scenario timed out before reporting checks");
+      console.log("REAL_REACT19_CHROMIUM_390",JSON.stringify(report));
+      expect(report.react).toBe("19.3.1");expect(report.width).toBe(390);
+      expect(report.calls).toBeGreaterThan(0);
+      expect(report.checks.length).toBeGreaterThanOrEqual(13);
+      expect(report.checks.filter((c:any)=>!c.pass)).toEqual([]);
+    } finally {
+      try{ws?.close();}catch{}
+      try{chrome?.kill();}catch{}
+      if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));
+      await sleep(250);try{fs.rmSync(work,{recursive:true,force:true,maxRetries:5,retryDelay:100});}catch{}
+    }
+  },110_000);
+
 });
