@@ -296,4 +296,237 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     }
   },110_000);
 
+
+  it("runs the real React 19 Vite app in Chromium at 390px with synthetic data", async () => {
+    // CI uses npm ci, React 19.3.1 and Vite 8.3.5. This is an actual
+    // Chromium DOM interaction test, NOT a React16-adapter mock.
+    // HTTP is loopback-only; all /api/* calls are replaced before page load.
+    const { spawn } = await vi.importActual<{
+      spawn(binary: string, argv: string[], options: { stdio: "ignore" }): { kill(): void };
+    }>("node:child_process");
+    const { mkdtempSync, existsSync, readFileSync, rmSync } = await vi.importActual<{
+      mkdtempSync(path: string): string;
+      existsSync(path: string): boolean;
+      readFileSync(path: string, encoding: string): string;
+      rmSync(path: string, options: { recursive: boolean; force: boolean }): void;
+    }>("node:fs");
+    const { join } = await vi.importActual<{ join(...parts: string[]): string }>("node:path");
+    const { tmpdir } = await vi.importActual<{ tmpdir(): string }>("node:os");
+    const runtime = Reflect.get(globalThis, "process") as {
+      execPath: string; env: Record<string, string | undefined>;
+    };
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+    const browserPath = [
+      runtime.env.CHROME_BIN,
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/opt/google/chrome/chrome",
+    ].find((path): path is string => Boolean(path && existsSync(path)));
+    expect(browserPath, "CI must have real Chromium or Chrome installed").toBeTruthy();
+    const home = mkdtempSync(join(tmpdir(), "life-log-react19-e2e-"));
+    const vite = spawn(runtime.execPath,
+      ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1",
+        "--port", "5198", "--strictPort"], { stdio: "ignore" });
+    let chrome: { kill(): void } | null = null;
+    let ws: WebSocket | null = null;
+    try {
+      let ready = false;
+      for (let i = 0; i < 90; i++) {
+        try {
+          const res = await fetch("http://127.0.0.1:5198/");
+          if (res.ok) { ready = true; break; }
+        } catch { /* local Vite still starting */ }
+        await sleep(150);
+      }
+      expect(ready, "real Vite UI server must start").toBe(true);
+      chrome = spawn(browserPath!, [
+        "--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
+        "--disable-gpu", "--no-first-run", "--remote-debugging-port=0",
+        "--user-data-dir=" + home, "about:blank",
+      ], { stdio: "ignore" });
+      const portFile = join(home, "DevToolsActivePort");
+      let debugPort = 0;
+      for (let i = 0; i < 90; i++) {
+        if (existsSync(portFile)) {
+          debugPort = Number(readFileSync(portFile, "utf8").split("\n")[0]);
+          break;
+        }
+        await sleep(150);
+      }
+      expect(debugPort, "Chromium DevTools must start").toBeGreaterThan(0);
+      const targetResponse = await fetch(
+        "http://127.0.0.1:" + debugPort + "/json/new?about:blank", { method: "PUT" });
+      expect(targetResponse.ok).toBe(true);
+      const target = await targetResponse.json() as { webSocketDebuggerUrl: string };
+      ws = new WebSocket(target.webSocketDebuggerUrl);
+      const socket = ws;
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener("error", () => reject(new Error("DevTools websocket failed")), { once: true });
+      });
+      let id = 0;
+      const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+      const jsErrors: string[] = [];
+      socket.addEventListener("message", event => {
+        const data = JSON.parse(String(event.data)) as {
+          id?: number; result?: any; error?: { message: string };
+          method?: string; params?: { exceptionDetails?: { text: string } };
+        };
+        if (data.method === "Runtime.exceptionThrown") {
+          jsErrors.push(data.params?.exceptionDetails?.text ?? "uncaught error");
+        }
+        if (!data.id) return;
+        const waiter = pending.get(data.id);
+        if (!waiter) return;
+        pending.delete(data.id);
+        if (data.error) waiter.reject(new Error(data.error.message));
+        else waiter.resolve(data.result);
+      });
+      function command(method: string, params: Record<string, unknown> = {}): Promise<any> {
+        return new Promise((resolve, reject) => {
+          const next = ++id;
+          pending.set(next, { resolve, reject });
+          socket.send(JSON.stringify({ id: next, method, params }));
+        });
+      }
+      async function evaluate(expression: string): Promise<any> {
+        const r = await command("Runtime.evaluate", {
+          expression, returnByValue: true, awaitPromise: true,
+        });
+        if (r.exceptionDetails) throw new Error("Browser JS: " + r.exceptionDetails.text);
+        return r.result?.value;
+      }
+      async function until(expression: string, condition: (value: any) => boolean): Promise<any> {
+        for (let i = 0; i < 100; i++) {
+          const value = await evaluate(expression);
+          if (condition(value)) return value;
+          await sleep(100);
+        }
+        throw new Error("Browser condition not reached: " + expression);
+      }
+      function syntheticApi() {
+        const win = window as typeof window & { __e2e: { mode: string; reads: number } };
+        win.__e2e = { mode: "normal", reads: 0 };
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          const input = args[0];
+          const url = new URL(typeof input === "string" ? input
+            : input instanceof URL ? input.href : input.url, location.href);
+          if (url.pathname === "/api/summary") {
+            return Response.json({ latestWeightKg: 78.1, measuredAt: "2026-11-06T08:00:00+09:00" });
+          }
+          if (url.pathname !== "/api/weight/trend") return originalFetch(...args);
+          win.__e2e.reads++;
+          if (win.__e2e.mode === "error") {
+            return Response.json({ error: "DATA_UNAVAILABLE" }, { status: 503 });
+          }
+          const from = url.searchParams.get("from")!;
+          const to = url.searchParams.get("to")!;
+          const start = Date.parse(from + "T00:00:00Z");
+          const end = Date.parse(to + "T00:00:00Z");
+          const todayJst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+          const missingMonth = new Date(Date.UTC(
+            Number(todayJst.slice(0,4)), Number(todayJst.slice(5,7)) - 6, 1
+          )).toISOString().slice(0,7);
+          const days: Array<{
+            day: string; weightKg: number | null; measuredAt: string | null;
+            source: "実測" | null; measuredDaysInWindow: number; average7Kg: number | null;
+          }> = [];
+          for (let cursor = start, n = 0; cursor <= end; cursor += 86400_000, n++) {
+            const day = new Date(cursor).toISOString().slice(0, 10);
+            const kg = win.__e2e.mode === "empty" || n % 5 === 0 ||
+              day.slice(0,7) === missingMonth ? null : Math.round((77.6 + Math.sin(n/8)) * 100) / 100;
+            const preceding = days.slice(-6).map(d => d.weightKg).filter((x): x is number => x !== null);
+            const measured = kg === null ? preceding : [...preceding, kg];
+            days.push({
+              day, weightKg: kg, measuredAt: kg === null ? null : day + "T08:00:00+09:00",
+              source: kg === null ? null : "実測", measuredDaysInWindow: measured.length,
+              average7Kg: measured.length >= 4
+                ? Math.round(measured.reduce((sum,v) => sum+v,0) / measured.length * 100) / 100 : null,
+            });
+          }
+          const measuredDays = days.filter(d => d.weightKg !== null).length;
+          return Response.json({
+            from, to, timezone: "Asia/Tokyo",
+            goal: { lowKg: 75, highKg: 76, targetDate: "2026-12-22" },
+            days, measuredDays, missingDays: days.length - measuredDays,
+            excludedAnomaly: 0, excludedNonMeasured: 0,
+          });
+        };
+      }
+      await command("Page.enable");
+      await command("Runtime.enable");
+      await command("Emulation.setDeviceMetricsOverride",
+        { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+      await command("Page.addScriptToEvaluateOnNewDocument",
+        { source: "(" + syntheticApi.toString() + ")()" });
+      await command("Page.navigate", { url: "http://127.0.0.1:5198/" });
+      await until("!!document.querySelector('[aria-label=\"グラフの表示単位\"]')",
+        Boolean);
+      const initial = await until(
+        "({width: innerWidth, rows: document.querySelectorAll('.trend-table-scroll tbody tr').length, average: document.querySelectorAll('.average-point').length, missing: document.body.innerText.includes('欠測')})",
+        v => v?.rows === 30 && v?.average > 0);
+      expect(initial).toMatchObject({ width: 390, rows: 30, missing: true });
+      const click = async (name: string) => evaluate(
+        "Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === " +
+        JSON.stringify(name) + ")?.click()");
+      await click("週");
+      const weekly = await until(
+        "({rows: document.querySelectorAll('.trend-period-table tbody tr').length, current: document.querySelector('[aria-pressed=true]')?.textContent, hasGoal: document.body.innerText.includes('目標上限')})",
+        v => v?.rows === 12 && v?.current === "週");
+      expect(weekly.hasGoal).toBe(true);
+      await evaluate("document.querySelector('.trend-scroll').scrollLeft = 0; document.querySelector('.trend-scroll').focus()");
+      await command("Input.dispatchKeyEvent",
+        { type: "keyDown", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 });
+      await command("Input.dispatchKeyEvent",
+        { type: "keyUp", key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 });
+      await until("document.querySelector('.trend-scroll')?.scrollLeft ?? 0", v => v > 0);
+      await click("月");
+      const monthly = await until(
+        "({rows:document.querySelectorAll('.trend-period-table tbody tr').length, current:document.querySelector('[aria-pressed=true]')?.textContent, chartWidth:document.querySelector('.trend-month-fit')?.clientWidth, chartScroll:document.querySelector('.trend-month-fit')?.scrollWidth, documentWidth:document.documentElement.scrollWidth, missing:document.querySelector('.trend-period-table')?.innerText.includes('欠測')})",
+        v => v?.rows === 12 && v?.current === "月");
+      expect(monthly.chartWidth).toBeGreaterThan(0);
+      expect(monthly.chartScroll).toBeLessThanOrEqual(monthly.chartWidth + 1);
+      expect(monthly.documentWidth).toBeLessThanOrEqual(391);
+      expect(monthly.missing).toBe(true);
+      await click("前の期間");
+      await until("document.querySelector('nav[aria-label=\"表示期間の移動\"] span')?.textContent || ''",
+        v => v && !v.includes(new Date(Date.now() + 9*3600_000).toISOString().slice(0,7)));
+      await click("次の期間");
+      await until("document.querySelector('.trend-period-table tbody')?.childElementCount ?? 0",
+        v => v === 12);
+      await click("最新へ");
+      await click("日");
+      await until("document.querySelectorAll('.trend-table-scroll tbody tr').length",
+        v => v === 30);
+      const target = await evaluate("document.querySelector('.trend-difference')?.textContent");
+      expect(target).toContain("目標上限");
+      await evaluate("window.__e2e.mode = 'error'");
+      await click("週");
+      const errorText = await until(
+        "document.querySelector('[aria-labelledby=\"trend-title\"] [role=alert]')?.textContent || ''",
+        v => v.includes("取得できません"));
+      expect(errorText).not.toContain("DATA_UNAVAILABLE");
+      await evaluate("window.__e2e.mode = 'empty'");
+      await click("日");
+      const emptyText = await until(
+        "document.querySelector('[aria-labelledby=\"trend-title\"]')?.innerText || ''",
+        v => v.includes("グラフに表示できる実測値がありません"));
+      expect(emptyText).toContain("欠測");
+      expect(jsErrors).toEqual([]);
+      console.log("REACT19_CHROMIUM_390_E2E_PASS",
+        JSON.stringify({ react: "19.3.1", viewport:390,
+          dayRows: initial.rows, weekRows:weekly.rows, monthRows:monthly.rows,
+          monthWidth:monthly.chartWidth, errors:jsErrors.length }));
+    } finally {
+      try { ws?.close(); } catch { /* cleanup */ }
+      try { chrome?.kill(); } catch { /* cleanup */ }
+      vite.kill();
+      await sleep(400);
+      try { rmSync(home, { recursive: true, force: true }); } catch { /* Chrome may still exit */ }
+    }
+  }, 120_000);
+
 });
