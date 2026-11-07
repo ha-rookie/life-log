@@ -1,0 +1,141 @@
+name: Life-log one-time existing D1 schema bootstrap (strict empty DB only)
+
+# One-time schema initialization. No newly allocated D1, no seed data, no deletes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/life-log-uat-schema-init.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-existing-d1-schema-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  initialize:
+    if: github.repository == 'ha-rookie/life-log' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify pinned existing D1 UUID and exactly one initial safe migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" && test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const src=fs.readFileSync('wrangler.jsonc','utf8').split(/\r?\n/)
+            .filter(line=>!line.trimStart().startsWith('//')).join('\n');
+          const cfg=JSON.parse(src), u=cfg.env?.uat;
+          if (u?.name!=='life-log-uat'||u?.d1_databases?.length!==1
+            ||u.d1_databases[0]?.binding!=='DB'
+            ||u.d1_databases[0]?.database_name!=='life-log-dev'
+            ||u.d1_databases[0]?.database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956'
+            ||u.d1_databases[0]?.migrations_dir!=='migrations') {
+            throw Error('UAT D1 resource does not match the single approved database');
+          }
+          const files=fs.readdirSync('migrations').filter(x=>x.endsWith('.sql'));
+          if (files.length!==1||files[0]!=='0001_initial.sql')
+            throw Error('Unexpected migration file list; do not change remote D1');
+          const sql=fs.readFileSync('migrations/0001_initial.sql','utf8')
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith('--')).join('\n');
+          const statements=sql.split(';').map(x=>x.trim()).filter(Boolean);
+          const tables=statements.filter(x=>/^CREATE TABLE IF NOT EXISTS\s/i.test(x));
+          const indexes=statements.filter(x=>/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s/i.test(x));
+          if(tables.length!==11||tables.length+indexes.length!==statements.length)
+            throw Error('Unexpected DDL; only known non-destructive CREATE statements are permitted');
+          const expected=['owners','import_jobs','body_measurements','lifestyle_days',
+            'activity_daily','outings','drink_entries','import_row_audit',
+            'analysis_periods','behavior_hypotheses','behavior_experiments'];
+          if (!expected.every(n=>tables.some(s=>s.startsWith('CREATE TABLE IF NOT EXISTS '+n+' '))))
+            throw Error('Unexpected table identities; refuse remote migration');
+          console.log('Initial migration statically verified: 11 safe CREATE TABLE statements,',indexes.length,'safe indexes.');
+          JS
+          response=$(curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956")
+          jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' \
+            <<< "$response" > /dev/null
+          echo 'Existing remote D1 UUID/name verified. No other Cloudflare resources touched.'
+
+      - name: Confirm target has ONLY internal reserved table before schema migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/pre-migration-tables.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name" > "$path"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/pre-migration-tables.json','utf8'));
+          const packets=Array.isArray(doc)?doc:[doc];
+          if(!packets.length||packets.some(p=>p.success===false||!Array.isArray(p.results)))
+            throw Error('Remote D1 preflight failed. No migration performed.');
+          const tables=packets.flatMap(x=>x.results).map(x=>x.name).sort();
+          if (tables.length!==1||tables[0]!=='_cf_KV') {
+            throw Error('Remote D1 is no longer application-empty; stop without changing any tables');
+          }
+          console.log('Preflight passed: Cloudflare internal table only; no existing application tables.');
+          JS
+
+      - name: Apply pinned non-destructive initial migration to existing D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is the only D1 write. No seed/import/reset; Wrangler captures a
+          # migration recovery backup before applying the initial schema.
+          npx --no-install wrangler d1 migrations apply DB --env uat --remote
+
+      - name: Validate all required remote tables exist and owner rows stay zero
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name" \
+            > "$RUNNER_TEMP/post-migration-tables.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT COUNT(*) AS owner_count FROM owners" \
+            > "$RUNNER_TEMP/post-migration-owner-count.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const parse=(name)=>{
+            const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/'+name,'utf8'));
+            const p=Array.isArray(doc)?doc:[doc];
+            if (!p.length||p.some(x=>x.success===false||!Array.isArray(x.results)))
+              throw Error('Unexpected D1 verification response: '+name);
+            return p.flatMap(x=>x.results);
+          };
+          const names=new Set(parse('post-migration-tables.json').map(x=>x.name));
+          const expected=['owners','import_jobs','body_measurements','lifestyle_days',
+            'activity_daily','outings','drink_entries','import_row_audit',
+            'analysis_periods','behavior_hypotheses','behavior_experiments'];
+          const missing=expected.filter(x=>!names.has(x));
+          if (missing.length) throw Error('Missing newly migrated tables: '+missing.join(', '));
+          const owner=parse('post-migration-owner-count.json');
+          if(owner.length!==1||owner[0].owner_count!==0)
+            throw Error('Unexpected owner row count; do not claim empty clean initialization');
+          console.log('Existing D1 initialization verified:',expected.length,'app tables, owner rows=0');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '### Existing life-log-dev D1 initialized\n'
+            +'- Exactly one pre-existing reserved _cf_KV table; no application tables before the operation\n'
+            +'- Applied only migrations/0001_initial.sql via Wrangler with automatic backup\n'
+            +'- 11 required tables now exist; owner rows=0\n'
+            +'- No new database, seeded records or personal data created\n'
+            +'- Android access still requires Cloudflare Access and owner authentication secrets\n');
+          JS
