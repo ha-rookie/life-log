@@ -14,6 +14,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   const [weightAt, setWeightAt] = useState("");
   const [weightKg, setWeightKg] = useState("");
   const [weightKey, setWeightKey] = useState<string | null>(null);
+  const [weightOriginal, setWeightOriginal] = useState<Weight | null>(null);
   const pendingKey = useRef<string | null>(null);
   const [stepsDay, setStepsDay] = useState(jstToday);
   const [stepsValue, setStepsValue] = useState("");
@@ -34,12 +35,18 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   async function request(path: Action, method: string, payload: Record<string, unknown>) {
     const response = await fetch("/api/manual/" + path, {
       method, credentials: "same-origin", cache: "no-store",
-      headers: { "Content-Type": "application/json" },
+      // A non-simple custom request header complements strict server-side Origin
+      // and Fetch Metadata validation for remote browser writes.
+      headers: { "Content-Type": "application/json",
+        "X-Life-Log-Intent": "manual-write-v1" },
       body: JSON.stringify(payload),
     });
-    const data = await response.json() as { error?: string; status?: string };
+    // The global Access gate can return text rather than JSON for expired JWTs.
+    let data: { error?: string; status?: string } = {};
+    try { data = await response.json() as typeof data; } catch { /* denied auth may be text */ }
     if (!response.ok) {
-      if (response.status === 403) throw new Error("書込は本人認証済みローカル開発環境でのみ許可されます。");
+      if (response.status === 403) throw new Error(
+        "書込が拒否されました。本人認証とローカル開発環境／承認済み本人専用環境の設定を確認してください。");
       if (data.error === "SOURCE_CONFLICT") throw new Error("同日にCSVなど別出典の歩数があります。上書きしません。");
       if (response.status === 409) throw new Error("既存の値と競合しています。履歴を再表示し、訂正操作を選択してください。");
       throw new Error("登録できませんでした（" + (data.error ?? response.status) + "）。");
@@ -49,19 +56,31 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
 
   async function saveWeight(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (busy || !weightAt || !weightKg) return;
+    if (busy || !weightAt || !weightKg || (weightKey !== null && !weightOriginal)) return;
     setBusy(true); setMessage("");
     // A retry after a failed response reuses the same key. A successful save
     // rotates it; no speculative "saved" UI before the server response.
     const key = weightKey ?? (pendingKey.current ??= crypto.randomUUID());
     try {
       const measuredAt = weightAt + ":00+09:00";
-      await request("weight", weightKey ? "PATCH" : "POST", { key, measuredAt, weightKg: Number(weightKg) });
+      await request("weight", weightKey ? "PATCH" : "POST", {
+        key, measuredAt, weightKg: Number(weightKg),
+        ...(weightOriginal && weightKey ? {
+          expectedMeasuredAt: weightOriginal.measuredAt,
+          expectedWeightKg: weightOriginal.weightKg,
+        } : {}),
+      });
       setMessage(weightKey ? "体重の訂正を保存しました。" : "体重を記録しました。");
-      setWeightKey(null); pendingKey.current = null; setWeightAt(""); setWeightKg("");
+      setWeightKey(null); setWeightOriginal(null);
+      pendingKey.current = null; setWeightAt(""); setWeightKg("");
       await load(); onSaved();
-    } catch (err) { setMessage(err instanceof Error ? err.message : "通信に失敗しました。"); }
-    finally { setBusy(false); }
+    } catch (err) {
+      // An unknown network outcome may mean the write committed. Re-read
+      // before the user retries; a POST reuses its stable UUID if needed.
+      await load();
+      setMessage(err instanceof Error ? err.message
+        : "通信結果が不明です。履歴を確認してから再試行してください。");
+    } finally { setBusy(false); }
   }
   async function saveSteps(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -75,19 +94,27 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       setMessage(stepEditing ? "歩数を訂正しました。" : "歩数を記録しました。");
       setStepEditing(false); setOldSteps(null); setStepsValue("");
       await load(); onSaved();
-    } catch (err) { setMessage(err instanceof Error ? err.message : "通信に失敗しました。"); }
-    finally { setBusy(false); }
+    } catch (err) {
+      await load();
+      setMessage(err instanceof Error ? err.message
+        : "通信結果が不明です。履歴を確認してから再試行してください。");
+    } finally { setBusy(false); }
   }
-  async function removeWeight(key: string) {
+  async function removeWeight(row: Weight) {
     if (busy || !window.confirm("この手入力の体重を取り消しますか？CSV由来データは変更されません。")) return;
     setBusy(true); setMessage("");
     try {
-      await request("weight", "DELETE", { key });
+      await request("weight", "DELETE", {
+        key: row.key, expectedMeasuredAt: row.measuredAt,
+        expectedWeightKg: row.weightKg,
+      });
       setMessage("手入力の体重を取り消しました。");
-      setWeightKey(null); pendingKey.current = null;
+      setWeightKey(null); setWeightOriginal(null); pendingKey.current = null;
       await load(); onSaved();
-    } catch (err) { setMessage(err instanceof Error ? err.message : "取消に失敗しました。"); }
-    finally { setBusy(false); }
+    } catch (err) {
+      await load();
+      setMessage(err instanceof Error ? err.message : "取消結果が不明です。履歴を確認してください。");
+    } finally { setBusy(false); }
   }
   async function removeSteps(day: string, expectedSteps: number) {
     if (busy || !window.confirm(day + " の手入力歩数を取り消しますか？")) return;
@@ -97,8 +124,10 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       setMessage("手入力の歩数を取り消しました。");
       setStepEditing(false); setOldSteps(null);
       await load(); onSaved();
-    } catch (err) { setMessage(err instanceof Error ? err.message : "取消に失敗しました。"); }
-    finally { setBusy(false); }
+    } catch (err) {
+      await load();
+      setMessage(err instanceof Error ? err.message : "取消結果が不明です。履歴を確認してください。");
+    } finally { setBusy(false); }
   }
   return <section className="panel manual-entry" aria-labelledby="manual-title">
     <h2 id="manual-title">今日の記録（体重・歩数）</h2>
@@ -114,7 +143,8 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       <div className="manual-actions">
         <button type="submit" disabled={busy || !weightAt || !weightKg}>{weightKey ? "体重を訂正" : "体重を記録"}</button>
         {weightKey && <button type="button" disabled={busy} onClick={() => {
-          setWeightKey(null); pendingKey.current=null; setWeightAt(""); setWeightKg("");
+          setWeightKey(null); setWeightOriginal(null);
+          pendingKey.current=null; setWeightAt(""); setWeightKg("");
         }}>訂正をやめる</button>}
       </div>
     </form>
@@ -146,10 +176,10 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
           <ul>{rows.weights.map(w => <li key={w.key}>
             <span>{w.measuredAt.replace("T", " ").slice(0,16)} · {w.weightKg.toFixed(1)}kg</span>
             <button type="button" disabled={busy} onClick={() => {
-              setWeightKey(w.key); pendingKey.current=null;
+              setWeightKey(w.key); setWeightOriginal(w); pendingKey.current=null;
               setWeightAt(w.measuredAt.slice(0,16)); setWeightKg(String(w.weightKg));
             }}>編集</button>
-            <button type="button" disabled={busy} onClick={() => void removeWeight(w.key)}>取消</button>
+            <button type="button" disabled={busy} onClick={() => void removeWeight(w)}>取消</button>
           </li>)}</ul>
         </div>
         <div><h4>歩数</h4>
