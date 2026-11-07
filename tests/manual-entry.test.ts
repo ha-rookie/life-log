@@ -526,7 +526,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       expect(response.status).toBe(403);
       expect(e.prepare).not.toHaveBeenCalled();
     }
-    const bad=[
+    const bad: {origin?:string|null;site?:string|null;host?:string;headers?:Record<string,string>}[] = [
       {origin:null},{origin:"null"},{origin:"https://evil.example.test"},
       {site:null},{site:"cross-site"},{site:"same-site"},{site:"none"},
       {host:"https://evil.example.test"},
