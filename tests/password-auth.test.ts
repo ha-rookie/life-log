@@ -8,6 +8,27 @@ const req = (path:string, payload:unknown, origin=url) => new Request(url+path,{
 });
 describe("owner password authentication boundary",()=>{
  const unavailable={DB:{prepare:()=>{throw new Error("DB must not be accessed")}}};
+ it("rejects CSRF variants, insecure transport, wrong intent and missing metadata before D1",async()=>{
+  const base=req("/api/auth/login",{password:"a".repeat(12)});
+  const variants=[
+    {name:"missing origin",headers:{"Origin":null}},
+    {name:"cross-site",headers:{"Sec-Fetch-Site":"cross-site"}},
+    {name:"missing fetch metadata",headers:{"Sec-Fetch-Site":null}},
+    {name:"wrong intent",headers:{"X-Life-Log-Intent":"manual-write-v1"}},
+    {name:"wrong content type",headers:{"Content-Type":"text/plain"}},
+  ];
+  for(const v of variants){
+    const headers=new Headers(base.headers);
+    for(const [key,value] of Object.entries(v.headers)){if(value===null)headers.delete(key);else headers.set(key,value);}
+    const res=await authRoute(new Request(base.url,{method:"POST",headers,body:JSON.stringify({password:"a".repeat(12)})}),unavailable as never);
+    expect(res.status,v.name).toBe(403);
+  }
+  const insecure=new Request("http://life-log-uat.ha-rookie.workers.dev/api/auth/login",{
+    method:"POST",headers:{"Origin":"http://life-log-uat.ha-rookie.workers.dev","Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"register-v1","Content-Type":"application/json"},
+    body:JSON.stringify({password:"a".repeat(12)})
+  });
+  expect((await authRoute(insecure,unavailable as never)).status).toBe(403);
+ });
  it("rejects cross-origin enrollment before any DB access",async()=>{
   const res=await authRoute(req("/api/auth/register",{setupCode:"x",password:"a".repeat(12)},"https://attacker.example"),unavailable as never);
   expect(res.status).toBe(403);
