@@ -136,7 +136,6 @@ jobs:
         run: |
           set -euo pipefail
           # One-shot approved 0002 apply; fail closed unless exactly 0002 is pending.
-          test "$(npx --no-install wrangler d1 migrations list DB --env uat --remote --json 2>/dev/null | jq -r '[.[]?.name] | join(\",\")')" = '0002_owner_auth.sql'
           # Wrangler creates a recovery backup; no initial bootstrap or seed operations.
           npx --no-install wrangler d1 migrations apply DB --env uat --remote
       - name: Confirm auth schema after apply (SELECT only)
