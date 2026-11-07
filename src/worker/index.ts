@@ -1,6 +1,7 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
 import { registrationScreen } from "./registration-screen";
+import { loginScreen } from "./login-screen";
 import { authRoute, sessionOwner } from "./password-auth";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
@@ -31,10 +32,15 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       // Isolated local-device preview: no D1 reads/writes, cookies, or authenticated API.
       if (new URL(request.url).pathname === "/preview" && request.method === "GET") return localPreview();
       if (new URL(request.url).pathname === "/register" && request.method === "GET") return registrationScreen();
+      if (new URL(request.url).pathname === "/login" && request.method === "GET") return loginScreen();
       if (new URL(request.url).pathname.startsWith("/api/auth/")) return authRoute(request, env as unknown as Parameters<typeof authRoute>[1]);
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
-      const ownerId = await authorize(request, env) ?? await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]);
+      let ownerId = await authorize(request, env);
+      if (!ownerId) {
+        try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); }
+        catch { ownerId = null; }
+      }
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
 
       const path = new URL(request.url).pathname;
