@@ -13,6 +13,7 @@ export interface Env extends AccessEnv {
   DB: Database;
   OWNER_SETUP_CODE?: string;
   PASSWORD_ONLY_UAT?: string;
+  AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> };
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
   // Separate opt-in for manual writes. Must never be set in a remote Worker.
@@ -37,7 +38,8 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       if (new URL(request.url).pathname.startsWith("/api/auth/")) return authRoute(request, env as unknown as Parameters<typeof authRoute>[1]);
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
-      let ownerId = await authorize(request, env);
+      // Password-only UAT never accepts Access identity in place of a password session.
+      let ownerId = env.PASSWORD_ONLY_UAT === "true" ? null : await authorize(request, env);
       let passwordSession = false;
       if (!ownerId) {
         try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); passwordSession = ownerId === "owner"; }
