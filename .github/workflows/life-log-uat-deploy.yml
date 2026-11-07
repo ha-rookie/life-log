@@ -51,14 +51,16 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           PHASE: ${{ inputs.phase }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-          git fetch --no-tags --depth=1 origin refs/heads/main
-          test "$(git rev-parse FETCH_HEAD)" = "$TARGET_SHA"
+          # Checkout intentionally persists no credentials in this private repository.
+          # Verify main by GitHub's read-only API using the job-scoped token.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           case "$PHASE:$CONFIRMATION" in
             "bootstrap:BOOTSTRAP LIFELOG UAT"|"activate:ACTIVATE LIFELOG UAT") ;;
             *) echo "::error::Explicit phase confirmation mismatch"; exit 1 ;;
@@ -116,13 +118,15 @@ jobs:
       - name: Pin exact main for remote operations
         env:
           TARGET_SHA: ${{ inputs.target_sha }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-          git fetch --no-tags --depth=1 origin refs/heads/main
-          test "$(git rev-parse FETCH_HEAD)" = "$TARGET_SHA"
+          # Checkout intentionally persists no credentials in this private repository.
+          # Verify main by GitHub's read-only API using the job-scoped token.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
       - name: Install locked dependencies and build
         run: |
           npm ci --no-audit --no-fund
