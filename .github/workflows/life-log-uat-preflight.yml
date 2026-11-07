@@ -58,6 +58,7 @@ jobs:
             <<< "$response" >/dev/null
           echo "Existing D1 UUID and name verified; no new D1 requested."
       - name: Inspect remote schema using one read-only SELECT
+        id: schema
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -81,7 +82,10 @@ jobs:
           const missing=required.filter(x=>!tables.includes(x));
           const state=tables.length===0?'EMPTY':missing.length===0?'TABLES_PRESENT':'PARTIAL_OR_UNKNOWN';
           console.log('Existing remote D1 schema state:',state);
+          console.log('Existing table names:',tables.join(', ') || '(none)');
           console.log('Table count:',tables.length,'Required tables:',required.length,'Missing:',missing.length);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            'only_migration_metadata='+String(tables.length===1 && tables[0]==='d1_migrations')+'\n');
           if (missing.length) console.log('Missing table names:',missing.join(', '));
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             '\n### Existing remote D1 schema (SELECT only)\n'
@@ -91,6 +95,30 @@ jobs:
             +'- Missing: '+(missing.join(', ')||'none')+'\n'
             +'- No remote migration, INSERT, DELETE, UPDATE, export, or data read performed.\n'
             +'- EMPTY means an initialization may be considered after checking backups; PARTIAL means stop and reconcile.\n');
+          JS
+      - name: Inspect D1 migration-history row count (read only)
+        if: steps.schema.outputs.only_migration_metadata == 'true'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/life-log-migration-count.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT COUNT(*) AS n FROM d1_migrations" > "$path"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/life-log-migration-count.json','utf8'));
+          const data=Array.isArray(doc)?doc:[doc];
+          if (!data.length||data.some(x=>x.success===false||!Array.isArray(x.results)))
+            throw Error('Could not verify remote D1 migration count');
+          const rows=data.flatMap(x=>x.results);
+          if(rows.length!==1||!Number.isSafeInteger(rows[0].n)||rows[0].n<0)
+            throw Error('Unexpected D1 migration history response');
+          console.log('Cloudflare D1 migration-history row count:',rows[0].n);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '- D1 migration history entries (metadata only): '+rows[0].n+'\n');
           JS
       - name: Check targeted Cloudflare Access app visibility (GET only)
         shell: bash
