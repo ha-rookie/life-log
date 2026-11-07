@@ -10,6 +10,12 @@ const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padSt
 const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
 const ITERATIONS = 210000;
+// High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
+// Enabled exclusively for password-only UAT while no credential is provisioned.
+// First successful login persists it to D1. A registered passkey prevents re-bootstrap
+// after the temporary password is retired; no GitHub setup Secret is required.
+const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
+const UAT_TEMP_HASH = "9992a444eb48fd6383004bbbb404d0b53227bdbe3242edc3788d19ed08e7eeac";
 async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
   const key = await crypto.subtle.importKey("raw",encoder.encode(password),"PBKDF2",false,["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:fromHex(salt),iterations,hash:"SHA-256"},key,256);
@@ -101,6 +107,7 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
     const data=await body(request);
     if(!data||typeof data.password!=="string"||data.password.length<12||data.password.length>128)return json({error:"INVALID"},422);
     if(path==="/api/auth/register"){
+      if(env.PASSWORD_ONLY_UAT==="true")return json({error:"INITIAL_LOGIN_ONLY"},404);
       const setup=env.OWNER_SETUP_CODE;
       if(!setup||setup.length<32)return json({error:"SETUP_NOT_READY"},503);
       if(typeof data.setupCode!=="string"||!equal(await digest(data.setupCode),await digest(setup)))return json({error:"INVALID_CODE"},403);
@@ -120,8 +127,21 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
     }
     if(path==="/api/auth/login"){
       if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
-      const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
+      let cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
         .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+      if(!cred && env.PASSWORD_ONLY_UAT==="true"){
+        // Never recreate the temporary login once a passkey has been enrolled.
+        const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
+        if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
+        const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
+        if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+        await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
+          .bind("owner",new Date().toISOString()).run();
+        await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
+          .bind("owner",UAT_TEMP_SALT,UAT_TEMP_HASH,ITERATIONS,new Date().toISOString()).run();
+        cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
+          .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+      }
       if(!cred)return json({error:"INVALID_CREDENTIALS"},401);
       const hash=await passwordHash(data.password,cred.salt,cred.iterations);
       if(!equal(hash,cred.hash))return json({error:"INVALID_CREDENTIALS"},401);
