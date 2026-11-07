@@ -102,3 +102,12 @@ Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime en
 - Access team/aud/ownerの3シークレットがすべて未設定なら、初回は本人JWTを要求する登録無効のWorkerだけ自動配信する。Secretsが一部のみならDeployを失敗停止。3つ揃った場合は既存リモートD1の必要テーブル存在を読取確認した後にだけ、本人JWT + Remote write制御を有効にして配信する。
 - 新しいD1作成、既存他アプリ/Productionの変更、Remote Migration/fixture/seed、実個人データの自動操作は含まない。既存D1の中身が不明な場合はMigrationを自動適用しない。
 - GitHub ActionsのデプロイはAndroidの利用可能状態を保証しない。Cloudflare Access本人許可ポリシーの実設定と、Android実機での本人ログイン/書込/再読込は別の実測が必要。Workerに本人JWTの設定がない場合、HTTPS配信に成功していても403（fail-closed）になる。
+
+## 16. 2026-11-07｜Android本人利用に向けた既存D1とAccessの初回診断（Issue #42）
+
+- 初回Workerデプロイはmain `aca93383029dbfdbdb19fecaab711c10a6eaaed3` にて成功。UAT URLの匿名アクセス403を確認。ただし403はWorker内のJWT検証がAccess未設定でも返せるため、Zero Trustの本人限定入口が構成された証拠にはならない。
+- `.github/workflows/life-log-uat-preflight.yml` はmainへの承認済変更で自動起動し、既存リモート `life-log-dev` のID/name一致と `sqlite_master` のテーブル名だけをread-onlyで診断する。Access Apps APIもGETだけ。Github Secretは有無だけ記録し値を表示しない。
+- この診断はDBの行データ・個人情報を読まず、D1 Migration/初期化/削除、Access Application作成/設定、Secrets登録、デプロイも実施しない。DBの状態を `EMPTY`（リモート利用前の空）、`TABLES_PRESENT`（少なくとも期待11テーブルが存在）、`PARTIAL_OR_UNKNOWN` として区別する。存在のみの確認ではカラム/制約や既存データ保持は未確認とする。
+- D1を安全に初期化する場合も、対象が完全に空である事実を確認し、既存データ消失を伴わないMigrationのみ適用する。空でないDBを既知スキーマで無条件に上書きしない。
+- Androidへの入口はCloudflareの「Workers & Pages → life-log-uat → Access」で**当該WorkerのみAll trafficを保護**し、ユーザー本人だけのAllowポリシーにする。Workers全体を保護する設定は他アプリへ影響するため選ばない。GitHub側の専用シークレット `LIFE_LOG_ACCESS_TEAM_DOMAIN`、`LIFE_LOG_ACCESS_AUD`、`LIFE_LOG_OWNER_EMAIL` の実設定が必要（値はリポジトリ/ログに記録しない）。
+- SecretsとAccessを設定しただけでは、本人端末からの保存成功を証明できない。保存APIの権限・正規Origin、実D1スキーマ、Androidでの体重・歩数の追加/再表示/修正/再ログイン後保持を実測してから利用可能と認定する。
