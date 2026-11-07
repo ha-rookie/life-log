@@ -104,8 +104,12 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
       const setup=env.OWNER_SETUP_CODE;
       if(!setup||setup.length<32)return json({error:"SETUP_NOT_READY"},503);
       if(typeof data.setupCode!=="string"||!equal(await digest(data.setupCode),await digest(setup)))return json({error:"INVALID_CODE"},403);
-      const existing=await env.DB.prepare("SELECT id FROM owners WHERE id='owner'").bind().first();
+      const existing=await env.DB.prepare("SELECT owner_id FROM owner_credentials LIMIT 1").bind().first();
       if(existing)return json({error:"ALREADY_REGISTERED"},409);
+      // Owner may already exist from imported data. A registered passkey, not
+      // the owners row, proves bootstrap was previously completed.
+      const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
+      if(passkey)return json({error:"ALREADY_REGISTERED"},409);
       const salt=toHex(crypto.getRandomValues(new Uint8Array(16)));
       const hash=await passwordHash(data.password,salt);
       await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)").bind("owner",new Date().toISOString()).run();
