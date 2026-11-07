@@ -17,13 +17,13 @@ describe("Owner-only Android passkey boundary",()=>{
     expect(res.status).toBe(404);
   });
   it("rejects cross-origin, wrong intent and missing browser metadata before DB",async()=>{
-    for(const override of [
+    for(const override of ([
       {Origin:"https://evil.invalid"},
       {"Sec-Fetch-Site":"cross-site"},
       {"Sec-Fetch-Site":""},
       {"X-Life-Log-Intent":"register-v1"},
       {"Content-Type":"text/plain"},
-    ]){
+    ] as Record<string,string>[])){
       const res=await passkeyRoute(request(route("register/options"),{},override),{
         ...unavailable,PASSWORD_ONLY_UAT:"true",
       } as never);
