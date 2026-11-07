@@ -1,0 +1,156 @@
+name: Life-log auth 0002 D1 guarded migration
+
+# This is a separate incremental migration workflow. It never invokes the 0001
+# strict-empty bootstrap, creates a database, or modifies Worker secrets.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/life-log-auth-0002-migration.yml
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact approved main commit SHA
+        required: true
+        type: string
+      mode:
+        description: Read-only preflight or separately approved schema-only apply
+        required: true
+        type: choice
+        options:
+          - inspect
+          - apply
+      confirmation:
+        description: INSPECT LIFELOG AUTH D1 or APPLY LIFELOG AUTH 0002
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-auth-0002-migration
+  cancel-in-progress: false
+
+jobs:
+  migration:
+    if: github.repository == 'ha-rookie/life-log' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
+      MODE: ${{ github.event_name == 'push' && 'inspect' || inputs.mode }}
+      CONFIRMATION: ${{ github.event_name == 'push' && 'INSPECT LIFELOG AUTH D1' || inputs.confirmation }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Pin main SHA, D1 identity, and exact migration SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          case "$MODE:$CONFIRMATION" in
+            "inspect:INSPECT LIFELOG AUTH D1"|"apply:APPLY LIFELOG AUTH 0002") ;;
+            *) echo "::error::Explicit mode confirmation mismatch"; exit 1 ;;
+          esac
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const cfg=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8').split(/\r?\n/).filter(s=>!s.trimStart().startsWith('//')).join('\n'));
+          const db=cfg.env?.uat?.d1_databases;
+          if(cfg.env?.uat?.name!=='life-log-uat'||db?.length!==1||
+            db[0].binding!=='DB'||db[0].database_name!=='life-log-dev'||
+            db[0].database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956')throw Error('Unexpected D1 binding');
+          const names=fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).sort();
+          if(JSON.stringify(names)!==JSON.stringify(['0001_initial.sql','0002_owner_auth.sql']))throw Error('Unexpected migration set');
+          const sql=fs.readFileSync('migrations/0002_owner_auth.sql','utf8');
+          const clean=sql.split(/\r?\n/).filter(s=>!s.trimStart().startsWith('--')).join('\n');
+          const stmts=clean.split(';').map(s=>s.trim()).filter(Boolean);
+          if(stmts.length!==3||!stmts[0].startsWith('CREATE TABLE IF NOT EXISTS owner_credentials ')||
+             !stmts[1].startsWith('CREATE TABLE IF NOT EXISTS owner_sessions ')||
+             !stmts[2].startsWith('CREATE INDEX IF NOT EXISTS idx_owner_sessions_expiry ')||
+             /\b(DROP|DELETE|UPDATE|INSERT|ALTER|REPLACE|TRUNCATE|ATTACH)\b/i.test(clean))throw Error('Migration DDL not approved');
+          console.log('0002 static guard passed: 2 CREATE TABLE and 1 CREATE INDEX only');
+          JS
+      - name: Install pinned Wrangler
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify remote D1 metadata (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Inspect exact tables and migration history (SELECT only)
+        id: inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name" > "$RUNNER_TEMP/tables.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM d1_migrations ORDER BY name" > "$RUNNER_TEMP/migrations.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT (SELECT COUNT(*) FROM owners) AS owners, (SELECT COUNT(*) FROM body_measurements) AS weights, (SELECT COUNT(*) FROM activity_daily) AS activities" > "$RUNNER_TEMP/counts.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          function rows(file){const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/'+file+'.json','utf8'));const a=Array.isArray(x)?x:[x];if(!a.length||a.some(v=>v.success===false||!Array.isArray(v.results)))throw Error('Remote D1 read failed: '+file);return a.flatMap(v=>v.results)}
+          const tables=rows('tables').map(x=>x.name);
+          const migrations=rows('migrations').map(x=>x.name);
+          const counts=rows('counts');
+          const required=['owners','import_jobs','body_measurements','lifestyle_days','activity_daily','outings','drink_entries','import_row_audit','analysis_periods','behavior_hypotheses','behavior_experiments','d1_migrations'];
+          const expectedBefore=[...required,'_cf_KV'].sort();
+          const expectedAfter=[...expectedBefore,'owner_credentials','owner_sessions'].sort();
+          const actual=[...tables].sort();
+          const before=JSON.stringify(actual)===JSON.stringify(expectedBefore);
+          const after=JSON.stringify(actual)===JSON.stringify(expectedAfter);
+          const initial=migrations.includes('0001_initial.sql');
+          const auth=migrations.includes('0002_owner_auth.sql');
+          const known=migrations.every(x=>['0001_initial.sql','0002_owner_auth.sql'].includes(x));
+          const safe=known&&initial&&((before&&!auth)||(after&&auth));
+          if(counts.length!==1||!['owners','weights','activities'].every(k=>Number.isSafeInteger(counts[0][k])&&counts[0][k]>=0))throw Error('Unexpected counts');
+          console.log('Tables:',tables.join(','));
+          console.log('Migration names:',migrations.join(','));
+          console.log('Record counts (no contents):',JSON.stringify(counts[0]));
+          console.log('Safe state:',safe?'VALID':'UNEXPECTED','0002:',auth?'APPLIED':'PENDING');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,'safe='+safe+'\n'+'pending='+String(safe&&!auth)+'\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '### Read-only D1 auth migration preflight\n- Tables: '+tables.join(', ')+'\n- Migration history: '+migrations.join(', ')+'\n- Counts: '+JSON.stringify(counts[0])+'\n- State: '+(safe?'VALID':'UNEXPECTED')+'\n- 0002: '+(auth?'APPLIED':'PENDING')+'\n');
+          if(!safe)throw Error('Unexpected remote schema or migration history; stop without write');
+          JS
+      - name: Apply incremental migration only with explicit apply confirmation
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply' && steps.inspect.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Wrangler creates a recovery backup; no initial bootstrap or seed operations.
+          npx --no-install wrangler d1 migrations apply DB --env uat --remote
+      - name: Confirm auth schema after apply (SELECT only)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('owner_credentials','owner_sessions') ORDER BY name" > "$RUNNER_TEMP/auth-tables.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM d1_migrations WHERE name='0002_owner_auth.sql'" > "$RUNNER_TEMP/auth-migration.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const get=f=>{const v=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/'+f+'.json','utf8'));return (Array.isArray(v)?v:[v]).flatMap(x=>x.results??[])};
+          const names=get('auth-tables').map(x=>x.name).sort();
+          if(JSON.stringify(names)!==JSON.stringify(['owner_credentials','owner_sessions'])||
+            get('auth-migration').length!==1)throw Error('Post-migration schema verification failed');
+          console.log('0002 verified. No owner account or secret provisioned.');
+          JS
