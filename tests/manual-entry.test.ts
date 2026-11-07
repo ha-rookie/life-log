@@ -77,11 +77,15 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   }
-  async function send(path: string, method: string, body?: unknown, flag = "true",
+  async function send(path: string, method: string, body?: unknown, flag: string | null = "true",
     email = AUTH.OWNER_EMAIL, opts = {}) {
-    const e = env(flag);
+    const e = env(flag ?? undefined);
     const res = await worker().fetch(await req(path,method,body,email,opts),e.result);
-    return { status:res.status, body:await res.json() as Outcome, queries:e.prepare.mock.calls };
+    const raw = await res.text();
+    let bodyResult: Outcome;
+    try { bodyResult = JSON.parse(raw) as Outcome; }
+    catch { bodyResult = { error: raw }; }
+    return { status:res.status, body:bodyResult, queries:e.prepare.mock.calls };
   }
   async function rows(table: "body_measurements" | "activity_daily" | "lifestyle_days") {
     return (await db.prepare("SELECT COUNT(*) AS n FROM "+table).first<{n:number}>())?.n ?? 0;
@@ -89,7 +93,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
   it("validates the manual-only gate independently of the CSV opt-in", async () => {
     const request = await req("/api/manual/weight","POST",WEIGHT);
     expect(isSafeLocalManual(request,"true")).toBe(true);
-    for (const flag of [undefined,"","false","TRUE","1"]) {
+    for (const flag of [null,"","false","TRUE","1"]) {
       const got = await send("/api/manual/weight","POST",WEIGHT,flag);
       expect(got.status).toBe(403);
       expect(got.queries).toHaveLength(0);
