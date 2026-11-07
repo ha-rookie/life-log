@@ -1,4 +1,5 @@
 import { verifyOwner, type AccessEnv } from "./auth";
+import { localPreview } from "./local-preview";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
@@ -24,7 +25,9 @@ const privateHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-O
 export function createHandler(authorize: Authorizer = verifyOwner) {
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
-      // Every pathname, including index.html and hashed assets, enters this gate.
+      // Isolated local-device preview: no D1 reads/writes, cookies, or authenticated API.
+      if (new URL(request.url).pathname === "/preview" && request.method === "GET") return localPreview();
+      // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
       const ownerId = await authorize(request, env);
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
