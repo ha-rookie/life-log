@@ -10,6 +10,20 @@ function testEnv(weight: number | null = null): Env {
 }
 
 describe("worker authorization boundary", () => {
+  it("allows only the device-local preview anonymously, never D1 or private assets", async () => {
+    const env = testEnv();
+    const handler = createHandler(async () => null);
+    const preview = await handler.fetch(new Request("https://app.example.invalid/preview"), env);
+    expect(preview.status).toBe(200);
+    expect(preview.headers.get("Content-Type")).toContain("text/html");
+    expect(await preview.text()).toContain("localStorage");
+    for (const [path, method] of [["/preview", "POST"], ["/api/manual/records", "GET"], ["/api/manual/weight", "POST"], ["/", "GET"]]) {
+      const response = await handler.fetch(new Request("https://app.example.invalid" + path, { method }), env);
+      expect(response.status).toBe(403);
+    }
+    expect(env.DB.prepare).not.toHaveBeenCalled();
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+  });
   it("blocks HTML, hashed assets, API and spoofed requests without identity", async () => {
     const env = testEnv();
     const handler = createHandler(async () => null);
