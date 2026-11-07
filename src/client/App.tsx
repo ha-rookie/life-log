@@ -3,6 +3,7 @@ import { WeightTrendPanel } from "./WeightTrend";
 import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
 import { ManualEntry } from "./ManualEntry";
+import { PasskeySetup } from "./PasskeySetup";
 
 type LoadState =
   | { kind: "loading" }
@@ -179,6 +180,7 @@ export function App() {
           {state.summary.measuredAt ?? "測定日時は不明"} · 記録のない日は0kgとして扱いません
         </p>}
       </section>
+      <PasskeySetup />
       <ManualEntry onSaved={() => setRefreshEpoch(n => n + 1)} />
       <WeightTrendPanel key={refreshEpoch} />
       <section className="panel" aria-labelledby="next-title">

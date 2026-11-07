@@ -88,6 +88,41 @@ describe("owner password authentication boundary",()=>{
   expect(res.status).toBe(409);
   expect(statements).toEqual(["SELECT owner_id FROM owner_credentials LIMIT 1"]);
  });
+ it("disables setup-code enrollment in password-only UAT without D1 access",async()=>{
+  const request=req("/api/auth/register",{setupCode:"x".repeat(32),password:"strong-password-123"});
+  request.headers.set("CF-Connecting-IP","203.0.113.1");
+  const env={...unavailable,PASSWORD_ONLY_UAT:"true",
+    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}};
+  expect((await authRoute(request,env as never)).status).toBe(404);
+ });
+ it("rejects an incorrect temporary Owner password without provisioning credentials",async()=>{
+  const queries:string[]=[];
+  const db={prepare:(sql:string)=>{queries.push(sql);return {bind:()=>({
+    first:async()=>null,run:async()=>{throw Error("incorrect password must not write");}
+  })};}};
+  const request=req("/api/auth/login",{username:"owner",password:"incorrect-password"});
+  request.headers.set("CF-Connecting-IP","203.0.113.1");
+  const res=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
+    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
+  expect(res.status).toBe(401);
+  expect(queries).not.toContain(expect.stringContaining("INSERT"));
+ });
+ it("never re-provisions a retired temporary password after passkey enrollment",async()=>{
+  const queries:string[]=[];
+  const db={prepare:(sql:string)=>{queries.push(sql);return {bind:()=>({
+    first:async()=>{
+      if(sql.includes("owner_passkey_credentials"))return {credential_id:"registered"};
+      return null;
+    },
+    run:async()=>{throw Error("retired login must not write");}
+  })};}};
+  const request=req("/api/auth/login",{username:"owner",password:"arbitrary-password"});
+  request.headers.set("CF-Connecting-IP","203.0.113.1");
+  const res=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
+    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
+  expect(res.status).toBe(401);
+  expect(queries.filter(sql=>sql.includes("INSERT"))).toHaveLength(0);
+ });
  it("rejects missing and malformed session cookies without DB access",async()=>{
   expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
   expect(await sessionOwner(new Request(url+"/",{headers:{Cookie:"__Host-life_log_session=bad"}}),unavailable.DB as never)).toBeNull();

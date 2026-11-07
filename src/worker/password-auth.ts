@@ -1,5 +1,7 @@
+import { passkeyRoute } from "./passkey-auth";
+
 type Stmt = { bind(...args: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<{ meta?: { changes?: number } }> } };
-export type AuthDb = { prepare(sql: string): Stmt };
+export type AuthDb = { prepare(sql: string): Stmt; batch?(statements:unknown[]):Promise<unknown[]> };
 export type PasswordAuthEnv = { DB: AuthDb; OWNER_SETUP_CODE?: string; PASSWORD_ONLY_UAT?: string; AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> } };
 const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 const json = (v: unknown, status = 200) => Response.json(v, { status, headers: HEADERS });
@@ -8,6 +10,12 @@ const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padSt
 const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
 const ITERATIONS = 210000;
+// High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
+// Enabled exclusively for password-only UAT while no credential is provisioned.
+// First successful login persists it to D1. A registered passkey prevents re-bootstrap
+// after the temporary password is retired; no GitHub setup Secret is required.
+const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
+const UAT_TEMP_HASH = "9992a444eb48fd6383004bbbb404d0b53227bdbe3242edc3788d19ed08e7eeac";
 async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
   const key = await crypto.subtle.importKey("raw",encoder.encode(password),"PBKDF2",false,["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:fromHex(salt),iterations,hash:"SHA-256"},key,256);
@@ -45,6 +53,26 @@ async function issue(db:AuthDb):Promise<Response>{
     .bind(await digest(token),"owner",now+SEC,now).run();
   return new Response(JSON.stringify({ok:true}),{headers:{...HEADERS,"Content-Type":"application/json","Set-Cookie":setCookie(token,SEC)}});
 }
+
+export async function sessionIsPasskey(request:Request,db:AuthDb):Promise<boolean>{
+  const token=cookie(request,COOKIE);
+  if(!token||!/^[0-9a-f]{64}$/.test(token))return false;
+  const row=await db.prepare("SELECT s.owner_id FROM owner_sessions s JOIN owner_passkey_sessions p ON p.token_hash=s.token_hash WHERE s.token_hash=? AND s.owner_id='owner' AND s.expires_at>?")
+    .bind(await digest(token),Math.floor(Date.now()/1000)).first<{owner_id:string}>();
+  return row?.owner_id==="owner";
+}
+
+export async function issuePasskeySession(db:AuthDb):Promise<Response>{
+  if(!db.batch)throw Error("D1 batch required");
+  const token=toHex(crypto.getRandomValues(new Uint8Array(32)));
+  const tokenHash=await digest(token),now=Math.floor(Date.now()/1000);
+  await db.batch([
+    db.prepare("INSERT INTO owner_sessions(token_hash,owner_id,expires_at,created_at) VALUES(?,?,?,?)")
+      .bind(tokenHash,"owner",now+SEC,now),
+    db.prepare("INSERT INTO owner_passkey_sessions(token_hash) VALUES(?)").bind(tokenHash),
+  ]);
+  return new Response(JSON.stringify({authenticated:true}),{headers:{...HEADERS,"Content-Type":"application/json","Set-Cookie":setCookie(token,SEC)}});
+}
 export async function sessionOwner(request:Request,db:AuthDb):Promise<"owner"|null>{
   const token=cookie(request,COOKIE);
   if(!token||!/^[0-9a-f]{64}$/.test(token))return null;
@@ -54,6 +82,7 @@ export async function sessionOwner(request:Request,db:AuthDb):Promise<"owner"|nu
 }
 export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Response>{
   const path=new URL(request.url).pathname;
+  if(path.startsWith("/api/auth/passkey/"))return passkeyRoute(request,env as never);
   if(request.method!=="POST")return json({error:"METHOD"},405);
   if(!allowed(request))return json({error:"ORIGIN"},403);
   // Password-only internet-facing UAT must have a platform-backed limiter.
@@ -78,11 +107,16 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
     const data=await body(request);
     if(!data||typeof data.password!=="string"||data.password.length<12||data.password.length>128)return json({error:"INVALID"},422);
     if(path==="/api/auth/register"){
+      if(env.PASSWORD_ONLY_UAT==="true")return json({error:"INITIAL_LOGIN_ONLY"},404);
       const setup=env.OWNER_SETUP_CODE;
       if(!setup||setup.length<32)return json({error:"SETUP_NOT_READY"},503);
       if(typeof data.setupCode!=="string"||!equal(await digest(data.setupCode),await digest(setup)))return json({error:"INVALID_CODE"},403);
       const existing=await env.DB.prepare("SELECT owner_id FROM owner_credentials LIMIT 1").bind().first();
       if(existing)return json({error:"ALREADY_REGISTERED"},409);
+      // Owner may already exist from imported data. A registered passkey, not
+      // the owners row, proves bootstrap was previously completed.
+      const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
+      if(passkey)return json({error:"ALREADY_REGISTERED"},409);
       const salt=toHex(crypto.getRandomValues(new Uint8Array(16)));
       const hash=await passwordHash(data.password,salt);
       await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)").bind("owner",new Date().toISOString()).run();
@@ -92,8 +126,22 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
       return issue(env.DB);
     }
     if(path==="/api/auth/login"){
-      const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
+      if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
+      let cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
         .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+      if(!cred && env.PASSWORD_ONLY_UAT==="true"){
+        // Never recreate the temporary login once a passkey has been enrolled.
+        const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
+        if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
+        const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
+        if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+        await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
+          .bind("owner",new Date().toISOString()).run();
+        await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
+          .bind("owner",UAT_TEMP_SALT,UAT_TEMP_HASH,ITERATIONS,new Date().toISOString()).run();
+        cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
+          .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+      }
       if(!cred)return json({error:"INVALID_CREDENTIALS"},401);
       const hash=await passwordHash(data.password,cred.salt,cred.iterations);
       if(!equal(hash,cred.hash))return json({error:"INVALID_CREDENTIALS"},401);
