@@ -74,6 +74,20 @@ describe("owner password authentication boundary",()=>{
   } as never);
   expect(res.status).toBe(503);
  });
+ it("rejects second enrollment before writing owner credentials",async()=>{
+  const statements:string[]=[];
+  const db={prepare:(sql:string)=>{
+    statements.push(sql);
+    return {bind:(..._args:unknown[])=>({
+      first:async()=>({owner_id:"owner"}),
+      run:async()=>{throw Error("second enrollment must not mutate D1");},
+    })};
+  }};
+  const request=req("/api/auth/register",{setupCode:"s".repeat(32),password:"strong-password-123"});
+  const res=await authRoute(request,{DB:db,OWNER_SETUP_CODE:"s".repeat(32)} as never);
+  expect(res.status).toBe(409);
+  expect(statements).toEqual(["SELECT owner_id FROM owner_credentials LIMIT 1"]);
+ });
  it("rejects missing and malformed session cookies without DB access",async()=>{
   expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
   expect(await sessionOwner(new Request(url+"/",{headers:{Cookie:"__Host-life_log_session=bad"}}),unavailable.DB as never)).toBeNull();
