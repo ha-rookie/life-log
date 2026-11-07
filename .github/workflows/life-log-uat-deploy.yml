@@ -70,11 +70,9 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          import ts from 'typescript';
-          const path = 'wrangler.jsonc';
-          const parsed = ts.parseConfigFileTextToJson(path, fs.readFileSync(path, 'utf8'));
-          if (parsed.error) throw Error('Invalid wrangler.jsonc');
-          const cfg = parsed.config, uat = cfg.env?.uat;
+          const lines = fs.readFileSync('wrangler.jsonc', 'utf8').split(/\r?\n/)
+            .filter(line => !line.trimStart().startsWith('//'));
+          const cfg = JSON.parse(lines.join('\n')), uat = cfg.env?.uat;
           const id = '421d0116-5c33-4782-a2b6-28f9684d3956';
           const url = 'https://life-log-uat.ha-rookie.workers.dev';
           if (uat?.name !== 'life-log-uat' || uat?.workers_dev !== true
