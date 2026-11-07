@@ -4,7 +4,7 @@ type Weight = { key: string; measuredAt: string; weightKg: number };
 type Steps = { day: string; steps: number };
 type Records = { from: string; to: string; weights: Weight[]; steps: Steps[] };
 const jstToday = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
-const empty = { weights: [], steps: [] } as Records;
+const empty: Records = { from: "", to: "", weights: [], steps: [] };
 type Action = "weight" | "steps";
 export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   const [rows, setRows] = useState<Records>(empty);
