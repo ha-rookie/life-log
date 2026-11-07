@@ -4,7 +4,7 @@ import { getPlatformProxy } from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { verifyOwner } from "../src/worker/auth";
-import { isSafeLocalManual } from "../src/worker/manual-entry";
+import { isSafeLocalManual, isSafeRemoteManual } from "../src/worker/manual-entry";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ManualEntry } from "../src/client/ManualEntry";
@@ -64,7 +64,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
   }
   function worker() { return createHandler((r,e) => verifyOwner(r,e,keys)); }
   async function req(path: string, method: string, body?: unknown, email = AUTH.OWNER_EMAIL,
-    opts: { origin?: string | null; site?: string | null; token?: string | null; host?: string } = {}) {
+    opts: { origin?: string | null; site?: string | null; token?: string | null; host?: string; headers?: Record<string,string> } = {}) {
     const root = opts.host ?? LOCAL;
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -73,6 +73,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     const site = opts.site === undefined ? "same-origin" : opts.site;
     if (site !== null) headers["Sec-Fetch-Site"] = site;
     if (opts.token !== null) headers["Cf-Access-Jwt-Assertion"] = opts.token ?? await sign(email);
+    Object.assign(headers, opts.headers ?? {});
     return new Request(root + path, {
       method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
@@ -142,22 +143,27 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     const trend=await send("/api/weight/trend?from=2026-11-01&to=2026-11-02","GET");
     expect(trend.status).toBe(200);
     expect((trend.body as any).days.map((x:any)=>x.weightKg)).toEqual([75.1,null]);
-    const edited=await send("/api/manual/weight","PATCH",{...WEIGHT,weightKg:75.6});
+    const edited=await send("/api/manual/weight","PATCH",{...WEIGHT,weightKg:75.6,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:WEIGHT.weightKg});
     expect(edited.status).toBe(200);
     const next=await send("/api/weight/trend?from=2026-11-01&to=2026-11-02","GET");
     expect((next.body as any).days[0].weightKg).toBe(75.6);
-    const deleted=await send("/api/manual/weight","DELETE",{key:KEY});
+    const deleted=await send("/api/manual/weight","DELETE",{key:KEY,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:75.6});
     expect(deleted.status).toBe(200);
     expect(await rows("body_measurements")).toBe(0);
-    expect((await send("/api/manual/weight","DELETE",{key:KEY})).status).toBe(404);
+    expect((await send("/api/manual/weight","DELETE",{key:KEY,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:75.6})).status).toBe(404);
   }, 100_000);
   it("does not alter CSV-imported weight records by supplied IDs", async () => {
     await db.prepare("INSERT INTO body_measurements "
       + "(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) VALUES (?,?,?,?,?,?,?)")
       .bind("csv-measure","owner","2026-11-01T08:32:00+09:00",74,"csv:eclear",KEY,"measured").run();
-    const result=await send("/api/manual/weight","PATCH",{...WEIGHT,weightKg:77});
+    const result=await send("/api/manual/weight","PATCH",{...WEIGHT,weightKg:77,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:WEIGHT.weightKg});
     expect(result.status).toBe(404);
-    expect((await send("/api/manual/weight","DELETE",{key:KEY})).status).toBe(404);
+    expect((await send("/api/manual/weight","DELETE",{key:KEY,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:WEIGHT.weightKg})).status).toBe(404);
     const row=await db.prepare("SELECT weight_kg AS kg FROM body_measurements WHERE id=?")
       .bind("csv-measure").first<{kg:number}>();
     expect(row?.kg).toBe(74);
