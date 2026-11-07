@@ -3,11 +3,18 @@ import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
+import { handleManualEntry, type ManualDb } from "./manual-entry";
 
 export interface Env extends AccessEnv {
   DB: Database;
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
+  // Separate opt-in for manual writes. Must never be set in a remote Worker.
+  MANUAL_ENTRY_LOCAL_ONLY?: string;
+  // UAT-only: independently provisioned, deliberately absent from all deploy configs.
+  MANUAL_REMOTE_WRITE_ENABLED?: string;
+  MANUAL_REMOTE_TARGET?: string;
+  MANUAL_REMOTE_ORIGIN?: string;
   ASSETS: { fetch(input: Request): Promise<Response> };
 }
 
@@ -25,6 +32,12 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
         if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
+        if (path === "/api/manual/records" || path === "/api/manual/weight" || path === "/api/manual/steps") return handleManualEntry(request, env.DB as unknown as ManualDb, ownerId,
+          env.MANUAL_ENTRY_LOCAL_ONLY, {
+            enabled: env.MANUAL_REMOTE_WRITE_ENABLED,
+            target: env.MANUAL_REMOTE_TARGET,
+            origin: env.MANUAL_REMOTE_ORIGIN,
+          });
         if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
         if (path === "/api/import/confirm") {
           if (request.method !== "POST") {
