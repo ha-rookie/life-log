@@ -12,6 +12,8 @@ import { handleManualEntry, type ManualDb } from "./manual-entry";
 export interface Env extends AccessEnv {
   DB: Database;
   OWNER_SETUP_CODE?: string;
+  PASSWORD_ONLY_UAT?: string;
+  AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> };
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
   // Separate opt-in for manual writes. Must never be set in a remote Worker.
@@ -36,9 +38,11 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       if (new URL(request.url).pathname.startsWith("/api/auth/")) return authRoute(request, env as unknown as Parameters<typeof authRoute>[1]);
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
-      let ownerId = await authorize(request, env);
-      if (!ownerId) {
-        try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); }
+      // Password-only UAT never accepts Access identity in place of a password session.
+      let ownerId = env.PASSWORD_ONLY_UAT === "true" ? null : await authorize(request, env);
+      let passwordSession = false;
+      if (!ownerId && env.PASSWORD_ONLY_UAT === "true") {
+        try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); passwordSession = ownerId === "owner"; }
         catch { ownerId = null; }
       }
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
@@ -48,7 +52,8 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
         if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
         if (path === "/api/manual/records" || path === "/api/manual/weight" || path === "/api/manual/steps") return handleManualEntry(request, env.DB as unknown as ManualDb, ownerId,
           env.MANUAL_ENTRY_LOCAL_ONLY, {
-            enabled: env.MANUAL_REMOTE_WRITE_ENABLED,
+            // Remote writes without Access require an authenticated password session AND explicit UAT opt-in.
+            enabled: env.PASSWORD_ONLY_UAT === "true" && !passwordSession ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
             target: env.MANUAL_REMOTE_TARGET,
             origin: env.MANUAL_REMOTE_ORIGIN,
           });

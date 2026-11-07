@@ -1,6 +1,6 @@
 type Stmt = { bind(...args: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<{ meta?: { changes?: number } }> } };
 export type AuthDb = { prepare(sql: string): Stmt };
-export type PasswordAuthEnv = { DB: AuthDb; OWNER_SETUP_CODE?: string };
+export type PasswordAuthEnv = { DB: AuthDb; OWNER_SETUP_CODE?: string; PASSWORD_ONLY_UAT?: string; AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> } };
 const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 const json = (v: unknown, status = 200) => Response.json(v, { status, headers: HEADERS });
 const encoder = new TextEncoder();
@@ -56,6 +56,19 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
   const path=new URL(request.url).pathname;
   if(request.method!=="POST")return json({error:"METHOD"},405);
   if(!allowed(request))return json({error:"ORIGIN"},403);
+  // Password-only internet-facing UAT must have a platform-backed limiter.
+  // Missing/broken bindings fail closed before credential lookup or D1 mutation.
+  if(env.PASSWORD_ONLY_UAT==="true" && (path==="/api/auth/login" || path==="/api/auth/register")) {
+    const ip=request.headers.get("CF-Connecting-IP");
+    if(!ip || !env.AUTH_RATE_LIMITER)return json({error:"AUTH_PROTECTION_UNAVAILABLE"},503);
+    try {
+      const result=await env.AUTH_RATE_LIMITER.limit({key:`${path}:${ip}`});
+      if(!result.success)return json({error:"RATE_LIMITED"},429);
+      // Also limit the single owner account, so rotating source IPs cannot evade the per-IP gate.
+      const account=await env.AUTH_RATE_LIMITER.limit({key:`${path}:owner`});
+      if(!account.success)return json({error:"RATE_LIMITED"},429);
+    } catch {return json({error:"AUTH_PROTECTION_UNAVAILABLE"},503);}
+  }
   try {
     if(path==="/api/auth/logout"){
       const token=cookie(request,COOKIE);

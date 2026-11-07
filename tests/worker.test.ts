@@ -65,6 +65,23 @@ describe("worker authorization boundary", () => {
     expect(env.ASSETS.fetch).not.toHaveBeenCalled();
   });
 
+  it("password-only UAT rejects Access-only identity and manual mutations", async () => {
+    const env = testEnv();
+    env.PASSWORD_ONLY_UAT = "true";
+    env.MANUAL_REMOTE_WRITE_ENABLED = "true";
+    env.MANUAL_REMOTE_TARGET = "uat";
+    env.MANUAL_REMOTE_ORIGIN = "https://life-log-uat.ha-rookie.workers.dev";
+    const handler = createHandler(async () => "owner");
+    for (const path of ["/", "/api/summary", "/api/manual/weight", "/api/manual/steps"]) {
+      const method = path.startsWith("/api/manual/") ? "POST" : "GET";
+      const res = await handler.fetch(new Request("https://life-log-uat.ha-rookie.workers.dev"+path,{
+        method, headers: method === "POST" ? {"Content-Type":"application/json","Origin":"https://life-log-uat.ha-rookie.workers.dev","Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"manual-write-v1"} : {},
+        ...(method === "POST" ? {body:"{}"} : {}),
+      }),env);
+      expect(res.status).toBe(403);
+    }
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+  });
   it("fails closed when the database is unavailable and exposes no internal exception", async () => {
     const env = testEnv();
     env.DB.prepare = vi.fn(() => { throw new Error("sensitive database internals"); });
