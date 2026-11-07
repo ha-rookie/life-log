@@ -207,6 +207,289 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     expect(await rows("body_measurements")).toBe(0);
     expect(await rows("activity_daily")).toBe(0);
   });
+
+  it("operates real React19 App in 390px Chromium via signed JWT, Worker and ephemeral local D1", async () => {
+    if ((globalThis as any).process?.env?.CI !== "true") return;
+    const fs = await vi.importActual<any>("node:fs");
+    const path = await vi.importActual<any>("node:path");
+    const http = await vi.importActual<any>("node:http");
+    const child = await vi.importActual<any>("node:child_process");
+    const vite = await vi.importActual<any>("vite");
+    const { jstDay } = await import("../src/shared/weight-trend");
+    const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+    const dir = fs.mkdtempSync(path.join(path.resolve("."), ".pr34-browser-e2e-"));
+    const dist = path.join(dir, "dist");
+    const profile = fs.mkdtempSync(path.join(dir, "chrome-"));
+    let server: any, chrome: any, ws: WebSocket | undefined;
+    const browserErrors: string[] = [];
+    try {
+      const day = jstDay(Date.now() - 86400000);
+      const time = day + "T08:32";
+      const jwt = await sign(AUTH.OWNER_EMAIL);
+      const handler = worker();
+      let localWrites = true;
+      let databaseFail = false;
+      let authorizedReads = 0;
+      let refreshCount = 0;
+      const apiCalls: { path: string; method: string; status: number }[] = [];
+      fs.writeFileSync(path.join(dir, "entry.tsx"), [
+        'import React,{StrictMode} from "react";',
+        'import {createRoot} from "react-dom/client";',
+        'import {App} from "../src/client/App";',
+        'import "../src/client/styles.css";',
+        'window.__browserErrors=[];',
+        'window.addEventListener("error",e=>window.__browserErrors.push(String(e.message)));',
+        'window.addEventListener("unhandledrejection",e=>window.__browserErrors.push(String(e.reason)));',
+        'window.__reactVersion=React.version;',
+        'createRoot(document.getElementById("root")).render(<StrictMode><App/></StrictMode>);',
+      ].join("\n"));
+      fs.writeFileSync(path.join(dir, "index.html"),
+        '<!doctype html><html lang="ja"><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/entry.tsx"></script></body></html>');
+      await vite.build({configFile:false,root:dir,logLevel:"error",
+        build:{outDir:dist,emptyOutDir:true}});
+      async function staticAsset(request: Request) {
+        const u = new globalThis.URL(request.url);
+        const rel = u.pathname === "/" ? "index.html" : decodeURIComponent(u.pathname.slice(1));
+        const filepath = path.resolve(dist,rel);
+        if (!filepath.startsWith(dist + path.sep) || !fs.existsSync(filepath)
+          || !fs.statSync(filepath).isFile()) return new Response("Not found",{status:404});
+        const mime = filepath.endsWith(".js") ? "text/javascript"
+          : filepath.endsWith(".css") ? "text/css" : "text/html";
+        return new Response(fs.readFileSync(filepath),{headers:{"Content-Type":mime}});
+      }
+      const env = {
+        ...AUTH, get MANUAL_ENTRY_LOCAL_ONLY() {return localWrites ? "true" : undefined;},
+        DB: {prepare(sql:string) {
+          if (databaseFail) throw new Error("synthetic confidential D1 failure");
+          authorizedReads++;
+          return db.prepare(sql);
+        }}, ASSETS:{fetch:staticAsset},
+      } as unknown as Env;
+      server = http.createServer(async (request:any,response:any) => {
+        try {
+          const url = "http://127.0.0.1:" + server.address().port + request.url;
+          const headers = new Headers(request.headers);
+          headers.set("Cf-Access-Jwt-Assertion",jwt);
+          const input = await (async () => {
+            const parts:Uint8Array[]=[];
+            for await (const chunk of request) parts.push(new Uint8Array(chunk));
+            return new Uint8Array((await vi.importActual<any>("node:buffer")).Buffer.concat(parts));
+          })();
+          const init:RequestInit = {method:request.method,headers};
+          if (!["GET","HEAD"].includes(request.method)) {
+            init.body = input;
+            (init as RequestInit & {duplex?:string}).duplex = "half";
+          }
+          const result = await handler.fetch(new Request(url,init),env);
+          const pathname = new globalThis.URL(url).pathname;
+          if (pathname.startsWith("/api/")) {
+            apiCalls.push({path:pathname,method:request.method,status:result.status});
+            if (pathname === "/api/weight/trend" && result.ok) refreshCount++;
+          }
+          response.writeHead(result.status,Object.fromEntries(result.headers.entries()));
+          response.end(new Uint8Array(await result.arrayBuffer()));
+        } catch (error) {
+          browserErrors.push(String(error));
+          response.writeHead(500,{"Content-Type":"text/plain"});
+          response.end("Local browser harness failure");
+        }
+      });
+      await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+      const chromePath=["/usr/bin/google-chrome","/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium","/usr/bin/chromium-browser"].find((p:string)=>fs.existsSync(p));
+      if (!chromePath) throw new Error("Chromium unavailable in CI");
+      chrome=child.spawn(chromePath,["--headless=new","--no-sandbox","--disable-gpu",
+        "--disable-dev-shm-usage","--remote-debugging-port=0",
+        "--user-data-dir="+profile,"about:blank"],{stdio:"ignore"});
+      let info="";
+      for(let i=0;i<120;i++){
+        const active=path.join(profile,"DevToolsActivePort");
+        if(fs.existsSync(active)){info=fs.readFileSync(active,"utf8");break;}
+        await pause(100);
+      }
+      if(!info)throw Error("Chromium DevTools never started");
+      const debugPort=Number(info.split("\n")[0]);
+      const tabs=await (await fetch("http://127.0.0.1:"+debugPort+"/json/list")).json() as any[];
+      ws=new WebSocket(tabs.find(t=>t.type==="page").webSocketDebuggerUrl);
+      await new Promise<void>((resolve,reject)=>{
+        ws!.addEventListener("open",()=>resolve(),{once:true});
+        ws!.addEventListener("error",()=>reject(Error("CDP connection failed")),{once:true});
+      });
+      let nextId=0;
+      const waits=new Map<number,(x:any)=>void>();
+      ws.addEventListener("message",(m:any)=>{
+        const answer=JSON.parse(String(m.data));
+        if(typeof answer.id==="number"&&waits.has(answer.id)){
+          waits.get(answer.id)!(answer);waits.delete(answer.id);
+        }
+      });
+      async function cdp(method:string,params:any={}) {
+        const id=++nextId;
+        const result=new Promise<any>(resolve=>waits.set(id,resolve));
+        ws!.send(JSON.stringify({id,method,params}));
+        const answer=await result;
+        if(answer.error)throw Error(method+": "+JSON.stringify(answer.error));
+        return answer.result;
+      }
+      async function evaluate(expression:string) {
+        const response=await cdp("Runtime.evaluate",{expression,awaitPromise:true,returnByValue:true});
+        if(response.exceptionDetails)throw Error("Browser JS: "+response.exceptionDetails.text);
+        return response.result?.value;
+      }
+      async function until(expression:string,label:string) {
+        for(let i=0;i<110;i++) {
+          if(await evaluate(expression))return;
+          await pause(100);
+        }
+        const state=await evaluate('({content:document.querySelector(".manual-entry")?.innerText.slice(0,650),'
+          +'forms:[...document.querySelectorAll(".manual-entry form")].map(x=>x.innerText),'
+          +'buttons:[...document.querySelectorAll(".manual-entry button")].map(x=>({t:x.textContent,d:x.disabled})),'
+          +'errs:window.__browserErrors})');
+        throw Error("Browser timeout "+label+" "+JSON.stringify(state));
+      }
+      async function setInput(selector:string,value:string) {
+        const expression='(()=>{const el=document.querySelector('+JSON.stringify(selector)
+          +');if(!el)return "MISSING";'
+          +'Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,'
+          +JSON.stringify(value)+');'
+          +'el.dispatchEvent(new Event("input",{bubbles:true}));'
+          +'el.dispatchEvent(new Event("change",{bubbles:true}));'
+          +'return el.value})()';
+        expect(await evaluate(expression)).toBe(value);
+      }
+      async function click(label:string,root=".manual-entry") {
+        const expression='(()=>{const buttons=[...document.querySelectorAll('
+          +JSON.stringify(root+" button")+')];'
+          +'const el=buttons.find(b=>b.textContent.trim()==='+JSON.stringify(label)+');'
+          +'if(!el||el.disabled)return false;el.click();return true})()';
+        expect(await evaluate(expression)).toBe(true);
+      }
+      async function clickFromRow(sectionIndex:number,rowIndex:number,label:string) {
+        const expr='(()=>{const rows=document.querySelectorAll(".manual-history > div:nth-child('
+          +(sectionIndex+1)+') li");'
+          +'const row=rows['+rowIndex+'];'
+          +'const button=[...row.querySelectorAll("button")].find(x=>x.textContent.trim()=='
+          +JSON.stringify(label)+');if(!button||button.disabled)return false;button.click();return true})()';
+        expect(await evaluate(expr)).toBe(true);
+      }
+      async function numberOf(table:string) {
+        return (await db.prepare("SELECT COUNT(*) AS n FROM "+table)
+          .first<{n:number}>())?.n ?? 0;
+      }
+
+      await cdp("Page.enable");await cdp("Runtime.enable");
+      await cdp("Emulation.setDeviceMetricsOverride",{
+        width:390,height:844,deviceScaleFactor:1,mobile:true,
+      });
+      await cdp("Page.navigate",{url:"http://127.0.0.1:"+server.address().port+"/"});
+      await until('!!document.querySelector(".manual-entry")'
+        +'&&!!document.querySelector(".trend-table-scroll tbody")'
+        +'&&!document.querySelector(".manual-entry [role=status]")',"app+manual history+trend load");
+      expect(await evaluate("window.__reactVersion")).toBe("19.3.1");
+      expect(await evaluate("window.innerWidth")).toBe(390);
+      expect(await evaluate("document.documentElement.scrollWidth")).toBeLessThanOrEqual(390);
+
+      // Native React19-controlled form events: rejection does not create an optimistic success.
+      await setInput('.manual-entry input[type="datetime-local"]',time);
+      await setInput('.manual-entry form:first-of-type input[type="number"]',"75.1");
+      await until('[...document.querySelectorAll(".manual-entry button")]'
+        +'.some(b=>b.textContent.trim()==="体重を記録"&&!b.disabled)',"weight form enabled");
+      localWrites=false;
+      await click("体重を記録");
+      await until('document.querySelector(".manual-entry [role=status]")?.textContent.includes("ローカル開発環境")',
+        "safe 403 visible in form");
+      expect(await numberOf("body_measurements")).toBe(0);
+      expect(await evaluate('document.querySelector(".manual-entry [role=status]")?.textContent.includes("記録しました")')).toBe(false);
+      localWrites=true;
+
+      // Successful weight submission refreshes BOTH manual history, summary and chart.
+      const beforeTrend=refreshCount;
+      await click("体重を記録");
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
+        +'.some(x=>x.textContent.includes("75.1"))',"weight saved to history");
+      await until('document.querySelector(".trend-table-scroll tbody")?.innerText.includes("75.1")',
+        "weight visible in existing trend table");
+      await until('document.querySelector("#weight-title")?.parentElement?.innerText.includes("75.1")',
+        "top summary refreshed");
+      expect(refreshCount).toBeGreaterThan(beforeTrend);
+      expect(await numberOf("body_measurements")).toBe(1);
+
+      // Update existing manual weight and confirm the read-only chart changed.
+      await clickFromRow(0,0,"編集");
+      await until('!![...document.querySelectorAll(".manual-entry button")]'
+        +'.find(b=>b.textContent.trim()==="体重を訂正")',"weight edit mode");
+      await setInput('.manual-entry form:first-of-type input[type="number"]',"75.6");
+      await click("体重を訂正");
+      await until('document.querySelector(".trend-table-scroll tbody")?.innerText.includes("75.6")',
+        "edited weight visible in chart");
+      expect(await numberOf("body_measurements")).toBe(1);
+
+      // Steps: save, correct, and preserve a deliberate zero (not missing).
+      await setInput('.manual-entry input[type="date"]',day);
+      await setInput('.manual-entry form:nth-of-type(2) input[type="number"]',"0");
+      await click("歩数を記録");
+      await until('[...document.querySelectorAll(".manual-history > div:nth-child(2) li")]'
+        +'.some(x=>x.textContent.includes("0歩"))',"zero steps saved");
+      expect(await numberOf("activity_daily")).toBe(1);
+      await clickFromRow(1,0,"編集");
+      await until('!![...document.querySelectorAll(".manual-entry button")]'
+        +'.find(b=>b.textContent.trim()==="歩数を訂正")',"steps edit mode");
+      await setInput('.manual-entry form:nth-of-type(2) input[type="number"]',"1234");
+      await click("歩数を訂正");
+      await until('[...document.querySelectorAll(".manual-history > div:nth-child(2) li")]'
+        +'.some(x=>x.textContent.includes("1,234歩"))',"edited steps saved");
+      expect(await numberOf("activity_daily")).toBe(1);
+
+      // Declining the browser confirmation must not delete anything.
+      expect(await evaluate("(()=>{window.confirm=()=>false;return true})()")).toBe(true);
+      await clickFromRow(1,0,"取消");
+      await pause(150);
+      expect(await numberOf("activity_daily")).toBe(1);
+      expect(await evaluate("(()=>{window.confirm=()=>true;return true})()")).toBe(true);
+      await clickFromRow(1,0,"取消");
+      await until('[...document.querySelectorAll(".manual-history > div:nth-child(2) li")].length===0',
+        "steps cancellation");
+      expect(await numberOf("activity_daily")).toBe(0);
+
+      // Conflict from CSV provenance must be surfaced and must not corrupt that source.
+      await db.prepare("INSERT INTO activity_daily "
+        +"(id,owner_id,local_day,steps,source_id,source_row_key) VALUES (?,?,?,?,?,?)")
+        .bind("csv-only","owner",day,2500,"csv:fit","synthetic:fit:1").run();
+      await setInput('.manual-entry input[type="date"]',day);
+      await setInput('.manual-entry form:nth-of-type(2) input[type="number"]',"3000");
+      await click("歩数を記録");
+      await until('document.querySelector(".manual-entry [role=status]")?.textContent.includes("上書きしません")',
+        "CSV source conflict visible");
+      expect((await db.prepare("SELECT steps FROM activity_daily WHERE id=?")
+        .bind("csv-only").first<{steps:number}>())?.steps).toBe(2500);
+      expect(await numberOf("activity_daily")).toBe(1);
+
+      // Weight deletion restores missing data in chart, including summary.
+      await clickFromRow(0,0,"取消");
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")].length===0',
+        "weight cancelled");
+      await until('document.querySelector("#weight-title")?.parentElement?.innerText.includes("記録なし")',
+        "summary after cancellation");
+      expect(await numberOf("body_measurements")).toBe(0);
+      expect(await evaluate("window.__browserErrors.length")).toBe(0);
+      expect(browserErrors).toHaveLength(0);
+      expect(apiCalls.filter(a=>a.path==="/api/manual/weight"&&a.status===200).length).toBeGreaterThanOrEqual(3);
+      expect(apiCalls.some(a=>a.path==="/api/manual/weight"&&a.status===403)).toBe(true);
+      expect(apiCalls.some(a=>a.path==="/api/manual/steps"&&a.status===409)).toBe(true);
+      const report={react:"19.3.1",width:390,source:"full App / Worker / signed synthetic JWT / ephemeral local D1",
+        weight:"create/edit/cancel/403",steps:"zero/create/edit/cancel/decline/csv409",
+        chartRefresh:true,summaryRefresh:true,noDocumentHorizontalOverflow:true,jsErrors:0,
+        requestStatuses:[...new Set(apiCalls.map(x=>x.status))],remoteResources:false};
+      console.log("MANUAL_ENTRY_REACT19_CHROMIUM_390_E2E",JSON.stringify(report));
+    } finally {
+      try{ws?.close();}catch{}
+      try{chrome?.kill();}catch{}
+      if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));
+      await pause(250);
+      try{fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});}catch{}
+    }
+  },180_000);
+
   it("renders required 390px-entry inputs with explicit datetime and no optimistic success", () => {
     const html=renderToStaticMarkup(createElement(ManualEntry,{onSaved:()=>{}}));
     expect(html).toContain('type="datetime-local"');
