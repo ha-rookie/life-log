@@ -79,3 +79,16 @@ docs/adr/ADR-0001-life-log-infrastructure.md に初期選定を記録。検証�
 
 ## 13. 未決事項
 Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime entrypoint、Google Fit CSV実形式。どれもBootstrap時点では未検証。
+
+## 14. 2026-11-07｜既存リモートD1を実利用先に再利用する方針（Issue #36）
+
+ユーザー方針：D1 Freeの最大10個枠を保全し、別のUAT/Production D1を作らず、既存 `life-log-dev` （ID `421d0116-5c33-4782-a2b6-28f9684d3956`）を最初のAndroid本人利用先に転用する。上記の「Production/PreviewのDBを新規作成する」は旧候補であり、初期利用に限って本節で上書きする。
+
+- `wrangler.jsonc` のrootは引き続きlocal開発/CI専用。Wrangler local D1はリモートD1の個数制限を消費しない。自動CIに `--remote` を追加しない。
+- 永続利用Workerは明示的な`--env uat`の `life-log-uat`。Binding `DB` は既存の `life-log-dev` UUIDと完全一致。名前がdevでも、これ以降はテストデータを無断投入する使い捨て開発D1として扱わない。
+- 登録・訂正のRemote APIは、既存Worker本人JWT/owner検証に加え、`MANUAL_REMOTE_TARGET=uat`、`MANUAL_REMOTE_WRITE_ENABLED=true`、正規HTTPS OriginとFetch Metadata/custom intentの検証に成功したときだけ許可する。既定はfalse。CSV確定POSTのローカル限定制御は変更しない。
+- GitHub Actions `.github/workflows/life-log-uat-deploy.yml` はPR時にLocalテストとUAT bundle dry-runのみ。リモートDeployは`workflow_dispatch`で承認済main SHAと正確な確認文字列が必要。bootstrapは書込禁止のWorkerのみ作成、activateは既存D1のメタ情報・必要テーブル読取確認後、GitHubの専用SecretsからAccess認証情報をアップロードして実行する。新しいD1作成、Remote Migration、テストデータ投入は含まない。
+- WorkerレベルでCloudflare Accessを設定し、全ホスト/Preview/asset/API経路を保護する。入口保護に加えてWorkerの署名済JWTのissuer/audience/所有者メール一致を強制する。GitHub Secret候補：`LIFE_LOG_ACCESS_TEAM_DOMAIN`, `LIFE_LOG_ACCESS_AUD`, `LIFE_LOG_OWNER_EMAIL`（値をコード・Issue・ログに書かない）。
+- リモートD1について確認済みなのはCloudflare API GETで名前/UUIDが一致した点だけ。実テーブル/レコード数、Migration履歴、既存データ、Worker/Access設定の実態は未確認。既存データを消すinit・seed・resetは禁止。必要なMigrationを実行する場合はデータ保持/復旧点を確認し別承認。
+- **現段階はWorkflow準備であり、UAT WorkerのDeploy、Access設定、Secrets設定、Remote SQL、Android実機受入は未実施。** 動作可能との表示をしない。Android本人ログイン→体重登録→履歴→訂正→再ログイン後保持、匿名403/認証切れ/誤Origin拒否を実測してから「利用可能」とする。
+- D1個数制限と無関係なWorkersリソースも他アプリに影響させない。既存mainへのマージ・UAT bootstrap/activate・Remote Migration・本番変更はそれぞれ別途承認する。

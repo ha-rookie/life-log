@@ -1,0 +1,228 @@
+name: Life-log protected UAT deploy (reuse existing D1)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - wrangler.jsonc
+      - .github/workflows/life-log-uat-deploy.yml
+      - src/client/**
+      - src/worker/**
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Exact approved 40-character main SHA"
+        required: true
+        type: string
+      phase:
+        description: "bootstrap = deny-all Worker; activate = enable personal UAT writes"
+        required: true
+        type: choice
+        options:
+          - bootstrap
+          - activate
+      confirmation:
+        description: "BOOTSTRAP LIFELOG UAT or ACTIVATE LIFELOG UAT (after separate approval)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-uat-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate exact main and dispatch gate
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          PHASE: ${{ inputs.phase }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          # Checkout intentionally persists no credentials in this private repository.
+          # Verify main by GitHub's read-only API using the job-scoped token.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          case "$PHASE:$CONFIRMATION" in
+            "bootstrap:BOOTSTRAP LIFELOG UAT"|"activate:ACTIVATE LIFELOG UAT") ;;
+            *) echo "::error::Explicit phase confirmation mismatch"; exit 1 ;;
+          esac
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Verify UAT target is exactly the user-approved existing D1
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const lines = fs.readFileSync('wrangler.jsonc', 'utf8').split(/\r?\n/)
+            .filter(line => !line.trimStart().startsWith('//'));
+          const cfg = JSON.parse(lines.join('\n')), uat = cfg.env?.uat;
+          const id = '421d0116-5c33-4782-a2b6-28f9684d3956';
+          const url = 'https://life-log-uat.ha-rookie.workers.dev';
+          if (uat?.name !== 'life-log-uat' || uat?.workers_dev !== true
+              || uat.d1_databases?.length !== 1
+              || uat.d1_databases[0].binding !== 'DB'
+              || uat.d1_databases[0].database_name !== 'life-log-dev'
+              || uat.d1_databases[0].database_id !== id
+              || uat.vars?.MANUAL_REMOTE_WRITE_ENABLED !== 'false'
+              || uat.vars?.MANUAL_REMOTE_TARGET !== 'uat'
+              || uat.vars?.MANUAL_REMOTE_ORIGIN !== url
+              || uat.assets?.run_worker_first !== true) {
+            throw Error('UAT target or deny-by-default configuration changed');
+          }
+          if (cfg.d1_databases?.[0]?.database_id !== id) {
+            throw Error('Local config binding target unexpectedly changed');
+          }
+          console.log('Exactly one existing remote D1; UAT writes disabled by default.');
+          JS
+      - name: Build and synthetic local-only regressions
+        run: |
+          npm run build
+          npm test
+          npm run test:schema
+          npm run db:migrate:local
+      - name: UAT Worker bundle dry run (no Cloudflare writes)
+        run: npx --no-install wrangler deploy --env uat --dry-run
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Pin exact main for remote operations
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          # Checkout intentionally persists no credentials in this private repository.
+          # Verify main by GitHub's read-only API using the job-scoped token.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+      - name: Install locked dependencies and build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Check Cloudflare token and existing D1 metadata (GET only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" && test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
+      - name: Deploy disabled Worker for Cloudflare Access bootstrap
+        if: inputs.phase == 'bootstrap'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No secrets and no remote-write opt-in: all routes fail closed without a signed owner JWT.
+          npx --no-install wrangler deploy --env uat
+      - name: Verify existing D1 schema read-only before activation
+        if: inputs.phase == 'activate'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This SELECT is remote, intentionally only in a separately approved manual activation.
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('body_measurements','activity_daily')" \
+            > "$RUNNER_TEMP/life-log-uat-tables.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const data = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/life-log-uat-tables.json', 'utf8'));
+          const names = new Set((Array.isArray(data) ? data : [data]).flatMap(x => x.results ?? []).map(x => x.name));
+          if (!names.has('body_measurements') || !names.has('activity_daily'))
+            throw Error('Remote D1 schema missing: do not auto-migrate or overwrite existing data');
+          console.log('Required remote tables found; data contents not read.');
+          JS
+      - name: Activate only after separately approved Access policy and exact owner secrets
+        if: inputs.phase == 'activate'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LIFE_LOG_ACCESS_TEAM_DOMAIN: ${{ secrets.LIFE_LOG_ACCESS_TEAM_DOMAIN }}
+          LIFE_LOG_ACCESS_AUD: ${{ secrets.LIFE_LOG_ACCESS_AUD }}
+          LIFE_LOG_OWNER_EMAIL: ${{ secrets.LIFE_LOG_OWNER_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Requires Cloudflare Access configured for the entire UAT Worker, not just /api/.
+          test -n "${LIFE_LOG_ACCESS_TEAM_DOMAIN:-}"
+          test -n "${LIFE_LOG_ACCESS_AUD:-}"
+          test -n "${LIFE_LOG_OWNER_EMAIL:-}"
+          secret_file="$RUNNER_TEMP/life-log-uat-secrets.json"
+          trap 'rm -f "$secret_file"' EXIT
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const secrets = {
+            ACCESS_TEAM_DOMAIN: process.env.LIFE_LOG_ACCESS_TEAM_DOMAIN,
+            ACCESS_AUD: process.env.LIFE_LOG_ACCESS_AUD,
+            OWNER_EMAIL: process.env.LIFE_LOG_OWNER_EMAIL,
+          };
+          if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(secrets.ACCESS_TEAM_DOMAIN) ||
+              !secrets.ACCESS_AUD || !/^\S+@\S+\.\S+$/.test(secrets.OWNER_EMAIL)) {
+            throw Error('Invalid Access config');
+          }
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/life-log-uat-secrets.json',
+            JSON.stringify(secrets), { mode: 0o600 });
+          JS
+          npx --no-install wrangler deploy --env uat --secrets-file "$secret_file" \
+            --var MANUAL_REMOTE_WRITE_ENABLED:true MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+      - name: Anonymous remote HTTP smoke - must remain forbidden
+        env:
+          URL: https://life-log-uat.ha-rookie.workers.dev/
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(curl --silent --show-error --max-time 20 \
+            --output /dev/null --write-out '%{http_code}' "$URL" || true)
+          case "$status" in
+            401|403|302|303|307) echo "Anonymous access denied: HTTP $status" ;;
+            *) echo "::error::Anonymous UAT route unexpectedly accessible or smoke failed: HTTP $status"; exit 1 ;;
+          esac
+      - name: Record manual acceptance still required
+        shell: bash
+        run: |
+          echo '### Life-log UAT' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Reuses existing D1 life-log-dev, no new D1 created.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- No remote migration, D1 data writes or import occurred in this workflow.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Android real-device sign-in, save/edit/readback, Access bypass negatives remain **unverified**.' >> "$GITHUB_STEP_SUMMARY"

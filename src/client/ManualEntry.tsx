@@ -131,7 +131,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   }
   return <section className="panel manual-entry" aria-labelledby="manual-title">
     <h2 id="manual-title">今日の記録（体重・歩数）</h2>
-    <p className="hint">実際に測定した日時を入力してください。時刻不明の体重は登録せず、推定時刻を作りません。入力・訂正は現在ローカル開発環境だけで有効です。</p>
+    <p className="hint">実際に測定した日時を入力してください。時刻不明の体重は登録せず、推定時刻を作りません。入力・訂正はローカル開発環境、または本人認証と書込許可が設定された専用環境でのみ利用できます。許可のない環境では登録できません。</p>
     <form onSubmit={e => void saveWeight(e)}>
       <h3>体重の実測</h3>
       <div className="manual-fields">
