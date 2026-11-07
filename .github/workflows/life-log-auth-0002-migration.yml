@@ -41,8 +41,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
-      MODE: ${{ github.event_name == 'push' && 'apply' || inputs.mode }}
-      CONFIRMATION: ${{ github.event_name == 'push' && 'APPLY LIFELOG AUTH 0002' || inputs.confirmation }}
+      MODE: ${{ github.event_name == 'push' && 'inspect' || inputs.mode }}
+      CONFIRMATION: ${{ github.event_name == 'push' && 'INSPECT LIFELOG AUTH D1' || inputs.confirmation }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
