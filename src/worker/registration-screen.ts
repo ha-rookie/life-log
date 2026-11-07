@@ -24,11 +24,11 @@ button:disabled{opacity:.5}#status{min-height:24px}small{color:#b9c6d8}
 </form></main><script>
 const form=document.getElementById('register'),status=document.getElementById('status');
 form.addEventListener('submit',async e=>{
- e.preventDefault();const setup=form.setup.value,password=form.password.value;
+ e.preventDefault();const setup=document.getElementById('setup').value,password=document.getElementById('password').value;
  if(password!==document.getElementById('confirm').value){status.textContent='パスワードが一致しません';return}
  const button=form.querySelector('button');button.disabled=true;status.textContent='登録中…';
  try{const res=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json','X-Life-Log-Intent':'register-v1'},credentials:'same-origin',body:JSON.stringify({setupCode:setup,password})});
- if(res.ok){status.textContent='登録が完了しました。ログイン画面に進みます。';form.reset();}
+ if(res.ok){status.textContent='登録が完了しました。';form.reset();location.replace('/');}
  else{status.textContent=res.status===409?'すでに管理者が登録されています':res.status===503?'登録機能の準備中です':'登録できませんでした。コードを確認してください'}
  }catch{status.textContent='通信に失敗しました'}finally{button.disabled=false}
 });
