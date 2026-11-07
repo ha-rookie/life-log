@@ -1,6 +1,7 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
 import { registrationScreen } from "./registration-screen";
+import { authRoute, sessionOwner } from "./password-auth";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
@@ -9,6 +10,7 @@ import { handleManualEntry, type ManualDb } from "./manual-entry";
 
 export interface Env extends AccessEnv {
   DB: Database;
+  OWNER_SETUP_CODE?: string;
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
   // Separate opt-in for manual writes. Must never be set in a remote Worker.
@@ -29,11 +31,10 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       // Isolated local-device preview: no D1 reads/writes, cookies, or authenticated API.
       if (new URL(request.url).pathname === "/preview" && request.method === "GET") return localPreview();
       if (new URL(request.url).pathname === "/register" && request.method === "GET") return registrationScreen();
-      // Enrollment API remains unavailable until one-time token and credential storage are implemented.
-      if (new URL(request.url).pathname === "/api/auth/register") return Response.json({ error: "SETUP_NOT_READY" }, { status: 503, headers: privateHeaders });
+      if (new URL(request.url).pathname.startsWith("/api/auth/")) return authRoute(request, env as unknown as Parameters<typeof authRoute>[1]);
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
-      const ownerId = await authorize(request, env);
+      const ownerId = await authorize(request, env) ?? await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]);
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
 
       const path = new URL(request.url).pathname;
