@@ -111,3 +111,10 @@ Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime en
 - D1を安全に初期化する場合も、対象が完全に空である事実を確認し、既存データ消失を伴わないMigrationのみ適用する。空でないDBを既知スキーマで無条件に上書きしない。
 - Androidへの入口はCloudflareの「Workers & Pages → life-log-uat → Access」で**当該WorkerのみAll trafficを保護**し、ユーザー本人だけのAllowポリシーにする。Workers全体を保護する設定は他アプリへ影響するため選ばない。GitHub側の専用シークレット `LIFE_LOG_ACCESS_TEAM_DOMAIN`、`LIFE_LOG_ACCESS_AUD`、`LIFE_LOG_OWNER_EMAIL` の実設定が必要（値はリポジトリ/ログに記録しない）。
 - SecretsとAccessを設定しただけでは、本人端末からの保存成功を証明できない。保存APIの権限・正規Origin、実D1スキーマ、Androidでの体重・歩数の追加/再表示/修正/再ログイン後保持を実測してから利用可能と認定する。
+
+## 17. 2026-11-07｜既存D1の初期スキーマ構築（Issue #46）
+
+- 最新のRemote read-only診断Run `42356870861` で、唯一のテーブルがCloudflare内部予約テーブル `_cf_KV` であり、ライフログ11テーブルがすべて不存在と確認した。Cloudflare公式D1資料にも内部用 `_cf_KV` が記載されている。
+- `.github/workflows/life-log-uat-schema-init.yml` はmain承認済更新または手動実行時に、既存 `life-log-dev` のUUID/name、Migrationファイルが正確に `migrations/0001_initial.sql` のみであること、SQLが非破壊的CREATE TABLE/INDEXのみであることを静的確認する。
+- Remote `sqlite_master` で実行直前にも**テーブル名が `_cf_KV` のみ**と一致しない場合は、Migrationを書き込まず停止。条件一致時だけWranglerの標準D1 migration applyを一度実施し、必要11テーブルの存在とOwnerの行数0を再検証する。Wrangler migrationのバックアップ機構を利用。
+- 既存D1以外のDB作成/削除、個人行データの初期化・Seed・Import、他アプリ資源変更は行わない。初期化成功でも、Access本人許可・3種Secretが未設定の間はAPI書込有効化されず、Android実機保存は未検証。
