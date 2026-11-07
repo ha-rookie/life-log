@@ -64,6 +64,9 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
     try {
       const result=await env.AUTH_RATE_LIMITER.limit({key:`${path}:${ip}`});
       if(!result.success)return json({error:"RATE_LIMITED"},429);
+      // Also limit the single owner account, so rotating source IPs cannot evade the per-IP gate.
+      const account=await env.AUTH_RATE_LIMITER.limit({key:`${path}:owner`});
+      if(!account.success)return json({error:"RATE_LIMITED"},429);
     } catch {return json({error:"AUTH_PROTECTION_UNAVAILABLE"},503);}
   }
   try {
