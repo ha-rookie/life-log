@@ -34,5 +34,19 @@ rejects("INSERT INTO lifestyle_days(owner_id,local_day,source_id,source_row_key,
 rejects("INSERT INTO body_measurements(id,owner_id,measured_at,source_id,source_row_key,source_kind,reliable_fingerprint) VALUES ('dup','owner','2026-01-02T07:00:00+09:00','eclear','line-1','measured','x')")
 rejects("INSERT INTO body_measurements(id,owner_id,measured_at,source_id,source_row_key,source_kind,reliable_fingerprint) VALUES ('dup2','owner','2026-01-02T07:00:00+09:00','other','line-99','measured','fingerprint-1')")
 rejects("INSERT INTO body_measurements(id,owner_id,measured_at,source_id,source_row_key,source_kind) VALUES ('outside','other','2026-01-01','x','x','measured')")
-assert len(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()) == 11
-print("PASS synthetic SQLite schema: 11 tables, idempotence, cross-source dedup, missing-vs-zero, foreign keys")
+# Auth migrations remain additive and preserve the preexisting personal records.
+conn.executescript((ROOT / "migrations/0002_owner_auth.sql").read_text(encoding="utf-8"))
+conn.executescript((ROOT / "migrations/0003_owner_passkey.sql").read_text(encoding="utf-8"))
+assert conn.execute("SELECT count(*) FROM body_measurements").fetchone()[0] == 2
+assert conn.execute("SELECT count(*) FROM activity_daily").fetchone()[0] == 1
+tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+assert len(tables) == 16, tables
+assert {"owner_credentials", "owner_sessions", "owner_passkey_credentials",
+        "owner_passkey_challenges", "owner_passkey_sessions"} <= tables
+conn.execute("INSERT INTO owner_sessions(token_hash,owner_id,expires_at,created_at) VALUES('passkey','owner',9999999999,0)")
+conn.execute("INSERT INTO owner_passkey_sessions(token_hash) VALUES('passkey')")
+conn.execute("INSERT INTO owner_sessions(token_hash,owner_id,expires_at,created_at) VALUES('password','owner',9999999999,0)")
+conn.execute("DELETE FROM owner_sessions WHERE token_hash NOT IN (SELECT token_hash FROM owner_passkey_sessions)")
+assert conn.execute("SELECT token_hash FROM owner_sessions").fetchall() == [('passkey',)]
+print("PASS synthetic SQLite schema: 16 tables, Owner passkey auth and session retirement, legacy records preserved")
+
