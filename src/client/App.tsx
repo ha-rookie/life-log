@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
 import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
+import { ManualEntry } from "./ManualEntry";
 
 type LoadState =
   | { kind: "loading" }
@@ -28,6 +29,7 @@ export function App() {
   const [review, setReview] = useState<Review | null>(null);
   const [importStatus, setImportStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
   const selectionEpoch = useRef(0);
   const [history,setHistory]=useState<HistoryJob[]>([]);
   const [historyCursor,setHistoryCursor]=useState<string|null>(null);
@@ -158,7 +160,7 @@ export function App() {
     }
     void load();
     return () => controller.abort();
-  }, []);
+  }, [refreshEpoch]);
 
   return (
     <main className="container">
@@ -177,7 +179,8 @@ export function App() {
           {state.summary.measuredAt ?? "測定日時は不明"} · 記録のない日は0kgとして扱いません
         </p>}
       </section>
-      <WeightTrendPanel />
+      <ManualEntry onSaved={() => setRefreshEpoch(n => n + 1)} />
+      <WeightTrendPanel key={refreshEpoch} />
       <section className="panel" aria-labelledby="next-title">
         <h2 id="next-title">次の一手</h2>
         <p>行動実験・飲酒+1は後続Issueで実装予定です。</p>
