@@ -1,5 +1,6 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
+import { registrationScreen } from "./registration-screen";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
@@ -27,6 +28,9 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
     async fetch(request: Request, env: Env): Promise<Response> {
       // Isolated local-device preview: no D1 reads/writes, cookies, or authenticated API.
       if (new URL(request.url).pathname === "/preview" && request.method === "GET") return localPreview();
+      if (new URL(request.url).pathname === "/register" && request.method === "GET") return registrationScreen();
+      // Enrollment API remains unavailable until one-time token and credential storage are implemented.
+      if (new URL(request.url).pathname === "/api/auth/register") return Response.json({ error: "SETUP_NOT_READY" }, { status: 503, headers: privateHeaders });
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
       const ownerId = await authorize(request, env);
