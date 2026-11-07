@@ -103,12 +103,10 @@ jobs:
           }
           console.log('Exactly one existing remote D1; UAT writes disabled by default.');
           JS
-      - name: Build and synthetic local-only regressions
-        run: |
-          npm run build
-          npm test
-          npm run test:schema
-          npm run db:migrate:local
+      # Full unit, security, schema, and local D1 regression tests are owned by
+      # life-log-ci.yml on the same PR SHA. Avoid running them twice here.
+      - name: Build for UAT configuration validation
+        run: npm run build
       - name: UAT Worker bundle dry run (no Cloudflare writes)
         run: npx --no-install wrangler deploy --env uat --dry-run
 
