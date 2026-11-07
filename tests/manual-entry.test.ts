@@ -237,6 +237,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       let databaseFail = false;
       let authorizedReads = 0;
       let refreshCount = 0;
+      let failResponseAfterWeightCommit = false;
       const apiCalls: { path: string; method: string; status: number }[] = [];
       fs.writeFileSync(path.join(dir, "entry.tsx"), [
         'import React,{StrictMode} from "react";',
@@ -291,6 +292,15 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
           if (pathname.startsWith("/api/")) {
             apiCalls.push({path:pathname,method:request.method,status:result.status});
             if (pathname === "/api/weight/trend" && result.ok) refreshCount++;
+          }
+          // Synthetic ambiguous outcome: D1 committed, but the browser receives
+          // an error. Client must re-read and reuse the same UUID on retry.
+          if (failResponseAfterWeightCommit && pathname === "/api/manual/weight"
+              && request.method === "POST" && result.ok) {
+            failResponseAfterWeightCommit = false;
+            response.writeHead(503,{"Content-Type":"application/json"});
+            response.end(JSON.stringify({error:"SYNTHETIC_UNKNOWN_COMMIT"}));
+            return;
           }
           response.writeHead(result.status,Object.fromEntries(result.headers.entries()));
           response.end(new Uint8Array(await result.arrayBuffer()));
@@ -477,6 +487,31 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('document.querySelector("#weight-title")?.parentElement?.innerText.includes("記録なし")',
         "summary after cancellation");
       expect(await numberOf("body_measurements")).toBe(0);
+
+      // A failed response AFTER D1 committed is ambiguous, not a license to
+      // re-create the weight with a new ID or falsely report success.
+      await setInput('.manual-entry input[type="datetime-local"]',time);
+      await setInput('.manual-entry form:first-of-type input[type="number"]',"74.4");
+      failResponseAfterWeightCommit = true;
+      await click("体重を記録");
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
+        +'.some(x=>x.textContent.includes("74.4"))',"readback after ambiguous write");
+      await until('document.querySelector(".manual-entry [role=status]")?.textContent.includes("登録できませんでした")',
+        "unknown response never advertised as success");
+      expect(await numberOf("body_measurements")).toBe(1);
+      await until('[...document.querySelectorAll(".manual-entry button")]'
+        +'.some(b=>b.textContent.trim()==="体重を記録"&&!b.disabled)',
+        "same-key retry enabled");
+      await click("体重を記録");
+      await until('document.querySelector(".manual-entry [role=status]")?.textContent.includes("体重を記録しました")',
+        "idempotent retry success");
+      expect(await numberOf("body_measurements")).toBe(1);
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
+        +'.some(x=>x.textContent.includes("74.4"))',"record after retry");
+      await clickFromRow(0,0,"取消");
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")].length===0',
+        "ambiguous-write test cleanup");
+      expect(await numberOf("body_measurements")).toBe(0);
       expect(await evaluate("window.__browserErrors.length")).toBe(0);
       expect(browserErrors).toHaveLength(0);
       expect(apiCalls.filter(a=>a.path==="/api/manual/weight"&&a.status===200).length).toBeGreaterThanOrEqual(3);
@@ -484,7 +519,8 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       expect(apiCalls.some(a=>a.path==="/api/manual/steps"&&a.status===409)).toBe(true);
       const report={react:"19.3.1",width:390,source:"full App / Worker / signed synthetic JWT / ephemeral local D1",
         weight:"create/edit/cancel/403",steps:"zero/create/edit/cancel/decline/csv409",
-        chartRefresh:true,summaryRefresh:true,noDocumentHorizontalOverflow:true,jsErrors:0,
+        chartRefresh:true,summaryRefresh:true,ambiguousResponseReadbackAndUuidRetry:true,
+        noDocumentHorizontalOverflow:true,jsErrors:0,
         requestStatuses:[...new Set(apiCalls.map(x=>x.status))],remoteResources:false};
       console.log("MANUAL_ENTRY_REACT19_CHROMIUM_390_E2E",JSON.stringify(report));
     } finally {
