@@ -1,6 +1,15 @@
 name: Life-log protected UAT deploy (reuse existing D1)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'migrations/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'wrangler.jsonc'
+      - '.github/workflows/life-log-uat-deploy.yml'
   pull_request:
     branches: [main]
     paths:
@@ -103,21 +112,21 @@ jobs:
         run: npx --no-install wrangler deploy --env uat --dry-run
 
   deploy:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: Pin exact main for remote operations
         env:
-          TARGET_SHA: ${{ inputs.target_sha }}
+          TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -131,6 +140,35 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+      - name: Decide automated UAT release mode without leaking Secrets
+        id: mode
+        env:
+          PHASE: ${{ inputs.phase }}
+          ACCESS_TEAM: ${{ secrets.LIFE_LOG_ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ secrets.LIFE_LOG_ACCESS_AUD }}
+          OWNER_EMAIL: ${{ secrets.LIFE_LOG_OWNER_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="${PHASE:-bootstrap}"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            count=0
+            for value in "$ACCESS_TEAM" "$ACCESS_AUD" "$OWNER_EMAIL"; do
+              if [[ -n "$value" ]]; then count=$((count+1)); fi
+            done
+            if [[ "$count" -gt 0 && "$count" -lt 3 ]]; then
+              echo "::error::Partial owner Access secret configuration; leave existing remote deployment untouched"
+              exit 1
+            fi
+            # No owner identity configured: deploy deny-all bootstrap automatically.
+            # All 3 credentials present: verify remote schema before enabling writes.
+            if [[ "$count" -eq 3 ]]; then mode="activate"; else mode="bootstrap"; fi
+          fi
+          case "$mode" in
+            bootstrap|activate) echo "mode=$mode" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Unknown deployment mode"; exit 1 ;;
+          esac
+          echo "Selected protected UAT release mode: $mode"
       - name: Check Cloudflare token and existing D1 metadata (GET only)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -144,7 +182,7 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
             | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
       - name: Deploy disabled Worker for Cloudflare Access bootstrap
-        if: inputs.phase == 'bootstrap'
+        if: steps.mode.outputs.mode == 'bootstrap'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -154,7 +192,7 @@ jobs:
           # No secrets and no remote-write opt-in: all routes fail closed without a signed owner JWT.
           npx --no-install wrangler deploy --env uat
       - name: Verify existing D1 schema read-only before activation
-        if: inputs.phase == 'activate'
+        if: steps.mode.outputs.mode == 'activate'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -174,7 +212,7 @@ jobs:
           console.log('Required remote tables found; data contents not read.');
           JS
       - name: Activate only after separately approved Access policy and exact owner secrets
-        if: inputs.phase == 'activate'
+        if: steps.mode.outputs.mode == 'activate'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

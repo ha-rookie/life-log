@@ -92,3 +92,13 @@ Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime en
 - リモートD1について確認済みなのはCloudflare API GETで名前/UUIDが一致した点だけ。実テーブル/レコード数、Migration履歴、既存データ、Worker/Access設定の実態は未確認。既存データを消すinit・seed・resetは禁止。必要なMigrationを実行する場合はデータ保持/復旧点を確認し別承認。
 - **現段階はWorkflow準備であり、UAT WorkerのDeploy、Access設定、Secrets設定、Remote SQL、Android実機受入は未実施。** 動作可能との表示をしない。Android本人ログイン→体重登録→履歴→訂正→再ログイン後保持、匿名403/認証切れ/誤Origin拒否を実測してから「利用可能」とする。
 - D1個数制限と無関係なWorkersリソースも他アプリに影響させない。既存mainへのマージ・UAT bootstrap/activate・Remote Migration・本番変更はそれぞれ別途承認する。
+
+## 15. 2026-11-07｜GitHub Actions自動デプロイ承認（Issue #38）
+
+ユーザーは開発中のライフログを毎回「実装→CI→mainへの承認済みマージ→開発環境デプロイ→smoke」まで一連の作業として進める方針を指定。Issue #36の手動デプロイだけという限定は開発用Workerの自動配信について本節で更新する。
+
+- main pushで `.github/workflows/life-log-uat-deploy.yml` を自動起動（アプリコード・設定・workflow・Migration等の関連変更）。PRはCloudflare Secretsを使わずローカルテスト/Bundle dry-runのみ。
+- deploy直前に最新main SHA、build、CI、Cloudflare API token、既存D1 `life-log-dev` UUID/nameを確認。失敗時はRemote操作に進まない。
+- Access team/aud/ownerの3シークレットがすべて未設定なら、初回は本人JWTを要求する登録無効のWorkerだけ自動配信する。Secretsが一部のみならDeployを失敗停止。3つ揃った場合は既存リモートD1の必要テーブル存在を読取確認した後にだけ、本人JWT + Remote write制御を有効にして配信する。
+- 新しいD1作成、既存他アプリ/Productionの変更、Remote Migration/fixture/seed、実個人データの自動操作は含まない。既存D1の中身が不明な場合はMigrationを自動適用しない。
+- GitHub ActionsのデプロイはAndroidの利用可能状態を保証しない。Cloudflare Access本人許可ポリシーの実設定と、Android実機での本人ログイン/書込/再読込は別の実測が必要。Workerに本人JWTの設定がない場合、HTTPS配信に成功していても403（fail-closed）になる。
