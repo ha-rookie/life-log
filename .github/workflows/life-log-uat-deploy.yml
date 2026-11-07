@@ -251,12 +251,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          status=$(curl --silent --show-error --max-time 20 \
-            --output /dev/null --write-out '%{http_code}' "$URL" || true)
-          case "$status" in
-            401|403|302|303|307) echo "Anonymous access denied: HTTP $status" ;;
-            *) echo "::error::Anonymous UAT route unexpectedly accessible or smoke failed: HTTP $status"; exit 1 ;;
-          esac
+          # The first Workers.dev deploy can return edge 404 briefly during propagation.
+          # Never treat 200, a network error, or an unverified redirect as successful app access.
+          for attempt in $(seq 1 12); do
+            status=$(curl --silent --show-error --max-time 15 \
+              --output /dev/null --write-out '%{http_code}' "$URL" || true)
+            case "$status" in
+              401|403|302|303|307)
+                echo "Anonymous UAT access denied after propagation: HTTP $status, attempt $attempt"
+                exit 0 ;;
+              200)
+                echo "::error::SECURITY: anonymous Worker returned HTTP 200"
+                exit 1 ;;
+              404|000|502|503)
+                echo "UAT edge propagation pending: HTTP $status, attempt $attempt/12" ;;
+              *)
+                echo "::error::Unexpected anonymous UAT status: HTTP $status"
+                exit 1 ;;
+            esac
+            if [[ "$attempt" -lt 12 ]]; then sleep 5; fi
+          done
+          echo "::error::UAT remained inaccessible or unverified after bounded retries; not marking release successful"
+          exit 1
       - name: Record manual acceptance still required
         shell: bash
         run: |
