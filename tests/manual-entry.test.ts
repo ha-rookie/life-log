@@ -496,6 +496,107 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     }
   },180_000);
 
+
+  it("requires exact trusted UAT origin, explicit remote flag, CSRF header and signed owner",async()=>{
+    const origin="https://life-log-uat.example.test";
+    const cfg={enabled:"true",target:"uat",origin};
+    const make=(options: {origin?:string|null;site?:string|null;host?:string;
+      headers?:Record<string,string>;token?:string|null}={})=>
+      req("/api/manual/weight","POST",WEIGHT,AUTH.OWNER_EMAIL,{
+        host:origin,headers:{"X-Life-Log-Intent":"manual-write-v1"},...options,
+      });
+    expect(isSafeRemoteManual(await make(),cfg)).toBe(true);
+    const misconfigured=[
+      {enabled:undefined,target:"uat",origin},
+      {enabled:"TRUE",target:"uat",origin},
+      {enabled:"true",target:undefined,origin},
+      {enabled:"true",target:"production",origin},
+      {enabled:"true",target:"uat",origin:undefined},
+      {enabled:"true",target:"uat",origin:"http://life-log-uat.example.test"},
+      {enabled:"true",target:"uat",origin:"https://life-log-uat.example.test/path"},
+      {enabled:"true",target:"uat",origin:"https://localhost"},
+      {enabled:"true",target:"uat",origin:origin+"/"},
+    ];
+    for(const c of misconfigured){
+      const e=env(undefined);
+      e.result.MANUAL_REMOTE_WRITE_ENABLED=c.enabled;
+      e.result.MANUAL_REMOTE_TARGET=c.target;
+      e.result.MANUAL_REMOTE_ORIGIN=c.origin;
+      const response=await worker().fetch(await make(),e.result);
+      expect(response.status).toBe(403);
+      expect(e.prepare).not.toHaveBeenCalled();
+    }
+    const bad=[
+      {origin:null},{origin:"null"},{origin:"https://evil.example.test"},
+      {site:null},{site:"cross-site"},{site:"same-site"},{site:"none"},
+      {host:"https://evil.example.test"},
+      {headers:{"X-Life-Log-Intent":""}},
+      {headers:{"X-Life-Log-Intent":"wrong"}},
+      {headers:{"Content-Type":"text/plain"}},
+    ];
+    for(const option of bad){
+      const e=env(undefined);
+      Object.assign(e.result,{MANUAL_REMOTE_WRITE_ENABLED:"true",MANUAL_REMOTE_TARGET:"uat",
+        MANUAL_REMOTE_ORIGIN:origin});
+      const res=await worker().fetch(await make(option),e.result);
+      expect(res.status).toBe(403);
+      expect(e.prepare).not.toHaveBeenCalled();
+    }
+    expect(await rows("body_measurements")).toBe(0);
+    const denied=env(undefined);
+    Object.assign(denied.result,{MANUAL_REMOTE_WRITE_ENABLED:"true",MANUAL_REMOTE_TARGET:"uat",
+      MANUAL_REMOTE_ORIGIN:origin});
+    const foreign=await worker().fetch(await make({token:await sign("other@example.invalid")}),denied.result);
+    expect(foreign.status).toBe(403);
+    expect(denied.prepare).not.toHaveBeenCalled();
+    const e=env(undefined);
+    Object.assign(e.result,{MANUAL_REMOTE_WRITE_ENABLED:"true",MANUAL_REMOTE_TARGET:"uat",
+      MANUAL_REMOTE_ORIGIN:origin});
+    const ok=await worker().fetch(await make(),e.result);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("Cache-Control")).toContain("no-store");
+    expect(await rows("body_measurements")).toBe(1);
+    // A remote write setting cannot turn on the independent CSV confirmation gate.
+    const blocked=await worker().fetch(await req("/api/import/confirm","POST",
+      {source:"lifestyle",csv:"",confirmed:true},AUTH.OWNER_EMAIL,{
+        host:origin,headers:{"X-Life-Log-Intent":"manual-write-v1"},
+      }),e.result);
+    expect(blocked.status).toBe(403);
+  },100_000);
+
+  it("detects stale weight and step edits/cancels atomically instead of overwriting",async()=>{
+    expect((await send("/api/manual/weight","POST",WEIGHT)).status).toBe(200);
+    const old={expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:WEIGHT.weightKg};
+    expect((await send("/api/manual/weight","PATCH",{...WEIGHT,...old,
+      weightKg:75.6})).status).toBe(200);
+    expect((await send("/api/manual/weight","PATCH",{...WEIGHT,...old,
+      weightKg:74.3})).status).toBe(409);
+    expect((await send("/api/manual/weight","DELETE",{key:KEY,...old})).status).toBe(409);
+    const current=await db.prepare("SELECT weight_kg AS kg FROM body_measurements "
+      +"WHERE owner_id=? AND source_id=? AND source_row_key=?")
+      .bind("owner","manual:weight",KEY).first<{kg:number}>();
+    expect(current?.kg).toBe(75.6);
+    expect((await send("/api/manual/weight","DELETE",{key:KEY,
+      expectedMeasuredAt:WEIGHT.measuredAt,expectedWeightKg:75.6})).status).toBe(200);
+    expect((await send("/api/manual/steps","POST",{day:"2026-11-01",steps:0})).status).toBe(200);
+    expect((await send("/api/manual/steps","PUT",{day:"2026-11-01",
+      expectedSteps:0,steps:1500})).status).toBe(200);
+    // Stale request must fail even if the new value happens to equal current.
+    expect((await send("/api/manual/steps","PUT",{day:"2026-11-01",
+      expectedSteps:0,steps:1500})).status).toBe(409);
+    expect((await send("/api/manual/steps","DELETE",{day:"2026-11-01",
+      expectedSteps:0})).status).toBe(409);
+    expect((await send("/api/manual/steps","DELETE",{day:"2026-11-01",
+      expectedSteps:1500})).status).toBe(200);
+  },100_000);
+
+  it("rejects malformed manual-history ranges before any DB access",async()=>{
+    const e=env(undefined);
+    const response=await worker().fetch(await req("/api/manual/records?to=invalid-date","GET"),e.result);
+    expect(response.status).toBe(400);
+    expect(e.prepare).not.toHaveBeenCalled();
+  });
+
   it("renders required 390px-entry inputs with explicit datetime and no optimistic success", () => {
     const html=renderToStaticMarkup(createElement(ManualEntry,{onSaved:()=>{}}));
     expect(html).toContain('type="datetime-local"');
