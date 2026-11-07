@@ -51,7 +51,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
         if (path === "/api/manual/records" || path === "/api/manual/weight" || path === "/api/manual/steps") return handleManualEntry(request, env.DB as unknown as ManualDb, ownerId,
           env.MANUAL_ENTRY_LOCAL_ONLY, {
             // Remote writes without Access require an authenticated password session AND explicit UAT opt-in.
-            enabled: passwordSession && env.PASSWORD_ONLY_UAT !== "true" ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
+            enabled: env.PASSWORD_ONLY_UAT === "true" && !passwordSession ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
             target: env.MANUAL_REMOTE_TARGET,
             origin: env.MANUAL_REMOTE_ORIGIN,
           });
