@@ -3,6 +3,10 @@ name: Life-log auth 0002 D1 guarded migration
 # This is a separate incremental migration workflow. It never invokes the 0001
 # strict-empty bootstrap, creates a database, or modifies Worker secrets.
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/life-log-auth-0002-migration.yml
   workflow_dispatch:
     inputs:
       target_sha:
@@ -36,14 +40,14 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      TARGET_SHA: ${{ inputs.target_sha }}
-      MODE: ${{ inputs.mode }}
-      CONFIRMATION: ${{ inputs.confirmation }}
+      TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
+      MODE: ${{ github.event_name == 'push' && 'inspect' || inputs.mode }}
+      CONFIRMATION: ${{ github.event_name == 'push' && 'INSPECT LIFELOG AUTH D1' || inputs.confirmation }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
@@ -127,14 +131,14 @@ jobs:
           if(!safe)throw Error('Unexpected remote schema or migration history; stop without write');
           JS
       - name: Apply incremental migration only with explicit apply confirmation
-        if: inputs.mode == 'apply' && steps.inspect.outputs.pending == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply' && steps.inspect.outputs.pending == 'true'
         shell: bash
         run: |
           set -euo pipefail
           # Wrangler creates a recovery backup; no initial bootstrap or seed operations.
           npx --no-install wrangler d1 migrations apply DB --env uat --remote
       - name: Confirm auth schema after apply (SELECT only)
-        if: inputs.mode == 'apply'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
         shell: bash
         run: |
           set -euo pipefail
