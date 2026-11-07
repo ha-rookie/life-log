@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { WeightTrend, TrendDay, TrendGranularity, TrendPeriod } from "../shared/weight-trend";
-import { groupTrendDays, moveGranularityRange, rangeFitsGranularity, rangeForGranularity } from "../shared/weight-trend";
+import { DEFAULT_GOAL, groupTrendDays, moveGranularityRange, parseDay, rangeFitsGranularity, rangeForGranularity } from "../shared/weight-trend";
 
 type TrendState =
   | { kind: "loading" }
@@ -144,6 +144,7 @@ export function WeightTrendPanel() {
   const [range, setRange] = useState(initial);
   const [goalLow, setGoalLow] = useState("75");
   const [goalHigh, setGoalHigh] = useState("76");
+  const [goalDate, setGoalDate] = useState<string>(DEFAULT_GOAL.targetDate);
   const [state, setState] = useState<TrendState>({ kind: "loading" });
   const seq = useRef(0);
   const chartScroller = useRef<HTMLDivElement | null>(null);
@@ -154,6 +155,7 @@ export function WeightTrendPanel() {
   const after = moveGranularityRange(granularity, range, 1);
   const newest = rangeForGranularity(granularity);
   const low = Number(goalLow), high = Number(goalHigh);
+  const validGoalDate = parseDay(goalDate) !== null;
   const validGoal = goalLow.trim() !== "" && goalHigh.trim() !== "" &&
     Number.isFinite(low) && Number.isFinite(high) && low > 0 && high < 500 && low <= high;
   useEffect(() => {
@@ -242,9 +244,12 @@ export function WeightTrendPanel() {
         value={goalLow} onChange={e => setGoalLow(e.target.value)} /></label>
       <label>目標上限（kg）<input type="number" min="1" max="499" step="0.1"
         value={goalHigh} onChange={e => setGoalHigh(e.target.value)} /></label>
+      <label>目標日<input aria-label="目標日" type="date"
+        value={goalDate} onChange={e => setGoalDate(e.target.value)} /></label>
     </div>
     {!validGoal && <p role="alert">目標は0kg超、500kg未満、下限が上限以下で指定してください。</p>}
-    <p className="hint">目標日は2026/12/22（暫定）。目標の編集はこの画面内のみで、保存されません。</p>
+    {!validGoalDate && <p role="alert">目標日を正しい日付で指定してください。</p>}
+    <p className="hint">目標日：{validGoalDate ? goalDate.replaceAll("-", "/") : "未設定"}（暫定）。目標値と目標日の変更は画面内のみで、保存されません。</p>
     {(state.kind === "loading" || (state.kind === "ok" && !trend)) && <p role="status">体重推移を読み込み中…</p>}
     {state.kind === "error" && <p role="alert">{state.message}</p>}
     {trend && <>
