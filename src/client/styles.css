@@ -38,3 +38,22 @@
 .trend-period-nav button:nth-of-type(1){grid-column:1;grid-row:2}
 .trend-period-nav button:nth-of-type(2){grid-column:2;grid-row:2}
 .trend-period-nav button:nth-of-type(3){grid-column:3;grid-row:2}
+
+
+/* Issue #29: accessible manual-entry controls on 390px Android screens. */
+.manual-entry form{padding:12px 0;border-bottom:1px solid #dce4e6}
+.manual-entry h3{font-size:.95rem;margin:8px 0 12px}
+.manual-entry h4{font-size:.87rem;margin:8px 0}
+.manual-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));gap:10px}
+.manual-fields label{display:flex;flex-direction:column;gap:5px;font-size:.85rem;min-width:0}
+.manual-fields input{width:100%;min-width:0;min-height:44px;border:1px solid #9db4bc;border-radius:8px;padding:8px;font:inherit}
+.manual-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.manual-entry button{min-height:44px;padding:8px 11px;border:1px solid #9db4bc;border-radius:8px;background:#fff;color:#19333d;font:inherit}
+.manual-entry button[type=submit]{background:#2166a5;color:white;border-color:#2166a5;font-weight:650}
+.manual-entry button:disabled{opacity:.5}
+.manual-entry button:focus-visible,.manual-fields input:focus-visible{outline:3px solid #2166a5;outline-offset:2px}
+.manual-history ul{list-style:none;padding:0;margin:6px 0 20px}
+.manual-history li{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:8px 0;border-bottom:1px solid #e5e9ea;font-size:.82rem}
+.manual-history li span{flex:1 1 180px;overflow-wrap:anywhere}
+.manual-history button{min-width:54px}
+@media(max-width:480px){.manual-fields{grid-template-columns:1fr}.manual-entry .manual-history li span{flex-basis:100%}}
