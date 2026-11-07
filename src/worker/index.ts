@@ -41,7 +41,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       // Password-only UAT never accepts Access identity in place of a password session.
       let ownerId = env.PASSWORD_ONLY_UAT === "true" ? null : await authorize(request, env);
       let passwordSession = false;
-      if (!ownerId) {
+      if (!ownerId && env.PASSWORD_ONLY_UAT === "true") {
         try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); passwordSession = ownerId === "owner"; }
         catch { ownerId = null; }
       }
