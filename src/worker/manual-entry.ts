@@ -1,6 +1,6 @@
 import { dateRange, jstDay, parseDay } from "../shared/weight-trend";
 
-/** This gate is independent of the CSV-import toggle; never enable in remote Workers. */
+/** This local-only gate is independent of CSV import; never configure its flag remotely. */
 export function isSafeLocalManual(request: Request, flag?: string): boolean {
   if (flag !== "true" || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return false;
   const url = new URL(request.url);
@@ -9,6 +9,38 @@ export function isSafeLocalManual(request: Request, flag?: string): boolean {
   if (request.headers.get("Origin") !== url.origin) return false;
   const site = request.headers.get("Sec-Fetch-Site");
   return site === null || site === "same-origin";
+}
+
+export type RemoteWriteConfig = {
+  enabled?: string;
+  target?: string;
+  origin?: string;
+};
+
+/**
+ * This is an independent, opt-in, UAT-only remote policy. It does not trust
+ * Origin/Host alone, request headers cannot activate it and it never borrows
+ * IMPORT_LOCAL_ONLY or MANUAL_ENTRY_LOCAL_ONLY.
+ * Access-signed JWT and the exact owner allowlist are checked by Worker first.
+ */
+export function isSafeRemoteManual(request: Request, c: RemoteWriteConfig): boolean {
+  if (c.enabled !== "true" || c.target !== "uat"
+      || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return false;
+  if (!c.origin || c.origin.length > 256) return false;
+  let trusted: URL;
+  try { trusted = new URL(c.origin); } catch { return false; }
+  if (trusted.protocol !== "https:" || trusted.username || trusted.password
+      || trusted.pathname !== "/" || trusted.search || trusted.hash
+      || ["localhost", "127.0.0.1", "[::1]"].includes(trusted.hostname)) return false;
+  // The exact canonical origin must be provided by a trusted Worker binding.
+  if (trusted.origin !== c.origin || new URL(request.url).origin !== c.origin) return false;
+  if (request.headers.get("Origin") !== c.origin) return false;
+  // Missing Fetch Metadata is rejected in remote mode; fail closed.
+  if (request.headers.get("Sec-Fetch-Site") !== "same-origin") return false;
+  // A custom header makes cross-origin HTML forms insufficient; no CORS granted.
+  if (request.headers.get("X-Life-Log-Intent") !== "manual-write-v1") return false;
+  if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) return false;
+  return true;
 }
 
 export type ManualDb = {
@@ -89,8 +121,9 @@ async function readEntries(request: Request, db: ManualDb, owner: string): Promi
   if (keys.some(k => k !== "from" && k !== "to") || new Set(keys).size !== keys.length) return error("RANGE", 400);
   const to = url.searchParams.get("to") ?? jstDay(Date.now());
   const today = parseDay(to);
+  if (today === null) return error("RANGE", 400);
   const from = url.searchParams.get("from") ??
-    new Date(today! - 29 * 86400000).toISOString().slice(0, 10);
+    new Date(today - 29 * 86400000).toISOString().slice(0, 10);
   const bounds = dateRange(from, to);
   if (!bounds || bounds.days > 31 || to > jstDay(Date.now())) return error("RANGE", 400);
   const start = Math.floor((bounds.start - 9 * 3600000) / 1000);
@@ -113,12 +146,21 @@ async function readEntries(request: Request, db: ManualDb, owner: string): Promi
 async function modifyWeight(method: string, p: Record<string, unknown>, db: ManualDb, owner: string): Promise<Response> {
   if (!validKey(p.key)) return error("KEY");
   const key = p.key.toLowerCase();
+  // Optimistic compare-and-swap prevents one device from silently overwriting
+  // another edit. The values sent by the UI must come from an observed row.
+  if (method !== "POST" &&
+      (!validTime(p.expectedMeasuredAt) || !weightValid(p.expectedWeightKg))) {
+    return error("EXPECTED_MEASUREMENT");
+  }
   if (method === "DELETE") {
-    const old = await weight(db, owner, key);
-    if (!old) return error("NOT_FOUND", 404);
-    await db.prepare("DELETE FROM body_measurements "
-      + "WHERE owner_id=? AND source_id=? AND source_row_key=?")
-      .bind(owner, SOURCE_WEIGHT, key).run();
+    const result = await db.prepare("DELETE FROM body_measurements "
+      + "WHERE owner_id=? AND source_id=? AND source_row_key=? "
+      + "AND measured_at=? AND weight_kg=?")
+      .bind(owner, SOURCE_WEIGHT, key, p.expectedMeasuredAt, p.expectedWeightKg)
+      .run() as { meta?: { changes?: number } };
+    if (result.meta?.changes !== 1) {
+      return (await weight(db, owner, key)) ? error("CONFLICT", 409) : error("NOT_FOUND", 404);
+    }
     return json({ status: "deleted", key });
   }
   if (!validTime(p.measuredAt) || !weightValid(p.weightKg)) return error("MEASUREMENT");
@@ -135,12 +177,15 @@ async function modifyWeight(method: string, p: Record<string, unknown>, db: Manu
     return json({ status: "saved", row: current });
   }
   if (method === "PATCH") {
-    const current = await weight(db, owner, key);
-    if (!current) return error("NOT_FOUND", 404);
-    await db.prepare(
+    const result = await db.prepare(
       "UPDATE body_measurements SET measured_at=?,weight_kg=? "
-      + "WHERE owner_id=? AND source_id=? AND source_row_key=?"
-    ).bind(timestamp, kg, owner, SOURCE_WEIGHT, key).run();
+      + "WHERE owner_id=? AND source_id=? AND source_row_key=? "
+      + "AND measured_at=? AND weight_kg=?"
+    ).bind(timestamp, kg, owner, SOURCE_WEIGHT, key,
+      p.expectedMeasuredAt, p.expectedWeightKg).run() as { meta?: { changes?: number } };
+    if (result.meta?.changes !== 1) {
+      return (await weight(db, owner, key)) ? error("CONFLICT", 409) : error("NOT_FOUND", 404);
+    }
     return json({ status: "updated", row: { key, measuredAt: timestamp, weightKg: kg } });
   }
   return error("METHOD", 405);
@@ -167,22 +212,24 @@ async function modifySteps(method: string, p: Record<string, unknown>, db: Manua
     return json({ status: "saved", row: current });
   }
   if (method === "PUT") {
-    await db.prepare(
+    const update = await db.prepare(
       "UPDATE activity_daily SET steps=? WHERE owner_id=? AND source_id=? "
       + "AND local_day=? AND steps=? AND " + NO_OTHER_STEPS
     ).bind(p.steps, owner, SOURCE_STEPS, day, p.expectedSteps,
-      owner, day, SOURCE_STEPS, owner, day).run();
+      owner, day, SOURCE_STEPS, owner, day).run() as { meta?: { changes?: number } };
+    if (update.meta?.changes !== 1) return error("CONFLICT", 409);
     const current = await step(db, owner, day);
     if (!current) return error("NOT_FOUND", 404);
     if (await conflictingSteps(db, owner, day) || current.steps !== p.steps) return error("CONFLICT", 409);
     return json({ status: "updated", row: current });
   }
   if (method === "DELETE") {
-    await db.prepare(
+    const removed = await db.prepare(
       "DELETE FROM activity_daily WHERE owner_id=? AND source_id=? "
       + "AND local_day=? AND steps=? AND " + NO_OTHER_STEPS
     ).bind(owner, SOURCE_STEPS, day, p.expectedSteps,
-      owner, day, SOURCE_STEPS, owner, day).run();
+      owner, day, SOURCE_STEPS, owner, day).run() as { meta?: { changes?: number } };
+    if (removed.meta?.changes !== 1) return error("CONFLICT", 409);
     if (await step(db, owner, day)) return error("CONFLICT", 409);
     return json({ status: "deleted", day });
   }
@@ -191,6 +238,7 @@ async function modifySteps(method: string, p: Record<string, unknown>, db: Manua
 
 export async function handleManualEntry(
   request: Request, db: ManualDb, owner: string, localFlag?: string,
+  remote: RemoteWriteConfig = {},
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
   const method = request.method;
@@ -205,7 +253,9 @@ export async function handleManualEntry(
   const allowed = weightRoute ? ["POST", "PATCH", "DELETE"] : ["POST", "PUT", "DELETE"];
   if (!allowed.includes(method)) return error("METHOD", 405);
   // This test is BEFORE any D1 prepare, and cannot be enabled via a request header.
-  if (!isSafeLocalManual(request, localFlag)) return error("MANUAL_LOCAL_DISABLED", 403);
+  if (!isSafeLocalManual(request, localFlag) && !isSafeRemoteManual(request, remote)) {
+    return error("MANUAL_WRITE_DISABLED", 403);
+  }
   const data = await payload(request);
   if (!data) return error("PAYLOAD", 400);
   try {
