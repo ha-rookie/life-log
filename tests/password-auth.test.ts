@@ -86,7 +86,7 @@ describe("owner password authentication boundary",()=>{
   const request=req("/api/auth/register",{setupCode:"s".repeat(32),password:"strong-password-123"});
   const res=await authRoute(request,{DB:db,OWNER_SETUP_CODE:"s".repeat(32)} as never);
   expect(res.status).toBe(409);
-  expect(statements).toEqual(["SELECT owner_id FROM owner_credentials LIMIT 1"]);
+  expect(statements).toEqual(["SELECT id FROM owners WHERE id='owner'"]);
  });
  it("rejects missing and malformed session cookies without DB access",async()=>{
   expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
