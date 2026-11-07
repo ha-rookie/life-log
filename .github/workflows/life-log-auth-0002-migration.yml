@@ -41,8 +41,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
-      MODE: ${{ github.event_name == 'push' && 'inspect' || inputs.mode }}
-      CONFIRMATION: ${{ github.event_name == 'push' && 'INSPECT LIFELOG AUTH D1' || inputs.confirmation }}
+      MODE: ${{ github.event_name == 'push' && 'apply' || inputs.mode }}
+      CONFIRMATION: ${{ github.event_name == 'push' && 'APPLY LIFELOG AUTH 0002' || inputs.confirmation }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
@@ -131,14 +131,16 @@ jobs:
           if(!safe)throw Error('Unexpected remote schema or migration history; stop without write');
           JS
       - name: Apply incremental migration only with explicit apply confirmation
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply' && steps.inspect.outputs.pending == 'true'
+        if: env.MODE == 'apply' && steps.inspect.outputs.pending == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          # One-shot approved 0002 apply; fail closed unless exactly 0002 is pending.
+          test "$(npx --no-install wrangler d1 migrations list DB --env uat --remote --json 2>/dev/null | jq -r '[.[]?.name] | join(\",\")')" = '0002_owner_auth.sql'
           # Wrangler creates a recovery backup; no initial bootstrap or seed operations.
           npx --no-install wrangler d1 migrations apply DB --env uat --remote
       - name: Confirm auth schema after apply (SELECT only)
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
+        if: env.MODE == 'apply'
         shell: bash
         run: |
           set -euo pipefail
