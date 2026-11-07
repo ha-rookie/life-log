@@ -1,0 +1,148 @@
+name: Life-log UAT owner activation preflight (read only)
+
+# Run only on approved main code. This workflow never creates D1, migrates, deploys,
+# modifies Cloudflare Access, or reads personal rows.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/life-log-uat-preflight.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-owner-preflight
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'ha-rookie/life-log' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install locked Wrangler and dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify exact remote D1 UUID and intended Worker environment
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const src=fs.readFileSync('wrangler.jsonc','utf8').split(/\r?\n/)
+            .filter(line=>!line.trimStart().startsWith('//')).join('\n');
+          const cfg=JSON.parse(src), u=cfg.env?.uat;
+          if (u?.name!=='life-log-uat'||u?.d1_databases?.length!==1
+            ||u.d1_databases[0]?.binding!=='DB'
+            ||u.d1_databases[0]?.database_name!=='life-log-dev'
+            ||u.d1_databases[0]?.database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956') {
+            throw Error('UAT D1 name/UUID differs; remote inspection aborted');
+          }
+          JS
+          response=$(curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956")
+          jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' \
+            <<< "$response" >/dev/null
+          echo "Existing D1 UUID and name verified; no new D1 requested."
+      - name: Inspect remote schema using one read-only SELECT
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/life-log-remote-schema.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name" > "$path"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/life-log-remote-schema.json','utf8'));
+          const packets=Array.isArray(doc)?doc:[doc];
+          if (!packets.length||packets.some(x=>x.success===false||!Array.isArray(x.results)))
+            throw Error('Unexpected remote D1 read result; do not assume empty database');
+          const tables=[...new Set(packets.flatMap(x=>x.results).map(x=>x.name))];
+          if (!tables.every(x=>typeof x==='string')) throw Error('Unexpected remote schema type');
+          const required=['owners','import_jobs','body_measurements','lifestyle_days',
+            'activity_daily','outings','drink_entries','import_row_audit',
+            'analysis_periods','behavior_hypotheses','behavior_experiments'];
+          const missing=required.filter(x=>!tables.includes(x));
+          const state=tables.length===0?'EMPTY':missing.length===0?'TABLES_PRESENT':'PARTIAL_OR_UNKNOWN';
+          console.log('Existing remote D1 schema state:',state);
+          console.log('Table count:',tables.length,'Required tables:',required.length,'Missing:',missing.length);
+          if (missing.length) console.log('Missing table names:',missing.join(', '));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '\n### Existing remote D1 schema (SELECT only)\n'
+            +'- D1: life-log-dev (pinned existing UUID)\n'
+            +'- State: **'+state+'**\n'
+            +'- Table count: '+tables.length+'; expected application tables: '+required.length+'\n'
+            +'- Missing: '+(missing.join(', ')||'none')+'\n'
+            +'- No remote migration, INSERT, DELETE, UPDATE, export, or data read performed.\n'
+            +'- EMPTY means an initialization may be considered after checking backups; PARTIAL means stop and reconcile.\n');
+          JS
+      - name: Check targeted Cloudflare Access app visibility (GET only)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/access-apps.json"
+          code=$(curl --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            --output "$path" --write-out '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps?per_page=1000" || true)
+          if [[ "$code" == '200' ]]; then
+            node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/access-apps.json','utf8'));
+          if(doc.success!==true||!Array.isArray(doc.result))
+            throw Error('Malformed Access API response');
+          const host='life-log-uat.ha-rookie.workers.dev';
+          const targeted=doc.result.filter(a=>a.domain===host||a.domain==='https://'+host);
+          // Worker-wide Access may appear under destinations and not in a hostname lookup.
+          const named=doc.result.filter(a=>a.name==='Access for life-log-uat');
+          console.log('Access API: readable; account apps:',doc.result.length,
+            'exact-host apps:',targeted.length,'known Worker-name matches:',named.length);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '\n### Cloudflare Access (read-only metadata)\n'
+            +'- Apps API: readable\n'
+            +'- Exact target hostname app matches: '+targeted.length+'\n'
+            +'- Worker-level policy may not be recognized by hostname match; dashboard confirmation required.\n');
+          JS
+          else
+            echo "Access API unavailable with current Cloudflare token: HTTP $code (no policy changes attempted)"
+            echo "- Access Apps API: HTTP $code (permission/Zero Trust state unverified)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Check owner authentication secret presence (values never output)
+        shell: bash
+        env:
+          ACCESS_TEAM: ${{ secrets.LIFE_LOG_ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ secrets.LIFE_LOG_ACCESS_AUD }}
+          OWNER_EMAIL: ${{ secrets.LIFE_LOG_OWNER_EMAIL }}
+        run: |
+          set -euo pipefail
+          count=0
+          for x in "$ACCESS_TEAM" "$ACCESS_AUD" "$OWNER_EMAIL"; do
+            [[ -n "$x" ]] && count=$((count+1)) || true
+          done
+          if [[ "$count" == 3 ]]; then state=COMPLETE;
+          elif [[ "$count" == 0 ]]; then state=NOT_CONFIGURED;
+          else state=PARTIAL; fi
+          echo "Owner Access secret set: $state ($count/3), values not displayed"
+          {
+            echo "- Life-log GitHub owner authentication secrets: **$state** ($count/3)"
+            echo "- This audit does not enable writes, set Secrets, create Access applications or deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
