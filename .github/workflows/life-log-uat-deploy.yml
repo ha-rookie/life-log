@@ -244,26 +244,36 @@ jobs:
           npx --no-install wrangler deploy --env uat --secrets-file "$secret_file" \
             --var MANUAL_REMOTE_WRITE_ENABLED:true MANUAL_REMOTE_TARGET:uat \
                   MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
-      - name: Deploy password-only UAT only after separately approved setup Secret
+      - name: Verify Owner passkey schema before password-only UAT (read only)
         if: steps.mode.outputs.mode == 'password-only'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          OWNER_SETUP_CODE: ${{ secrets.LIFE_LOG_OWNER_SETUP_CODE }}
         shell: bash
         run: |
           set -euo pipefail
-          test "${#OWNER_SETUP_CODE}" -ge 32
-          # This path is disabled for push events. Never reveal the secret in logs.
-          # Secret must never appear in a command argument or log.
-          secret_file="$RUNNER_TEMP/life-log-password-only-secrets.json"
-          trap 'rm -f "$secret_file"' EXIT
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('owners','owner_credentials','owner_sessions','owner_passkey_credentials','owner_passkey_challenges','owner_passkey_sessions')" \
+            > "$RUNNER_TEMP/life-log-passkey-schema.json"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          fs.writeFileSync(process.env.RUNNER_TEMP+'/life-log-password-only-secrets.json',
-            JSON.stringify({OWNER_SETUP_CODE:process.env.OWNER_SETUP_CODE}),{mode:0o600});
+          const data=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/life-log-passkey-schema.json','utf8'));
+          const names=new Set((Array.isArray(data)?data:[data]).flatMap(x=>x.results??[]).map(x=>x.name));
+          const required=['owners','owner_credentials','owner_sessions','owner_passkey_credentials','owner_passkey_challenges','owner_passkey_sessions'];
+          for(const name of required)if(!names.has(name))throw Error('UAT passkey schema missing: '+name);
+          console.log('Existing D1 supports Owner passkey authentication.');
           JS
-          npx --no-install wrangler deploy --env uat --secrets-file "$secret_file" \
+      - name: Deploy password-only UAT with temporary credential verifier (no setup Secret)
+        if: steps.mode.outputs.mode == 'password-only'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Temporary password plaintext is never in GitHub or Cloudflare Secrets.
+          # Only its strong hash exists in the private UAT Worker bundle.
+          npx --no-install wrangler deploy --env uat \
             --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
                   MANUAL_REMOTE_TARGET:uat \
                   MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
