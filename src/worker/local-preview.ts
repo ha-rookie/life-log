@@ -61,6 +61,7 @@ const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.d
 show();
 })();
 </script></body></html>`;
+  // Explicitly device-only: never pass this route to the D1-backed handlers.
   return new Response(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
