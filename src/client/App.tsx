@@ -60,10 +60,13 @@ export function App() {
   const [csvEncoding,setCsvEncoding] = useState<"UTF-8"|"Shift_JIS"|null>(null);
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
   const [review, setReview] = useState<Review | null>(null);
+  const [reviewPartIndex,setReviewPartIndex] = useState<number|null>(null);
   const [importStatus, setImportStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const selectionEpoch = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement|null>(null);
+  const completedParts = useRef(new Map<number,{inserted:number;updated:number;skipped:number;conflicted:number}>());
   const [history,setHistory]=useState<HistoryJob[]>([]);
   const [historyCursor,setHistoryCursor]=useState<string|null>(null);
   const [selectedJob,setSelectedJob]=useState<string|null>(null);
@@ -105,9 +108,17 @@ export function App() {
 
   async function selectCsv(file: File) {
     const epoch=++selectionEpoch.current;
-    setSelectedCsvName(file.name);
-    setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null);
-    setCsvPreview(null);setReview(null);
+    // Android download providers sometimes return a percent-encoded name.
+    // Decode only the label; never alter bytes, contents or source hashes.
+    let displayName=file.name;
+    if(/%[0-9A-Fa-f]{2}/.test(displayName)){
+      try{displayName=decodeURIComponent(displayName);}catch{/* Keep original display name. */}
+    }
+    setSelectedCsvName(displayName);
+    completedParts.current.clear();
+    setReviewPartIndex(null);setReview(null);
+    setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);
+    setMissingFitSteps(0);setCsvEncoding(null);setCsvPreview(null);
     setImportStatus("ファイルを読み込み、形式を確認しています…");
     if(file.size>2_000_000){
       setImportStatus("ファイルが大きすぎます。CSVは2MB以下にしてください。登録は行っていません。");
@@ -117,29 +128,21 @@ export function App() {
       const decoded=decodeOfficialCsv(new Uint8Array(await file.arrayBuffer()));
       const actualSource=detectOfficialCsvSource(decoded.text);
       if(!actualSource)throw Error("UNKNOWN_SOURCE");
-      if(actualSource==="lifestyle"&&file.size>65536)throw Error("CSV_SIZE");
-      if(actualSource==="lifestyle"){
-        const raw=decoded.text.replace(/^\uFEFF/,"");
-        const parsed=await previewCsv(actualSource,raw);
-        if(epoch!==selectionEpoch.current)return;
-        setCsvText(raw);setCsvPreview(parsed);setCsvEncoding(decoded.encoding);
-        setCsvSource(actualSource);
-      }else{
-        const normalized=normalizeOfficialCsv(actualSource,decoded.text);
-        // Validate ALL chunks before enabling registration.
-        const checked=await Promise.all(normalized.parts.map(part=>previewCsv(actualSource,part)));
-        if(checked.some(item=>item.errors.length>0||item.rows.length===0))
-          throw Error("INVALID_ROWS");
-        if(epoch!==selectionEpoch.current)return;
-        setCsvSource(actualSource);
-        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);
-        setCsvEncoding(decoded.encoding);
-        setCanonicalTotal(normalized.total);setMissingFitSteps(normalized.missingSteps);
-        setCsvPreview(checked[0]);
-      }
-      if(epoch===selectionEpoch.current)setImportStatus(
-        "読み取り完了。まだ登録していません。件数を確認し、「確認して登録する」を押してください。"
-      );
+      const normalized=normalizeOfficialCsv(actualSource,decoded.text);
+      // Validate every chunk BEFORE exposing the confirm button. Lifestyle
+      // remains bounded by the server limit and D1 conflict guard parameters.
+      const checked=await Promise.all(normalized.parts.map(part=>previewCsv(actualSource,part)));
+      if(checked.length===0||checked.some(item=>item.errors.length>0||item.rows.length===0))
+        throw Error("INVALID_ROWS");
+      if(epoch!==selectionEpoch.current)return;
+      setCsvSource(actualSource);
+      setCsvText(normalized.parts[0]);
+      setCanonicalParts(normalized.parts);
+      setCanonicalTotal(normalized.total);
+      setMissingFitSteps(normalized.missingSteps);
+      setCsvEncoding(decoded.encoding);
+      setCsvPreview(checked[0]);
+      setImportStatus("読み取り完了。まだ登録していません。件数を確認し、「確認して登録する」を押してください。");
     }catch{
       if(epoch===selectionEpoch.current)setImportStatus(
         "CSVの形式・日時・数値・重複を確認できませんでした。データは登録していません。"
@@ -148,75 +151,75 @@ export function App() {
   }
 
   async function submit(keepExisting = false) {
-    if (!csvPreview || csvPreview.errors.length || !csvPreview.rows.length || busy) return;
-    if (keepExisting && (!review || review.conflicts.length === 0)) return;
+    if (!csvPreview || csvPreview.errors.length || !csvPreview.rows.length || busy ||
+        !canonicalParts.length) return;
+    if (keepExisting && (csvSource!=="lifestyle" || reviewPartIndex===null ||
+        !review || review.conflicts.length===0)) return;
     const epoch = selectionEpoch.current;
+    const pendingReviewPart=reviewPartIndex;
+    const pendingReview=review;
     setBusy(true);
     setImportStatus("");
     try {
-      if(csvSource!=="lifestyle"){
-        if(!canonicalParts.length||keepExisting)throw Error("SOURCE_NOT_READY");
-        let inserted=0,updated=0,skipped=0;
-        for(let n=0;n<canonicalParts.length;n++){
-          // Each chunk is an independently hash-confirmed, auditable, idempotent job.
-          const part=canonicalParts[n],p=await previewCsv(csvSource,part);
-          const response=await fetch("/api/import/confirm",{
-            method:"POST",credentials:"same-origin",cache:"no-store",
-            headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},
-            body:JSON.stringify({source:csvSource,csv:part,hash:p.hash,confirmed:true})
-          });
-          const data=await response.json() as ImportResult;
-          if(!response.ok)throw Error("HTTP "+response.status+" / "+(data.error??"UNKNOWN")+
-            "（"+(n+1)+"/"+canonicalParts.length+"）");
-          inserted+=data.inserted??0;updated+=data.updated??0;skipped+=data.skipped??0;
-          if(epoch===selectionEpoch.current)
-            setImportStatus("登録中 "+(n+1)+"/"+canonicalParts.length+" 分割");
+      for(let n=0;n<canonicalParts.length;n++){
+        // Completed chunks are immutable audit jobs. Skipping them here also
+        // prevents duplicate counting when a later chunk needs conflict review.
+        if(completedParts.current.has(n))continue;
+        const part=canonicalParts[n],p=await previewCsv(csvSource,part);
+        const applyReview=keepExisting && csvSource==="lifestyle" && n===pendingReviewPart;
+        const response=await fetch("/api/import/confirm",{
+          method:"POST",credentials:"same-origin",cache:"no-store",
+          headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},
+          body:JSON.stringify({
+            source:csvSource,csv:part,hash:p.hash,confirmed:true,
+            ...(applyReview&&pendingReview?
+              {resolution:{mode:"keep_existing",token:pendingReview.token}}:{})
+          })
+        });
+        const data=await response.json() as ImportResult;
+        if(epoch!==selectionEpoch.current)return;
+        if(csvSource==="lifestyle"&&response.status===409&&
+          (data.error==="LIFESTYLE_CONFLICT"||data.error==="REVIEW_STALE")&&
+          data.reviewToken&&data.conflicts){
+          setReview({token:data.reviewToken,conflicts:data.conflicts});
+          setReviewPartIndex(n);
+          setImportStatus(data.error==="REVIEW_STALE"
+            ? "既存記録が変わっています。競合を再確認してください。"+
+              (n+1)+"/"+canonicalParts.length+" 分割目で停止中。"
+            : "既存の生活記録と矛盾があります。"+
+              (n+1)+"/"+canonicalParts.length+" 分割目で停止中。未処理分は登録していません。");
+          return;
         }
-        if(epoch===selectionEpoch.current){
-          setImportStatus("登録完了：追加 "+inserted+"件・更新 "+updated+"件・スキップ "+skipped+
-            "件。元データ "+canonicalTotal+"件、Fit歩数欠測 "+missingFitSteps+"日。");
-          setRefreshEpoch(n=>n+1);
-        }
-        return;
+        if(!response.ok)throw Error("HTTP "+response.status+" / "+(data.error??"UNKNOWN")+
+          "（"+(n+1)+"/"+canonicalParts.length+"）");
+        completedParts.current.set(n,{
+          inserted:data.inserted??0,updated:data.updated??0,
+          skipped:data.skipped??0,conflicted:data.conflicted??0
+        });
+        setReview(null);setReviewPartIndex(null);
+        setImportStatus("登録中 "+(n+1)+"/"+canonicalParts.length+" 分割");
       }
-      const res = await fetch("/api/import/confirm", {
-        method: "POST", credentials: "same-origin", cache: "no-store",
-        headers: { "Content-Type": "application/json", "X-Life-Log-Intent":"manual-write-v1" },
-        body: JSON.stringify({
-          source: csvSource, csv: csvText, hash: csvPreview.hash, confirmed: true,
-          ...(keepExisting && review
-            ? { resolution: { mode: "keep_existing", token: review.token } }
-            : {}),
-        }),
-      });
-      const data = await res.json() as ImportResult;
-      if (epoch !== selectionEpoch.current) return;
-      if (res.status === 409 &&
-          (data.error === "LIFESTYLE_CONFLICT" || data.error === "REVIEW_STALE") &&
-          data.reviewToken && data.conflicts) {
-        setReview({ token: data.reviewToken, conflicts: data.conflicts });
-        setImportStatus(data.error === "REVIEW_STALE"
-          ? "既存記録が変更されています。競合内容を再確認してください。登録は行われていません。"
-          : "既存の生活記録と矛盾があります。登録は行われていません。");
-      } else if (res.ok) {
-        setReview(null);
-        setImportStatus(data.status === "already_imported"
-          ? data.auditStatus === "legacy_unavailable"
-            ? "このCSVは旧形式で取込済みです。二重登録はしていません。過去の行単位監査は存在せず、推測による補完もしていません。"
-            : "このCSVはすでに取込済みです。二重登録はしていません。"
-          : "登録完了：追加 " + (data.inserted ?? 0) + "件 / 更新 "+(data.updated??0)+"件 / 同値スキップ "
-            + (data.skipped ?? 0) + "件 / 競合を維持 "
-            + (data.conflicted ?? 0) + "件。行単位の監査証跡を保存しました。");
-      } else {
-        setReview(null);
-        setImportStatus("登録を中止しました：" + (data.error ?? res.status));
+      const total=[...completedParts.current.values()].reduce((acc,c)=>({
+        inserted:acc.inserted+c.inserted,updated:acc.updated+c.updated,
+        skipped:acc.skipped+c.skipped,conflicted:acc.conflicted+c.conflicted
+      }),{inserted:0,updated:0,skipped:0,conflicted:0});
+      if(epoch===selectionEpoch.current){
+        setReview(null);setReviewPartIndex(null);
+        setImportStatus("登録完了：追加 "+total.inserted+"件・更新 "+total.updated+
+          "件・スキップ "+total.skipped+"件"+
+          (csvSource==="lifestyle"?"・既存優先 "+total.conflicted+"件":"")+
+          "。元データ "+canonicalTotal+"件"+
+          (csvSource==="fit"?"、Fit歩数欠測 "+missingFitSteps+"日":"")+"。");
+        setRefreshEpoch(n=>n+1);
       }
     } catch {
-      if (epoch === selectionEpoch.current) {
-        setReview(null);
-        setImportStatus("取込中断。完了済みの分割は保持されています。同じ原本で再試行すると重複を避けて継続できます。");
+      if(epoch===selectionEpoch.current){
+        setReview(null);setReviewPartIndex(null);
+        setImportStatus("取込中断。完了済み "+completedParts.current.size+
+          "/"+canonicalParts.length+" 分割は保持されています。"+
+          "同じファイルで「確認して登録する」を押すと残りから再試行できます。");
       }
-    } finally {
+    } finally{
       setBusy(false);
     }
   }
@@ -315,12 +318,17 @@ export function App() {
         <h2 id="csv-title">CSVを取り込む</h2>
         <p className="hint">Google Fitの歩数・ECLEARの体重を優先します。同じ値はスキップ、違う値は更新します。</p>
         <p className="hint">ファイルを選ぶとECLEAR・Google Fit・生活記録を自動判別します。</p>
-        <p><input type="file" accept=".csv,text/csv" disabled={busy} onChange={e => {
-          const file = e.target.files?.[0];
-          // Reset picker to allow selecting the same file for a second import.
-          e.currentTarget.value="";
-          if (file) void selectCsv(file);
-        }} /></p>
+        <p>
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" hidden
+            disabled={busy} aria-label="CSVファイルを選ぶ" onChange={e=>{
+              const file=e.target.files?.[0];
+              e.currentTarget.value="";
+              if(file)void selectCsv(file);
+            }} />
+          <button type="button" disabled={busy} onClick={()=>fileInputRef.current?.click()}>
+            ファイルを選択
+          </button>
+        </p>
         {selectedCsvName&&<p role="status" className="hint">選択したファイル：<strong>{selectedCsvName}</strong></p>}
         {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":csvSource==="fit"?"Google Fit（歩数）":"生活記録"}</p>}
         {csvPreview && <div aria-live="polite">
@@ -340,15 +348,16 @@ export function App() {
           aria-label="生活記録の競合解決">
           <h3>既存の記録と競合しています</h3>
           <p>既存データは変更しません。以下の競合行を除いて、
-            CSV内の残りの行だけ登録できます。</p>
+            残りの行を自動的に登録します。完了済みの分割は保持されています。</p>
           <ul>{review.conflicts.map(c =>
             <li key={c.day}>{c.day}：{c.fields.join(" / ")}</li>)}</ul>
           <button type="button" disabled={busy} onClick={() => void submit(true)}>
             競合行は既存を優先し、その他を登録する
           </button>
           <button type="button" disabled={busy} onClick={() => {
-            setReview(null);
-            setImportStatus("取込を中止しました。書き込みは行っていません。");
+            setReview(null);setReviewPartIndex(null);
+            setImportStatus("残りの取込を中止しました。完了済みの "+
+              completedParts.current.size+" 分割は保持されています。");
           }}>取込を中止する</button>
         </div>}
         {importStatus && <p role="alert">{importStatus}</p>}
