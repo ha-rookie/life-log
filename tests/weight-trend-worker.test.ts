@@ -360,6 +360,9 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       expect(dailyRows).toBe(30);
       expect(await evaluate('document.querySelectorAll(".average-point").length')).toBeGreaterThan(0);
       expect(await evaluate('document.querySelector(".trend-difference")?.textContent.includes("目標上限")')).toBe(true);
+      // The daily table is intentionally collapsed on mobile. Expand it
+      // before testing its keyboard-accessible horizontal scrolling.
+      expect(await evaluate('(()=>{const d=document.querySelector(".trend-table-details");if(!d)return false;d.open=true;return d.open})()')).toBe(true);
       const dailyArrow = await keyRight(".trend-table-scroll");
       await click("週", ".trend-granularity button");
       await until('document.querySelector(".trend-period-table tbody")?.children.length===12'
