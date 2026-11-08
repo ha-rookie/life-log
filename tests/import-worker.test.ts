@@ -70,7 +70,7 @@ describe("real ephemeral local D1 audited import",()=>{
   afterAll(async()=>{await platform?.dispose();},60_000);
   beforeEach(async()=>{
     await db.batch(["DELETE FROM import_row_audit","DELETE FROM body_measurements",
-      "DELETE FROM lifestyle_days","DELETE FROM import_jobs","DELETE FROM owners"]
+      "DELETE FROM lifestyle_days","DELETE FROM activity_daily","DELETE FROM import_jobs","DELETE FROM owners"]
       .map(sql=>db.prepare(sql)));
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("owner","2026-01-01T00:00:00Z").run();
