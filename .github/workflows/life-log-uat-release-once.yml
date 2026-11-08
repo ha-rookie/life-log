@@ -1,0 +1,184 @@
+name: Life-log one-shot passkey UAT release 0003
+
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-one-shot-passkey-0003
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'chore(uat): one-time WebAuthn D1 and Worker release')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Require approved one-shot main SHA and exact one-file merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'chore(uat): one-time WebAuthn D1 and Worker release'
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = '.github/workflows/life-log-uat-release-once.yml'
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const cfg=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8').split(/\r?\n/)
+            .filter(x=>!x.trimStart().startsWith('//')).join('\n'));
+          const u=cfg.env?.uat,db=u?.d1_databases;
+          if(u?.name!=='life-log-uat'||u.workers_dev!==true||db?.length!==1
+            ||db[0].binding!=='DB'||db[0].database_name!=='life-log-dev'
+            ||db[0].database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956'
+            ||u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=='false'
+            ||u.vars?.MANUAL_REMOTE_TARGET!=='uat'
+            ||u.vars?.MANUAL_REMOTE_ORIGIN!=='https://life-log-uat.ha-rookie.workers.dev')
+            throw Error('UAT target or default-write gate mismatch');
+          const names=fs.readdirSync('migrations').filter(x=>x.endsWith('.sql')).sort();
+          if(JSON.stringify(names)!==JSON.stringify([
+            '0001_initial.sql','0002_owner_auth.sql','0003_owner_passkey.sql'
+          ]))throw Error('Unexpected migrations');
+          const sql=fs.readFileSync('migrations/0003_owner_passkey.sql','utf8')
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith('--')).join('\n');
+          const stmts=sql.split(';').map(x=>x.trim()).filter(Boolean);
+          const expected=[
+            /^CREATE TABLE IF NOT EXISTS owner_passkey_credentials \(/,
+            /^CREATE TABLE IF NOT EXISTS owner_passkey_challenges \(/,
+            /^CREATE INDEX IF NOT EXISTS idx_owner_passkey_challenges_expiry /,
+            /^CREATE TABLE IF NOT EXISTS owner_passkey_sessions \(/
+          ];
+          if(stmts.length!==4||stmts.some((x,i)=>!expected[i].test(x))
+            ||stmts.some(x=>/^(DROP|DELETE|UPDATE|INSERT|ALTER|REPLACE|TRUNCATE|ATTACH)\b/i.test(x)))
+            throw Error('0003 is not additive approved SQL');
+          JS
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Confirm existing D1 UUID with Cloudflare GET
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Read-only compare exact remote tables and migration history
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name" \
+            > "$RUNNER_TEMP/uat-tables.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM d1_migrations ORDER BY name" \
+            > "$RUNNER_TEMP/uat-migrations.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          function read(file){
+            const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/'+file+'.json','utf8'));
+            const packets=Array.isArray(r)?r:[r];
+            if(!packets.length||packets.some(x=>x.success===false||!Array.isArray(x.results)))
+              throw Error('Remote D1 metadata query failed');
+            return packets.flatMap(x=>x.results).map(x=>x.name).sort();
+          }
+          const tables=read('uat-tables'),history=read('uat-migrations');
+          const legacy=['owners','import_jobs','body_measurements','lifestyle_days',
+            'activity_daily','outings','drink_entries','import_row_audit',
+            'analysis_periods','behavior_hypotheses','behavior_experiments',
+            'owner_credentials','owner_sessions','d1_migrations','_cf_KV'].sort();
+          const extras=['owner_passkey_credentials','owner_passkey_challenges','owner_passkey_sessions'];
+          const prior=['0001_initial.sql','0002_owner_auth.sql'].sort();
+          const equals=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+          const pending=equals(tables,legacy)&&equals(history,prior);
+          const done=equals(tables,[...legacy,...extras].sort())
+            &&equals(history,[...prior,'0003_owner_passkey.sql'].sort());
+          if(!pending&&!done)throw Error('Unexpected D1 state; no migration or deploy');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,'pending='+String(pending)+'\n');
+          console.log('D1 migration 0003:',pending?'PENDING':'ALREADY_APPLIED');
+          JS
+      - name: Apply only missing additive 0003 (existing D1)
+        if: steps.preflight.outputs.pending == 'true'
+        run: npx --no-install wrangler d1 migrations apply DB --env uat --remote
+      - name: Verify 0003 schema before deploying
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('owner_passkey_credentials','owner_passkey_challenges','owner_passkey_sessions') ORDER BY name" > "$RUNNER_TEMP/uat-passkeys.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM d1_migrations WHERE name='0003_owner_passkey.sql'" > "$RUNNER_TEMP/uat-0003.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const names=file=>{
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/'+file+'.json','utf8'));
+            const x=Array.isArray(d)?d:[d];
+            if(x.some(p=>p.success===false||!Array.isArray(p.results)))throw Error('D1 verification unavailable');
+            return x.flatMap(p=>p.results).map(p=>p.name).sort();
+          };
+          if(JSON.stringify(names('uat-passkeys'))!==JSON.stringify([
+              'owner_passkey_challenges','owner_passkey_credentials','owner_passkey_sessions'
+            ])||JSON.stringify(names('uat-0003'))!=='["0003_owner_passkey.sql"]')
+            throw Error('0003 incomplete; refusing Worker deployment');
+          JS
+      - name: Build approved application
+        run: npm run build
+      - name: Deploy existing password-only UAT Worker without new Secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --env uat \
+            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
+                  MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+      - name: HTTP acceptance - anonymous root denied, login page available
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 12); do
+            root=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
+            login=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/login" || true)
+            if [[ "$root" == 403 && "$login" == 200 ]]; then
+              echo 'Worker deployed: anonymous root 403, login 200'
+              {
+                echo '### Life-log Android UAT ready for device authentication'
+                echo "- Main: $TARGET_SHA"
+                echo '- D1: existing life-log-dev, 0003 present; no personal data imported'
+                echo '- Worker: existing life-log-uat, password-only mode'
+                echo "- Login: $UAT_URL/login"
+                echo '- Secrets/Access/new D1/Owner account: unchanged'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [[ "$root" == 200 ]]; then echo 'Anonymous app exposure' >&2; exit 1; fi
+            [[ $n -eq 12 ]] && break
+            sleep 5
+          done
+          echo "UAT HTTP smoke failed: root=$root login=$login" >&2
+          exit 1
