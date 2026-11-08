@@ -57,3 +57,19 @@
 .manual-history li span{flex:1 1 180px;overflow-wrap:anywhere}
 .manual-history button{min-width:54px}
 @media(max-width:480px){.manual-fields{grid-template-columns:1fr}.manual-entry .manual-history li span{flex-basis:100%}}
+
+
+/* MVP daily workflows: readable 390px Android, no horizontal document overflow. */
+.mvp-grid,.mvp-periods{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:1rem;margin:1rem 0}
+.mvp-grid fieldset{min-width:0;max-width:100%;border:1px solid #a3bbc2;border-radius:.6rem;padding:.8rem}
+.mvp-grid label,.mvp-edit label,.mvp-plan label{display:flex;flex-direction:column;gap:.35rem;min-width:0;margin:.55rem 0}
+.mvp-grid input,.mvp-grid textarea,.mvp-edit input,.mvp-edit select,.mvp-plan select,.mvp-plan textarea{box-sizing:border-box;max-width:100%;width:100%;font:inherit}
+.mvp-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin:.8rem 0}
+.mvp-buttons button{min-height:48px;white-space:normal}
+.mvp-entry{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0}
+.mvp-entry span{flex:1 1 180px;overflow-wrap:anywhere}
+.mvp-periods section,.mvp-edit,.mvp-plan{min-width:0;border:1px solid #c9d7da;border-radius:.65rem;padding:.8rem;margin:.6rem 0}
+.mvp-periods dl{display:grid;grid-template-columns:minmax(0,1fr);minmax(0,1fr);gap:.35rem;font-size:.92rem}
+.mvp-periods dd{margin:0;overflow-wrap:anywhere;text-align:right}
+.mvp-plan p{overflow-wrap:anywhere}
+@media(max-width:430px){.mvp-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}.mvp-periods dl{grid-template-columns:1fr}.mvp-periods dd{text-align:left;padding-bottom:.45rem}}
