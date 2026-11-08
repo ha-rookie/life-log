@@ -174,6 +174,25 @@ describe("owner password authentication boundary",()=>{
   expect(response.status).toBe(401);
   expect(queries.some(sql=>sql.includes("INSERT"))).toBe(false);
  });
+ it("never enables temporary password fallback on a non-UAT host",async()=>{
+  const statements:string[]=[];
+  const db={prepare:(sql:string)=>{
+    statements.push(sql);
+    return {bind:()=>({
+      first:async()=>({salt:"b8a1ebd3d6144479ed597ede5d76fa65",hash:"0".repeat(64),iterations:210000}),
+      run:async()=>{throw Error("No write expected");},
+    })};
+  }};
+  const host="https://example.org";
+  const request=new Request(host+"/api/auth/login",{method:"POST",headers:{
+    Origin:host,"Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"register-v1",
+    "Content-Type":"application/json","CF-Connecting-IP":"203.0.113.1",
+  },body:JSON.stringify({username:"owner",password:"not-the-issued-password"})});
+  const response=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
+    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
+  expect(response.status).toBe(401);
+  expect(statements.some(sql=>sql.includes("owner_passkey_credentials"))).toBe(false);
+ });
  it("provides specific but non-sensitive login error diagnostics in the HTML",async()=>{
   const {loginScreen}=await import("../src/worker/login-screen");
   const html=await loginScreen().text();
