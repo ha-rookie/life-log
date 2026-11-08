@@ -28,6 +28,10 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Verify package-lock stays unchanged
         run: git diff --exit-code -- package-lock.json
+      - name: Reject unsupported Worker PBKDF2 iterations and verify guard fixtures
+        run: |
+          python3 scripts/check-cloudflare-kdf.py --self-test
+          python3 scripts/check-cloudflare-kdf.py .
       - name: Typecheck and build
         run: npm run build
       - name: Unit security and legacy tests (synthetic)
