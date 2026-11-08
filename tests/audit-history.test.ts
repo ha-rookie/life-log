@@ -3,6 +3,7 @@ import { getPlatformProxy } from "wrangler";
 import schemaSql from "../migrations/0001_initial.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { handleAuditHistory } from "../src/worker/audit-history";
+import { handleImport } from "../src/worker/import";
 import type { ImportDb, Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
 
@@ -25,7 +26,7 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
   },100_000);
   afterAll(async()=>{await platform?.dispose();},60_000);
   beforeEach(async()=>{
-    await db.batch(["DELETE FROM import_row_audit","DELETE FROM body_measurements","DELETE FROM lifestyle_days","DELETE FROM import_jobs","DELETE FROM owners"].map(sql=>db.prepare(sql)));
+    await db.batch(["DELETE FROM import_row_audit","DELETE FROM body_measurements","DELETE FROM lifestyle_days","DELETE FROM activity_daily","DELETE FROM import_jobs","DELETE FROM owners"].map(sql=>db.prepare(sql)));
     for(const owner of ["owner","other"])await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)").bind(owner,"2026-01-01Z").run();
   });
   async function seed(owner:string,source:"lifestyle"|"eclear",status="confirmed",marker="csv:audited-v2:",day="2026-01-02",n=2){
@@ -59,6 +60,33 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect(spy.prepare).not.toHaveBeenCalled();
     expect(spy.batch).not.toHaveBeenCalled();
   });
+  it("reports Fit CSV corrections separately and preserves prior job audit provenance",async()=>{
+    const importFit=async(csv:string)=>{
+      const req=new Request("https://example.invalid/api/import/confirm",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({source:"fit",csv,hash:await hash(csv),confirmed:true})
+      });
+      const res=await handleImport(req,db,"owner");
+      expect(res.status).toBe(200);
+      return res.json() as Promise<{inserted:number;updated:number;skipped:number}>;
+    };
+    const initial="local_day,steps\n2026-01-01,4500\n";
+    const corrected="local_day,steps\n2026-01-01,5000\n2026-01-02,0\n";
+    expect(await importFit(initial)).toMatchObject({inserted:1,updated:0,skipped:0});
+    expect(await importFit(corrected)).toMatchObject({inserted:1,updated:1,skipped:0});
+    const listing=await get(db);
+    expect(listing.code).toBe(200);
+    expect(listing.body.jobs).toHaveLength(2);
+    expect(listing.body.jobs.every((j:{auditStatus:string})=>j.auditStatus==="available")).toBe(true);
+    const recent=listing.body.jobs[0].id as string;
+    const prior=listing.body.jobs[1].id as string;
+    const fresh=await get(db,"/"+recent);
+    expect(fresh.body.job).toMatchObject({auditStatus:"available",counts:{inserted:1,updated:1,skipped:0,conflict:0,invalid:0}});
+    expect(fresh.body.rows.map((r:{result:string;values:unknown})=>[r.result,r.values]))
+      .toEqual([["updated",null],["inserted",{steps:0}]]);
+    expect((await get(db,"/"+prior)).body.job).toMatchObject({
+      auditStatus:"available",counts:{inserted:1,updated:0}});
+  },100_000);
   it("lists only own jobs, owner-scoped detail, and does not leak CSV hash or row keys",async()=>{
     await seed("owner","lifestyle");
     const other=await seed("other","eclear");
