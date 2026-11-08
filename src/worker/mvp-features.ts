@@ -50,8 +50,6 @@ type S={local_day:string;steps:number|null;source_id:string};
 type L={local_day:string;drinking_presence:number|null;drink_cups:number|null;lunch_kind:string|null;dinner_kind:string|null;late_meal:number|null;source_id:string};
 type D={id:string;observed_at:string;drink_kind:Kind;alcohol:number;cups:number;source_row_key:string};
 const priority=(source:string)=>source.startsWith("manual:")?0:source.startsWith("eclear")?1:2;
-const prefer=<T extends {source_id:string}>(old:T|undefined,next:T):T=>
-  !old||priority(next.source_id)<priority(old.source_id)?next:old;
 const isFitStepSource=(s:string):boolean=>
   s==="fit"||s==="google_fit"||s==="google-fit"||
   s.startsWith("fit:")||s.startsWith("google_fit:")||
