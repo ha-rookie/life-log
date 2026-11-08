@@ -86,6 +86,36 @@ describe("Original Japanese official CSVs are normalized entirely on-device",()=
  });
 });
 
+describe("Full-length lifestyle original on Android",()=>{
+ it("validates 163 consecutive days in small independently auditable parts",async()=>{
+  const start=Date.parse("2025-12-19T00:00:00Z");
+  const days=Array.from({length:163},(_,i)=>{
+    const day=new Date(start+i*86400000).toISOString().slice(0,10);
+    return day+","+(i%3===0?"1,,":"0,0,");
+  });
+  const original="local_day,drinking_presence,drink_cups,steps\\n".replace("\\n","\n")+
+    days.join("\n")+"\n";
+  expect(detectOfficialCsvSource(original)).toBe("lifestyle");
+  const normalized=normalizeOfficialCsv("lifestyle",original);
+  expect(normalized.total).toBe(163);
+  expect(normalized.parts).toHaveLength(21);
+  const valid=await Promise.all(normalized.parts.map(part=>previewCsv("lifestyle",part)));
+  expect(valid.every(x=>x.errors.length===0&&x.rows.length>0&&x.rows.length<=8)).toBe(true);
+  expect(valid.flatMap(x=>x.rows.map(y=>y.day))).toEqual(days.map(x=>x.slice(0,10)));
+  expect(valid.flatMap(x=>x.rows).filter(x=>x.presence===1)).toHaveLength(55);
+  expect(valid.flatMap(x=>x.rows).filter(x=>x.presence===0).every(x=>x.cups===0&&x.steps===null)).toBe(true);
+ });
+ it("rejects repeated days even when they would be in separate upload parts",()=>{
+  const start=Date.parse("2025-12-19T00:00:00Z");
+  const days=Array.from({length:10},(_,i)=>
+    new Date(start+i*86400000).toISOString().slice(0,10)+",0,0,");
+  days[9]=days[0];
+  expect(()=>normalizeOfficialCsv("lifestyle",
+    "local_day,drinking_presence,drink_cups,steps\n"+days.join("\n")+"\n"))
+    .toThrow("DUPLICATE_DATE_OR_TIMESTAMP_IN_SOURCE");
+ });
+});
+
 describe("CSV picker automatic source recognition",()=>{
  it("recognizes supported original and normalized headers",()=>{
   expect(detectOfficialCsvSource("\uFEFF"+eclearHeader+"\n")).toBe("eclear");
