@@ -14,7 +14,7 @@ type LoadState =
 type Conflict = { day: string; fields: string[] };
 type Review = { token: string; conflicts: Conflict[] };
 type ImportResult = {
-  status?: string; error?: string; inserted?: number; skipped?: number;
+  status?: string; error?: string; inserted?: number; updated?: number; skipped?: number;
   conflicted?: number; reviewToken?: string | null; conflicts?: Conflict[];
   auditStatus?: "legacy_unavailable" | "complete";
 };
@@ -118,7 +118,7 @@ export function App() {
     try {
       if(csvSource!=="lifestyle"){
         if(!canonicalParts.length||keepExisting)throw Error("SOURCE_NOT_READY");
-        let inserted=0,skipped=0;
+        let inserted=0,updated=0,skipped=0;
         for(let n=0;n<canonicalParts.length;n++){
           // Each chunk is an independently hash-confirmed, auditable, idempotent job.
           const part=canonicalParts[n],p=await previewCsv(csvSource,part);
@@ -130,12 +130,12 @@ export function App() {
           const data=await response.json() as ImportResult;
           if(!response.ok)throw Error("HTTP "+response.status+" / "+(data.error??"UNKNOWN")+
             "（"+(n+1)+"/"+canonicalParts.length+"）");
-          inserted+=data.inserted??0;skipped+=data.skipped??0;
+          inserted+=data.inserted??0;updated+=data.updated??0;skipped+=data.skipped??0;
           if(epoch===selectionEpoch.current)
             setImportStatus("登録中 "+(n+1)+"/"+canonicalParts.length+" 分割");
         }
         if(epoch===selectionEpoch.current){
-          setImportStatus("登録完了：追加 "+inserted+"件・スキップ "+skipped+
+          setImportStatus("登録完了：追加 "+inserted+"件・更新 "+updated+"件・スキップ "+skipped+
             "件。元データ "+canonicalTotal+"件、Fit歩数欠測 "+missingFitSteps+"日。");
           setRefreshEpoch(n=>n+1);
         }
@@ -166,7 +166,7 @@ export function App() {
           ? data.auditStatus === "legacy_unavailable"
             ? "このCSVは旧形式で取込済みです。二重登録はしていません。過去の行単位監査は存在せず、推測による補完もしていません。"
             : "このCSVはすでに取込済みです。二重登録はしていません。"
-          : "登録完了：追加 " + (data.inserted ?? 0) + "件 / 同値スキップ "
+          : "登録完了：追加 " + (data.inserted ?? 0) + "件 / 更新 "+(data.updated??0)+"件 / 同値スキップ "
             + (data.skipped ?? 0) + "件 / 競合を維持 "
             + (data.conflicted ?? 0) + "件。行単位の監査証跡を保存しました。");
       } else {
@@ -232,6 +232,7 @@ export function App() {
       <section className="panel" aria-labelledby="csv-title">
         <h2 id="csv-title">CSV取込（本人専用）</h2>
         <p>歩数はGoogle Fit、体重はECLEARを正とします。各元ファイルを端末で選択すると、アプリ内で形式検証して分割登録します。原本はGitHubへ送信しません。</p>
+        <p>CSVの正本は手入力より優先されます。同じ値はスキップし、異なる値はCSVで更新します（手入力記録は残します）。</p>
         <label>種類{" "}
           <select value={csvSource} disabled={busy} onChange={e => {
             ++selectionEpoch.current;

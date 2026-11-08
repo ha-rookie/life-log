@@ -37,8 +37,8 @@ type StoredDay = {
 };
 type SnapshotDay = { incoming: LifestyleRow; existing: StoredDay[] };
 export type LifestyleConflict = { day: string; fields: string[] };
-type AuditCount = { result: string; n: number };
-type Summary = { inserted: number; skipped: number; conflicted: number };
+type AuditCount = { result: string; error_code: string|null; n: number };
+type Summary = { inserted: number; updated: number; skipped: number; conflicted: number };
 
 function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
@@ -128,67 +128,103 @@ function jobStatement(
   return db.prepare(sql).bind(job, owner, source, "csv:audited-v2:" + source, fileHash,
     ...(source === "lifestyle" ? params : []), status, now, now);
 }
-function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
-  if (source === "eclear") {
-    return db.prepare(
-      "INSERT OR IGNORE INTO body_measurements"
-      + "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"
-      + "source_id,source_row_key,reliable_fingerprint,source_kind,import_job_id)"
-      + " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-    ).bind(job + ":" + row.line, owner, row.timestamp, "Asia/Tokyo", row.weight, row.fat,
-      "csv:eclear", row.key, row.fingerprint, "measured", job);
+// Every import job runs in a single atomic D1.batch: audit the previous
+// canonical source value first, then apply exactly that row's mutation.
+function writeRows(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvRow):Statement[]{
+  if(source==="fit"){
+    return [db.prepare(
+      "INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key,import_job_id)"+
+      " VALUES (?,?,?,?,'fit',?,?)"+
+      " ON CONFLICT(owner_id,source_id,source_row_key) DO UPDATE SET"+
+      " steps=excluded.steps"+
+      " WHERE activity_daily.steps IS NOT excluded.steps"
+    ).bind("fit:"+owner+":"+row.day,owner,row.day,row.steps,row.day,job)];
   }
-  if (source === "fit") {
-    return db.prepare(
-      "INSERT OR IGNORE INTO activity_daily"
-      + "(id,owner_id,local_day,steps,source_id,source_row_key,import_job_id)"
-      + " VALUES (?, ?, ?, ?, 'fit', ?, ?)"
-    ).bind("fit:"+owner+":"+row.day, owner, row.day, row.steps, row.day, job);
+  if(source==="eclear"){
+    // The original ECLEAR fingerprint includes the value. Match the physical
+    // measurement by timestamp instead, so corrected values UPDATE rather
+    // than create a second measurement with the same timestamp.
+    // Refuse to pick an arbitrary winner if pre-existing duplicates exist.
+    const update=db.prepare(
+      "UPDATE body_measurements SET weight_kg=?,body_fat_pct=?,"+
+      " reliable_fingerprint=?"+
+      " WHERE owner_id=? AND source_id='csv:eclear' AND measured_at=?"+
+      " AND (weight_kg IS NOT ? OR body_fat_pct IS NOT ?)"+
+      " AND (SELECT COUNT(*) FROM body_measurements"+
+      " WHERE owner_id=? AND source_id='csv:eclear' AND measured_at=?)=1"
+    ).bind(row.weight,row.fat,row.fingerprint,
+      owner,row.timestamp,row.weight,row.fat,owner,row.timestamp);
+    const insert=db.prepare(
+      "INSERT OR IGNORE INTO body_measurements"+
+      "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"+
+      "source_id,source_row_key,reliable_fingerprint,source_kind,import_job_id)"+
+      " SELECT ?,?,?,'Asia/Tokyo',?,?,'csv:eclear',?,?,'measured',?"+
+      " WHERE NOT EXISTS (SELECT 1 FROM body_measurements"+
+      " WHERE owner_id=? AND source_id='csv:eclear' AND measured_at=?)"
+    ).bind(job+":"+row.line,owner,row.timestamp,row.weight,row.fat,
+      row.key,row.fingerprint,job,owner,row.timestamp);
+    return [update,insert];
   }
-  return db.prepare(
-    "INSERT INTO lifestyle_days"
-    + "(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id)"
-    + " SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS "
-    + "(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=?)"
-  ).bind(owner, row.day, row.presence, row.cups, row.steps,
-    "csv:lifestyle", row.key, job, owner, row.day);
+  return [db.prepare(
+    "INSERT INTO lifestyle_days"+
+    "(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id)"+
+    " SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS"+
+    " (SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=?)"
+  ).bind(owner,row.day,row.presence,row.cups,row.steps,
+    "csv:lifestyle",row.key,job,owner,row.day)];
 }
-
-// Row audit lives in the SAME atomic batch immediately after its destination insert.
-// Classification queries the actual D1 state, not a guessed preflight outcome.
-function auditRow(db: ImportDb, owner: string, source: CsvSource, job: string, row: CsvRow): Statement {
-  if (source === "eclear") {
-    const inserted = "EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=? AND import_job_id=? AND source_row_key=?)";
+function auditRow(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvRow):Statement{
+  if(source==="fit"){
+    // Audit the existing value BEFORE the upsert. SQLite 'IS' distinguishes
+    // NULL from 0; neither an identical CSV nor a manual entry is overwritten.
     return db.prepare(
-      "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
-      + " VALUES (?,?,?,?,CASE WHEN " + inserted + " THEN 'inserted' ELSE 'skipped' END,NULL)"
-    ).bind(job + ":" + row.line, job, row.line, row.key, owner, job, row.key);
+      "INSERT INTO import_row_audit"+
+      "(id,import_job_id,source_row_number,source_row_key,result,error_code)"+
+      " VALUES (?,?,?,?,CASE WHEN EXISTS("+
+      " SELECT 1 FROM activity_daily WHERE owner_id=? AND source_id='fit'"+
+      " AND source_row_key=? AND steps IS ?) THEN 'skipped' ELSE 'inserted' END,"+
+      " CASE WHEN EXISTS(SELECT 1 FROM activity_daily"+
+      " WHERE owner_id=? AND source_id='fit' AND source_row_key=?"+
+      " AND steps IS NOT ?) THEN 'UPDATED' ELSE NULL END)"
+    ).bind(job+":"+row.line,job,row.line,row.key,
+      owner,row.day,row.steps,owner,row.day,row.steps);
   }
-  if (source === "fit") {
-    const inserted = "EXISTS(SELECT 1 FROM activity_daily WHERE owner_id=? AND import_job_id=? AND source_row_key=? AND source_id='fit')";
+  if(source==="eclear"){
+    const exact="EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=? AND reliable_fingerprint=?)";
+    const count="(SELECT COUNT(*) FROM body_measurements WHERE owner_id=?"+
+      " AND source_id='csv:eclear' AND measured_at=?)";
     return db.prepare(
-      "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
-      + " VALUES (?,?,?,?,CASE WHEN " + inserted + " THEN 'inserted' ELSE 'skipped' END,NULL)"
-    ).bind(job+":"+row.line,job,row.line,row.key,owner,job,row.day);
+      "INSERT INTO import_row_audit"+
+      "(id,import_job_id,source_row_number,source_row_key,result,error_code)"+
+      " VALUES (?,?,?,?,CASE WHEN "+exact+" THEN 'skipped'"+
+      " WHEN "+count+">1 THEN 'conflict' ELSE 'inserted' END,"+
+      " CASE WHEN "+exact+" THEN NULL"+
+      " WHEN "+count+">1 THEN 'AMBIGUOUS_ECLEAR_TIMESTAMP'"+
+      " WHEN "+count+">0 THEN 'UPDATED' ELSE NULL END)"
+    ).bind(job+":"+row.line,job,row.line,row.key,
+      owner,row.fingerprint,owner,row.timestamp,
+      owner,row.fingerprint,owner,row.timestamp,owner,row.timestamp);
   }
-  const inserted = "EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
-    + "AND import_job_id=? AND source_row_key=?)";
-  const differing = "EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
-    + "AND (drinking_presence IS NOT ? OR drink_cups IS NOT ? OR steps IS NOT ?))";
-  const sql = "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
-    + " VALUES (?,?,?,?,CASE WHEN " + inserted
-    + " THEN 'inserted' WHEN " + differing + " THEN 'conflict' ELSE 'skipped' END,"
-    + "CASE WHEN " + differing + " THEN 'LIFESTYLE_CONFLICT_KEPT' ELSE NULL END)";
-  const d = [owner, row.day, row.presence, row.cups, row.steps];
-  return db.prepare(sql).bind(job + ":" + row.line, job, row.line, row.key,
-    owner, row.day, job, row.key, ...d, ...d);
+  const inserted="EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "+
+    "AND import_job_id=? AND source_row_key=?)";
+  const differing="EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "+
+    "AND (drinking_presence IS NOT ? OR drink_cups IS NOT ? OR steps IS NOT ?))";
+  const sql="INSERT INTO import_row_audit"+
+    "(id,import_job_id,source_row_number,source_row_key,result,error_code)"+
+    " VALUES (?,?,?,?,CASE WHEN "+inserted+
+    " THEN 'inserted' WHEN "+differing+" THEN 'conflict' ELSE 'skipped' END,"+
+    "CASE WHEN "+differing+" THEN 'LIFESTYLE_CONFLICT_KEPT' ELSE NULL END)";
+  const d=[owner,row.day,row.presence,row.cups,row.steps];
+  return db.prepare(sql).bind(job+":"+row.line,job,row.line,row.key,
+    owner,row.day,job,row.key,...d,...d);
 }
-function counts(rows: AuditCount[]): Summary {
-  const result = { inserted: 0, skipped: 0, conflicted: 0 };
-  for (const row of rows) {
-    if (row.result === "inserted") result.inserted += row.n;
-    else if (row.result === "skipped") result.skipped += row.n;
-    else if (row.result === "conflict") result.conflicted += row.n;
+function counts(rows:AuditCount[]):Summary{
+  const result={inserted:0,updated:0,skipped:0,conflicted:0};
+  for(const row of rows){
+    if(row.result==="inserted"&&row.error_code==="UPDATED")result.updated+=row.n;
+    else if(row.result==="inserted")result.inserted+=row.n;
+    else if(row.result==="skipped")result.skipped+=row.n;
+    else if(row.result==="conflict")result.conflicted+=row.n;
     else throw Error("UNKNOWN_AUDIT_RESULT");
   }
   return result;
@@ -201,23 +237,23 @@ async function existingJobResponse(
   db: ImportDb, job: string, rows: number, existing: ExistingJob, source: CsvSource,
 ): Promise<Response> {
   const result = await db.prepare(
-    "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
+    "SELECT result,error_code,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result,error_code"
   ).bind(job).all<AuditCount>();
   if (result.results.length === 0
       && existing.status === "confirmed"
       && existing.source_id === "csv:" + source) {
     return json({
-      status: "already_imported", inserted: 0, skipped: rows, conflicted: 0,
+      status: "already_imported", inserted: 0, updated: 0, skipped: rows, conflicted: 0,
       auditStatus: "legacy_unavailable", original: null,
     });
   }
   // An audited job with missing records, a partially missing audit, or a
   // partial legacy job is corrupt/ambiguous: do NOT backfill or re-import.
   const original = counts(result.results);
-  if (original.inserted + original.skipped + original.conflicted !== rows) {
+  if (original.inserted + original.updated + original.skipped + original.conflicted !== rows) {
     return reject("INCOMPLETE_AUDIT", 503);
   }
-  return json({ status: "already_imported", inserted: 0, skipped: rows,
+  return json({ status: "already_imported", inserted: 0, updated: 0, skipped: rows,
     conflicted: 0, auditStatus: "complete", original });
 }
 
@@ -281,18 +317,24 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
       jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status),
     ];
     for (const row of preview.rows) {
-      ops.push(insertRow(db, owner, payload.source, job, row));
-      ops.push(auditRow(db, owner, payload.source, job, row));
+      // Canonical source updates must classify the pre-update row atomically.
+      if(payload.source==="eclear"||payload.source==="fit"){
+        ops.push(auditRow(db,owner,payload.source,job,row));
+        ops.push(...writeRows(db,owner,payload.source,job,row));
+      }else{
+        ops.push(...writeRows(db,owner,payload.source,job,row));
+        ops.push(auditRow(db,owner,payload.source,job,row));
+      }
     }
     ops.push(db.prepare(
-      "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
+      "SELECT result,error_code,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result,error_code"
     ).bind(job));
     const batches = await db.batch(ops);
     if (batches.length !== ops.length) return reject("INCOMPLETE_BATCH", 503);
     const audit = (batches[batches.length - 1] as { results?: AuditCount[] }).results;
     if (!Array.isArray(audit)) return reject("UNVERIFIED_AUDIT", 503);
     const summary = counts(audit);
-    if (summary.inserted + summary.skipped + summary.conflicted !== preview.rows.length) {
+    if (summary.inserted + summary.updated + summary.skipped + summary.conflicted !== preview.rows.length) {
       return reject("INCOMPLETE_AUDIT", 503);
     }
     return json({ status, ...summary });
