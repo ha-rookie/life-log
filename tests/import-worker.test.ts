@@ -19,7 +19,7 @@ const hdr = "local_day,drinking_presence,drink_cups,steps\n";
 const life = hdr+"2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
 const ec = "measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
 async function send(db:ImportDb,csv:string,opts:{
-  source?:"lifestyle"|"eclear";owner?:string;confirmed?:boolean;
+  source?:"lifestyle"|"eclear"|"fit";owner?:string;confirmed?:boolean;
   resolution?:{mode:"keep_existing";token:string}
 }={}){
   const source=opts.source??"lifestyle",confirmed=opts.confirmed??true;
@@ -75,6 +75,25 @@ describe("real ephemeral local D1 audited import",()=>{
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("owner","2026-01-01T00:00:00Z").run();
   });
+
+  it("imports Fit canonical steps, preserves missing versus zero and source-scoped retry",async()=>{
+    const payload="local_day,steps\n2026-01-02,4000\n2026-01-03,0\n2026-01-04,\n";
+    const first=await send(db,payload,{source:"fit"});
+    expect(first).toMatchObject({code:200,data:{inserted:3,skipped:0,conflicted:0}});
+    expect((await send(db,payload,{source:"fit"})).data.status).toBe("already_imported");
+    const records=await db.prepare(
+      "SELECT local_day,steps,source_id FROM activity_daily WHERE owner_id='owner' ORDER BY local_day"
+    ).all<{local_day:string;steps:number|null;source_id:string}>();
+    expect(records.results).toEqual([
+      {local_day:"2026-01-02",steps:4000,source_id:"fit"},
+      {local_day:"2026-01-03",steps:0,source_id:"fit"},
+      {local_day:"2026-01-04",steps:null,source_id:"fit"},
+    ]);
+    const jobs=await db.prepare(
+      "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result"
+    ).bind("owner:fit:"+await hash(payload)).all<{result:string;n:number}>();
+    expect(jobs.results).toEqual([{result:"inserted",n:3}]);
+  },100_000);
 
   it("previews without D1 mutation; confirms all rows with actual NULL and explicit zero plus audit",async()=>{
     expect((await send(db,life,{confirmed:false})).code).toBe(200);
