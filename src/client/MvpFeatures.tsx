@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
+  pureAlcoholGrams, validDrinkAmounts, type DrinkKind, type DrinkRecord,
+  type DrinkSize } from "../shared/drink-measures";
 
-type Kind="highball"|"green_tea_high"|"other_alcohol"|"non_alcohol";
-type Drink={key:string;observedAt:string;kind:Kind;alcohol:number;cups:number};
+type Kind=DrinkKind;
+type Drink=DrinkRecord;
 type MealKind="home"|"restaurant"|"takeout"|null;
 type Meal={day:string;lunchKind:MealKind;dinnerKind:MealKind;lateMeal:0|1|null};
 type Outing={key:string;day:string;category:"work"|"bar"|"other"};
@@ -13,13 +16,13 @@ type Period={from:string;to:string;calendarDays:number;
   weight:{startKg:number|null;endKg:number|null;deltaKg:number|null;observedDays:number;missingDays:number};
   steps:{mean:number|null;observedDays:number;missingDays:number;zeroDays:number;sources:string[]};
   drinking:{observedDays:number;drinkingDays:number;nondrinkingDays:number;missingDays:number;
-    recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number};
+    recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number;
+  knownAlcoholG:number;unknownAlcoholCups:number};
   outings:{visits:number;work:number;bar:number;other:number};
   meals:{lateMealDays:number;lateMealObservedDays:number;observedLunchDays:number;observedDinnerDays:number;
     restaurantLunchDays:number;restaurantDinnerDays:number;takeoutLunchDays:number;takeoutDinnerDays:number}};
 type CompareResult={a:Period;b:Period;disclaimer:string};
-const names:Record<Kind,string>={highball:"ハイボール",green_tea_high:"緑茶ハイ",
-  other_alcohol:"その他のお酒",non_alcohol:"ノンアルコール"};
+const names=drinkNames;
 const jstNow=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,16);
 const jstDay=()=>jstNow().slice(0,10);
 const isoDay=(daysAgo:number)=>new Date(Date.now()+9*3600000-daysAgo*86400000).toISOString().slice(0,10);
@@ -45,7 +48,16 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [drinks,setDrinks]=useState<Drink[]>([]);
   const [drinksError,setDrinksError]=useState("");
   const [drinksBusy,setDrinksBusy]=useState(false);
-  const pending=useRef<{key:string;kind:Kind;observedAt:string}|null>(null);
+  const pending=useRef<(Record<string,unknown>&{key:string})|null>(null);
+  const [drinkKind,setDrinkKind]=useState<Kind>("highball");
+  const [drinkSize,setDrinkSize]=useState<DrinkSize>("regular");
+  const [drinkCups,setDrinkCups]=useState(1);
+  const [drinkVolume,setDrinkVolume]=useState("350");
+  const [drinkAbv,setDrinkAbv]=useState("");
+  const [editSize,setEditSize]=useState<DrinkSize>("custom");
+  const [editCups,setEditCups]=useState(1);
+  const [editVolume,setEditVolume]=useState("");
+  const [editAbv,setEditAbv]=useState("");
   const [editing,setEditing]=useState<Drink|null>(null);
   const [editKind,setEditKind]=useState<Kind>("highball");
   const [editTime,setEditTime]=useState("");
@@ -122,31 +134,61 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const todayDrinks=drinks.filter(d=>localTime(d.observedAt).slice(0,10)===jstDay());
   const todayAlcohol=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>n+d.cups,0);
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
-  async function addDrink(kind:Kind){
-    if(drinksBusy)return;
+  const todayKnownG=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>
+    n+(pureAlcoholGrams(d)??0),0);
+  const todayUnknownCups=todayDrinks.filter(d=>d.alcohol===1&&pureAlcoholGrams(d)===null)
+    .reduce((n,d)=>n+d.cups,0);
+  const asOptionalNumber=(value:string):number|null=>value.trim()===""?null:Number(value);
+  const draftVolume=asOptionalNumber(drinkVolume),draftAbv=asOptionalNumber(drinkAbv);
+  const drinkDraftValid=validDrinkAmounts(drinkKind,drinkCups,draftVolume,draftAbv);
+  const draftAlcohol=drinkKind==="non_alcohol"?0:1;
+  const draftG=pureAlcoholGrams({cups:drinkCups,volumeMl:draftVolume,abvPct:draftAbv,alcohol:draftAlcohol});
+  const draftEquivalent=equivalentNormalServings({cups:drinkCups,volumeMl:draftVolume});
+  const editVolumeMl=asOptionalNumber(editVolume),editAbvPct=asOptionalNumber(editAbv);
+  const editDraftValid=validDrinkAmounts(editKind,editCups,editVolumeMl,editAbvPct);
+  function setPresetSize(size:DrinkSize,editingRecord=false){
+    const next=size==="custom"?"":String(referenceMl[size]);
+    if(editingRecord){setEditSize(size);setEditVolume(next);}
+    else{setDrinkSize(size);setDrinkVolume(next);}
+  }
+  async function addDrink(){
+    if(drinksBusy||!drinkDraftValid)return;
     setDrinksBusy(true);setDrinksError("");
-    if(!pending.current)pending.current={key:crypto.randomUUID(),kind,observedAt:new Date().toISOString()};
+    if(!pending.current)pending.current={
+      key:crypto.randomUUID(),kind:drinkKind,size:drinkSize,cups:drinkCups,
+      volumeMl:draftVolume,abvPct:draftAbv,observedAt:new Date().toISOString()
+    };
     try{
       await mutate("/api/mvp/drinks","POST",pending.current);
       pending.current=null;await loadDrinks();onSaved();
     }catch(e){
       await loadDrinks();
-      setDrinksError(e instanceof Error?e.message:"通信結果が不明です。履歴を確認してください。");
+      setDrinksError(e instanceof Error?e.message:"通信結果が不明です。同じ内容で再試行してください。");
     }finally{setDrinksBusy(false);}
   }
+  function startEdit(d:Drink){
+    setEditing(d);setEditKind(d.kind);setEditTime(localTime(d.observedAt));
+    setEditCups(d.cups);setEditSize(d.size??"custom");
+    setEditVolume(d.volumeMl===null?"":String(d.volumeMl));
+    setEditAbv(d.abvPct===null?"":String(d.abvPct));
+  }
   async function updateDrink(){
-    if(!editing||drinksBusy||!editTime)return;
+    if(!editing||drinksBusy||!editTime||!editDraftValid)return;
     setDrinksBusy(true);setDrinksError("");
     try{
       await mutate("/api/mvp/drinks","PATCH",{
         key:editing.key,kind:editKind,observedAt:jstObserved(editTime),
-        expectedObservedAt:editing.observedAt,expectedKind:editing.kind});
+        cups:editCups,size:editSize,volumeMl:editVolumeMl,abvPct:editAbvPct,
+        expectedObservedAt:editing.observedAt,expectedKind:editing.kind,
+        expectedCups:editing.cups,expectedSize:editing.size,
+        expectedVolumeMl:editing.volumeMl,expectedAbvPct:editing.abvPct
+      });
       setEditing(null);await loadDrinks();onSaved();
     }catch(e){await loadDrinks();setDrinksError(e instanceof Error?e.message:"訂正できませんでした。");}
     finally{setDrinksBusy(false);}
   }
   async function removeDrink(d:Drink){
-    if(drinksBusy||!window.confirm("この1杯の記録を取り消しますか？"))return;
+    if(drinksBusy||!window.confirm("この飲酒記録を取り消しますか？"))return;
     setDrinksBusy(true);setDrinksError("");
     try{
       await mutate("/api/mvp/drinks","DELETE",{key:d.key,expectedObservedAt:d.observedAt,expectedKind:d.kind});
@@ -155,7 +197,6 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     }catch(e){await loadDrinks();setDrinksError(e instanceof Error?e.message:"取消できませんでした。");}
     finally{setDrinksBusy(false);}
   }
-
   async function saveMeal(){
     if(mealBusy)return;setMealBusy(true);setMealsError("");
     const old=meals.find(m=>m.day===mealDay)??null;
@@ -249,34 +290,81 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   return <>
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
-      {mode==="record"&&<p className="hint">記録した杯数だけを集計します。杯数不明は補完しません。</p>}
-      <p className="metric" aria-live="polite">今日：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
-      <div className="mvp-buttons" role="group" aria-label="飲み物を1杯追加">
-        {(Object.keys(names) as Kind[]).map(k=><button type="button" key={k}
-          disabled={drinksBusy} onClick={()=>void addDrink(k)}>{names[k]} ＋1</button>)}
+      <p className="metric" aria-live="polite">注文した杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
+      <p className="hint" aria-live="polite">純アルコール計算可能分：{Math.round(todayKnownG*10)/10}g
+        {todayUnknownCups>0?`（度数・容量が不明な ${todayUnknownCups}杯は含めず）`:""}
+      </p>
+      <div className="mvp-grid" aria-label="飲酒の種類と量">
+        <label>お酒の種類<select value={drinkKind} disabled={drinksBusy}
+          onChange={e=>{const kind=e.target.value as Kind;setDrinkKind(kind);
+            if(kind==="non_alcohol")setDrinkAbv("");}}>
+          {Object.entries(names).map(([kind,label])=>
+            <option key={kind} value={kind}>{label}</option>)}
+        </select></label>
+        <label>サイズ<select value={drinkSize} disabled={drinksBusy}
+          onChange={e=>setPresetSize(e.target.value as DrinkSize)}>
+          {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
+            <option key={size} value={size}>{label}</option>)}
+        </select></label>
+        <label>注文した杯数（1〜50）<input type="number" min="1" max="50" step="1"
+          value={drinkCups} disabled={drinksBusy}
+          onChange={e=>setDrinkCups(e.target.value===""?0:Number(e.target.value))}/></label>
+        <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
+          value={drinkVolume} disabled={drinksBusy}
+          onChange={e=>setDrinkVolume(e.target.value)}/></label>
+        <label>度数（%・分かる場合だけ）<input type="number" min="0" max="100" step="0.1"
+          value={drinkAbv} disabled={drinksBusy||drinkKind==="non_alcohol"}
+          placeholder="不明なら空欄"
+          onChange={e=>setDrinkAbv(e.target.value)}/></label>
       </div>
+      <p className="hint">容量の目安：普通350ml・大500ml・メガ700ml。店の実際の量に合わせて修正してください。
+        度数を空欄にすると純アルコール量は「不明」で記録します。</p>
+      <p aria-live="polite">参考：普通350ml換算 <strong>{draftEquivalent===null?"不明":draftEquivalent+"杯分"}</strong>
+        ／ 純アルコール量 <strong>{draftG===null?"不明（未算出）":draftG+"g"}</strong>
+      </p>
+      <button type="button" disabled={drinksBusy||!drinkDraftValid} onClick={()=>void addDrink()}>
+        {drinksBusy?"登録中…":names[drinkKind]+"を"+drinkCups+"杯記録"}
+      </button>
+      {!drinkDraftValid&&<p role="alert">杯数・容量・度数を確認してください。ノンアルは度数を空欄にしてください。</p>}
       {mode==="record"&&<button type="button" disabled={drinksBusy} onClick={()=>void loadDrinks()}>飲酒履歴を更新</button>}
       {drinksError&&<p role="alert">{drinksError}</p>}
       {mode==="record"&&<details className="sub-details"><summary>過去30日の飲酒記録を確認・訂正する</summary>
-      <h3>直近30日の記録</h3>
-      {drinks.length===0&&<p className="hint">まだ1杯ずつの記録はありません。</p>}
-      <ul>{drinks.map(d=><li key={d.key} className="mvp-entry">
-        <span>{localTime(d.observedAt).replace("T"," ")} · {names[d.kind]}</span>
-        <button type="button" disabled={drinksBusy} onClick={()=>{
-          setEditing(d);setEditKind(d.kind);setEditTime(localTime(d.observedAt));
-        }}>訂正</button>
-        <button type="button" disabled={drinksBusy} onClick={()=>void removeDrink(d)}>取消</button>
-      </li>)}</ul>
-      {editing&&<div className="mvp-edit">
-        <h3>1杯の種類・日時を訂正</h3>
-        <label>種類<select value={editKind} onChange={e=>setEditKind(e.target.value as Kind)}>
-          {(Object.keys(names) as Kind[]).map(k=><option key={k} value={k}>{names[k]}</option>)}
-        </select></label>
-        <label>実際の日時（JST）<input type="datetime-local" value={editTime}
-          max={jstNow()} onChange={e=>setEditTime(e.target.value)}/></label>
-        <button type="button" disabled={drinksBusy||!editTime} onClick={()=>void updateDrink()}>訂正を保存</button>
-        <button type="button" disabled={drinksBusy} onClick={()=>setEditing(null)}>やめる</button>
-      </div>}
+        <h3>直近30日の記録</h3>
+        {drinks.length===0&&<p className="hint">まだ飲酒の個別記録はありません。</p>}
+        <ul>{drinks.map(d=><li key={d.key} className="mvp-entry">
+          <span>{localTime(d.observedAt).replace("T"," ")} · {names[d.kind]} {d.cups}杯
+            {d.size?" · "+sizeNames[d.size]:""}
+            {d.volumeMl===null?" · 容量不明":" · "+d.volumeMl+"ml/杯"}
+            {pureAlcoholGrams(d)===null?" · アルコール量不明":" · "+pureAlcoholGrams(d)+"g"}
+          </span>
+          <button type="button" disabled={drinksBusy} onClick={()=>startEdit(d)}>訂正</button>
+          <button type="button" disabled={drinksBusy} onClick={()=>void removeDrink(d)}>取消</button>
+        </li>)}</ul>
+        {editing&&<div className="mvp-edit">
+          <h3>種類・サイズ・杯数・日時を訂正</h3>
+          <label>種類<select value={editKind} onChange={e=>{const kind=e.target.value as Kind;
+            setEditKind(kind);if(kind==="non_alcohol")setEditAbv("");}}>
+            {Object.entries(names).map(([kind,label])=>
+              <option key={kind} value={kind}>{label}</option>)}
+          </select></label>
+          <label>サイズ<select value={editSize}
+            onChange={e=>setPresetSize(e.target.value as DrinkSize,true)}>
+            {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
+              <option key={size} value={size}>{label}</option>)}
+          </select></label>
+          <label>杯数<input type="number" min="1" max="50" step="1" value={editCups}
+            onChange={e=>setEditCups(e.target.value===""?0:Number(e.target.value))}/></label>
+          <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
+            value={editVolume} onChange={e=>setEditVolume(e.target.value)}/></label>
+          <label>度数（%）<input type="number" min="0" max="100" step="0.1"
+            disabled={editKind==="non_alcohol"} value={editAbv}
+            onChange={e=>setEditAbv(e.target.value)}/></label>
+          <label>実際の日時（JST）<input type="datetime-local" value={editTime}
+            max={jstNow()} onChange={e=>setEditTime(e.target.value)}/></label>
+          <button type="button" disabled={drinksBusy||!editTime||!editDraftValid}
+            onClick={()=>void updateDrink()}>訂正を保存</button>
+          <button type="button" disabled={drinksBusy} onClick={()=>setEditing(null)}>やめる</button>
+        </div>}
       </details>}
     </section>}
 
