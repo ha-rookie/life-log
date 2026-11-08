@@ -38,6 +38,21 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(trend.days[0].source).toBe("実測");
     expect(trend.days[2].measuredAt).toBeNull();
   });
+  it("prioritizes ECLEAR over later manual and legacy measurements, without auto-filling missing ECLEAR days", () => {
+    const trend=buildWeightTrend([
+      row("2026-04-01", 83, "legacy", {source_id:"csv:lifestyle"}),
+      row("2026-04-01", 74, "eclear", {source_id:"csv:eclear",
+        measured_at:"2026-04-01T07:00:00+09:00"}),
+      row("2026-04-01", 90, "manual", {source_id:"manual:weight",
+        measured_at:"2026-04-01T23:00:00+09:00"}),
+      row("2026-04-02", 81, "legacy-only", {source_id:"legacy:txt"}),
+      row("2026-04-03", 75, "manual-only", {source_id:"manual:weight"}),
+    ],"2026-04-01","2026-04-03");
+    expect(trend.days.map(x=>x.weightKg)).toEqual([74,null,75]);
+    expect(trend.days.map(x=>x.source)).toEqual(["ECLEAR",null,"手入力"]);
+    expect(trend.measuredDays).toBe(2);
+    expect(trend.missingDays).toBe(1);
+  });
   it("uses calendar days and six-day prefetch; 1-3 observations are insufficient", () => {
     const pre = [row("2026-01-01", 70),row("2026-01-02", 71),row("2026-01-03", 72)];
     const requested = [row("2026-01-04", 73),row("2026-01-06", 75)];

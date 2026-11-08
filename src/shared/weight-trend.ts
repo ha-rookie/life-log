@@ -2,7 +2,7 @@ export type TrendDay = {
   day: string;
   weightKg: number | null;
   measuredAt: string | null;
-  source: "実測" | null;
+  source: "実測" | "ECLEAR" | "手入力" | null;
   measuredDaysInWindow: number;
   average7Kg: number | null;
 };
@@ -22,10 +22,18 @@ export type Measurement = {
   measured_at: string;
   weight_kg: number | null;
   source_kind: string;
+  source_id?: string;
   anomaly_flag: number;
 };
 const DAY_MS = 86_400_000;
 const JST_MS = 9 * 3_600_000;
+/** User-confirmed canonical historical weight source (2026-11-08). */
+export const isEclearWeightSource=(s:string|undefined):boolean=>
+  s==="eclear"||s?.startsWith("csv:eclear")===true||s?.startsWith("eclear:")===true;
+const weightRank=(s:string|undefined):number=>
+  isEclearWeightSource(s)?0:s?.startsWith("manual:")?1:2;
+const allowedWeight=(s:string|undefined):boolean=>
+  s===undefined||s==="synthetic"||weightRank(s)<2;
 export const DEFAULT_GOAL = { lowKg: 75, highKg: 76, targetDate: "2026-12-22" } as const;
 export function parseDay(day: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
@@ -66,6 +74,9 @@ export function buildWeightTrend(
     if (!Number.isFinite(ms)) continue;
     const day = jstDay(ms);
     if (day < from || day > to) continue;
+    // Legacy CSV/XLSX/TXT weight is reference-only, never an automatic fallback.
+    // Explicit manual readings remain eligible where ECLEAR has no measurement.
+    if (!allowedWeight(row.source_id)) continue;
     if (row.anomaly_flag !== 0 || row.weight_kg === null ||
         !Number.isFinite(row.weight_kg) || row.weight_kg <= 0 || row.weight_kg >= 500) {
       excludedAnomaly++;
@@ -73,7 +84,9 @@ export function buildWeightTrend(
     }
     if (row.source_kind !== "measured") { excludedNonMeasured++; continue; }
     const old = chosen.get(day);
-    if (!old || ms > old.ms || (ms === old.ms && row.id > old.row.id)) {
+    if (!old || weightRank(row.source_id)<weightRank(old.row.source_id) ||
+      (weightRank(row.source_id)===weightRank(old.row.source_id) &&
+       (ms > old.ms || (ms === old.ms && row.id > old.row.id)))) {
       chosen.set(day, { ms, row });
     }
   }
@@ -86,7 +99,8 @@ export function buildWeightTrend(
     days.push({
       day, weightKg: found ? found.row.weight_kg : null,
       measuredAt: found ? found.row.measured_at : null,
-      source: found ? "実測" : null,
+      source: !found ? null : isEclearWeightSource(found.row.source_id) ? "ECLEAR" :
+        found.row.source_id?.startsWith("manual:") ? "手入力" : "実測",
       measuredDaysInWindow: 0, average7Kg: null,
     });
   }

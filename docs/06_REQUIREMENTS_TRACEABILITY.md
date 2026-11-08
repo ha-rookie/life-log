@@ -156,3 +156,34 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
 - `tests/mvp-features.test.ts`: verifies NULL vs 0, correct data source, stale edits 409, drink presence preserved, and no double counting.
 - `scripts/uat-mvp-e2e.mjs`: temporary synthetic meal/outing rows are deleted automatically and all counts checked.
 - This is a technical acceptance with synthetic data; an actual Android form interaction by the user is not silently treated as observed.
+
+## 2026-11-08 Source-of-truth decision: Google Fit steps / ECLEAR weight (#89)
+
+- **Historical daily steps: Google Fit is canonical.** If the lifestyle CSV or
+  manually sourced rows disagree on the same day, the observed Google Fit daily
+  step count wins in period analysis. Never add duplicate sources. A Fit-recorded
+  zero is an observed zero, not missing. A lifestyle CSV-only step row is not
+  silently used to fill a Fit gap; an explicitly entered manual step count is
+  still available as separately sourced observation where Fit is absent.
+- **Historical measured weight: ECLEAR is canonical.** The daily trend and
+  period comparison use genuine ECLEAR measurements ahead of manual measurements
+  on the same JST day, regardless of which timestamp is later. The ECLEAR
+  day's latest measurement and stable ID tie-breaker remain in force. Old
+  TXT/XLSX/lifestyle values are source-provenance records, not automatic
+  replacements for missing ECLEAR data. A user-entered measured weight is
+  eligible for days without ECLEAR, with explicit manual provenance.
+- Source identifiers currently recognized for ECLEAR:
+  `eclear`, `eclear:*`, `csv:eclear*`; for Google Fit:
+  `fit`, `fit:*`, `google_fit`, `google_fit:*`,
+  `google-fit`, `google-fit:*`, and `csv:fit*` / `csv:google_fit*`
+  / `csv:google-fit*`. Imported records must preserve the original
+  source_id and must not overwrite or delete alternative originals.
+- **Verified source overlap:** 638 ECLEAR measurements; 573 legacy TXT
+  datetime keys fully contained in ECLEAR. Fit 2,645 dated records,
+  2,638 nonblank step values. All 163 lifestyle dates overlap Fit,
+  of which 55 identical step values and 108 divergent values.
+- UAT D1 aggregate inventory run
+  [#42465872453](https://github.com/ha-rookie/life-log/actions/runs/42465872453):
+  zero imported weight/step/lifestyle records, one registered passkey. This
+  authority rule is application code and test guidance; it **does not**
+  claim the private Box/Sheets originals have been imported.

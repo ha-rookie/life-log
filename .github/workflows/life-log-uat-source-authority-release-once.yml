@@ -1,0 +1,113 @@
+name: Life-log one-shot canonical Fit ECLEAR UAT release and acceptance
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: life-log-source-authority-uat
+  cancel-in-progress: false
+jobs:
+  release:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'feat(m08): Fit steps ECLEAR weight authority (#90)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify main SHA and exact authority-only change scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          test "$(git show -s --format=%s HEAD)" = "feat(m08): Fit steps ECLEAR weight authority (#90)"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
+          printf '%s\n' \
+            .github/workflows/life-log-uat-source-authority-release-once.yml \
+            docs/06_REQUIREMENTS_TRACEABILITY.md \
+            src/shared/weight-trend.ts \
+            src/worker/mvp-features.ts \
+            src/worker/weight-trend.ts \
+            tests/mvp-features.test.ts \
+            tests/weight-trend-worker.test.ts \
+            tests/weight-trend.test.ts | sort > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8")
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.workers_dev!==true||u.d1_databases?.length!==1||
+            d?.binding!=="DB"||d.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+            d.database_name!=="life-log-dev"||
+            u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false"||
+            u.vars?.MANUAL_REMOTE_TARGET!=="uat"||
+            u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
+            throw Error("Wrong UAT target");
+          const trend=fs.readFileSync("src/shared/weight-trend.ts","utf8");
+          const cmp=fs.readFileSync("src/worker/mvp-features.ts","utf8");
+          if(!trend.includes("isEclearWeightSource")||!cmp.includes("isFitStepSource"))
+            throw Error("Canonical source logic not found");
+          JS
+      - name: Build and check existing UAT D1 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          curl -fsS --max-time 20 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Deploy existing UAT Worker only (no migration or secret changes)
+        run: |
+          npx --no-install wrangler deploy --env uat \
+            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
+                  MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+      - name: Verify passkey-only existing UAT login boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 15); do
+            login=$(curl -sS -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)
+            anon=$(curl -sS -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
+            retired=$(curl -sS -o "$RUNNER_TEMP/retired.json" -w '%{http_code}' \
+              -X POST "$UAT_URL/api/auth/login" -H "Origin: $UAT_URL" \
+              -H "Sec-Fetch-Site: same-origin" -H "Content-Type: application/json" \
+              -H "X-Life-Log-Intent: register-v1" --data '{"username":"owner","password":"synthetic"}' || true)
+            if [[ "$login" == 200 && "$anon" == 403 && "$retired" == 410 ]] &&
+              grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then
+              echo "PASS: UAT passkey login UI 200, anonymous 403, password API 410"
+              break
+            fi
+            if [[ "$anon" == 200 || "$n" == 15 ]]; then echo "UAT auth smoke failed"; exit 1; fi
+            sleep 4
+          done
+      - name: Live UAT MVP API synthetic end-to-end with complete cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/uat-mvp-e2e.mjs
