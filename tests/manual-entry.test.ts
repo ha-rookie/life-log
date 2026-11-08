@@ -478,6 +478,29 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
         +'.some(x=>x.textContent.includes("1,234歩"))',"edited steps saved");
       expect(await numberOf("activity_daily")).toBe(1);
 
+      // Home: the second tab displays steps without adding or losing records.
+      await toTab("home");
+      const showSteps=await evaluate('(()=>{const b=document.querySelector(".progress-switch button:nth-child(2)");'
+        +'if(!b)return false;b.click();return true})()');
+      expect(showSteps).toBe(true);
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("1,234")',
+        "steps chart selected on Home");
+      expect(await evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390);
+      // Insights presents two synchronized chart ranges with independent scales.
+      const insights=await evaluate('(()=>{const b=[...document.querySelectorAll(".app-nav-mobile button")]'
+        +'.find(x=>x.textContent.trim()==="分析");if(!b)return false;b.click();return true})()');
+      expect(insights).toBe(true);
+      await until('location.hash==="#insights"&&document.querySelectorAll(".progress-metric").length===2',
+        "paired weight and steps graphs on Insights");
+      expect(await evaluate('document.querySelectorAll(".progress-chart svg").length')).toBe(2);
+      const twelveWeeks=await evaluate('(()=>{const b=[...document.querySelectorAll(".progress-period button")]'
+        +'.find(x=>x.textContent.trim()==="12週");if(!b)return false;b.click();return true})()');
+      expect(twelveWeeks).toBe(true);
+      await until('document.querySelector(".progress-footnote")?.textContent.includes("直近12週")',
+        "shared 12-week range on Insights");
+      expect(await evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390);
+      await toTab("record");
+
       // Declining the browser confirmation must not delete anything.
       expect(await evaluate("(()=>{window.confirm=()=>false;return true})()")).toBe(true);
       await clickFromRow(1,0,"取消");
