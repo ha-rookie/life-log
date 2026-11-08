@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
+import { ProgressCharts } from "./ProgressCharts";
 
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
 import { normalizeOfficialCsv, decodeOfficialCsv } from "../shared/source-adapter";
@@ -14,7 +15,7 @@ type Overview = {
 };
 const PAGES:readonly {id:Page;name:string}[]=[
   {id:"home",name:"ホーム"},{id:"record",name:"記録"},
-  {id:"insights",name:"ふりかえり"},{id:"data",name:"データ管理"}
+  {id:"insights",name:"分析"},{id:"data",name:"設定"}
 ];
 function pageFromHash():Page {
   const v=window.location.hash.slice(1);
@@ -251,8 +252,8 @@ export function App() {
       <main className="container" id="content">
         <div className="page-heading">
           <span className="eyebrow">{page==="home"?"OVERVIEW":page==="record"?"DAILY LOG":page==="insights"?"INSIGHTS":"YOUR DATA"}</span>
-          <h1>{page==="home"?"今日の状況":page==="record"?"記録する":page==="insights"?"変化をふりかえる":"データ管理"}</h1>
-          <p className="intro">{page==="home"?"いまの記録をひと目で確認。":page==="record"?"必要な項目だけ記録できます。":page==="insights"?"変化を比べて、次の行動に役立てます。":"CSVの取込やデータの書き出しはこちら。"}</p>
+          <h1>{page==="home"?"今日の状況":page==="record"?"記録する":page==="insights"?"変化を分析する":"設定とデータ"}</h1>
+          <p className="intro">{page==="home"?"いまの記録をひと目で確認。":page==="record"?"必要な項目だけ記録できます。":page==="insights"?"体重と歩数を同じ期間で比べられます。":"CSVの取込・書き出し、認証設定はこちら。"}</p>
         </div>
         {page==="home"&&<>
           <div className="overview-grid">
@@ -278,15 +279,24 @@ export function App() {
             </section>
           </div>
           {state.kind==="blocked"&&<p role="alert" className="notice-error">{state.message}</p>}
+          <button className="cta-link home-record-action" type="button" onClick={()=>navigate("record")}>
+            <span>＋ 今日の記録を追加</span><span aria-hidden="true">→</span>
+          </button>
+          <ProgressCharts view="home" refreshEpoch={refreshEpoch}/>
           <MvpFeatures mode="quick" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
-          <WeightTrendPanel key={refreshEpoch}/>
-          <button className="cta-link" type="button" onClick={()=>navigate("record")}>体重・歩数・食事を記録する <span aria-hidden="true">→</span></button>
         </>}
         {page==="record"&&<>
           <ManualEntry onSaved={()=>setRefreshEpoch(n=>n+1)}/>
           <MvpFeatures mode="record" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
         </>}
-        {page==="insights"&&<MvpFeatures mode="analysis" onSaved={()=>setRefreshEpoch(n=>n+1)}/>}
+        {page==="insights"&&<>
+          <ProgressCharts view="analysis" refreshEpoch={refreshEpoch}/>
+          <MvpFeatures mode="analysis" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
+          <details className="advanced-group">
+            <summary>体重グラフの詳細・目標設定</summary>
+            <WeightTrendPanel key={refreshEpoch}/>
+          </details>
+        </>}
         {page==="data"&&<>
                 <section className="panel" aria-labelledby="csv-title">
         <h2 id="csv-title">CSVを取り込む</h2>

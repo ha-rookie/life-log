@@ -405,8 +405,8 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
             +'&&!document.querySelector(".manual-records [role=status]")',"manual entry loaded");
           expect(await evaluate('(()=>{document.querySelector(".manual-records").open=true;return true})()')).toBe(true);
         }else{
-          await until('!!document.querySelector(".trend-table-scroll tbody")'
-            +'&&!!document.querySelector("#overview-weight")',"home trend loaded");
+          await until('!!document.querySelector(".progress-table tbody")'
+            +'&&!!document.querySelector("#overview-weight")',"home progress loaded");
         }
       }
       await cdp("Page.enable");await cdp("Runtime.enable");
@@ -440,7 +440,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
         +'.some(x=>x.textContent.includes("75.1"))',"weight saved to history");
       await toTab("home");
-      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.1")',
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("75.1")',
         "weight visible in home trend");
       await until('document.querySelector("#overview-weight")?.parentElement?.textContent.includes("75.1")',
         "home weight metric refreshed");
@@ -457,7 +457,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
         +'.some(x=>x.textContent.includes("75.6"))',"edited weight history");
       await toTab("home");
-      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.6")',
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("75.6")',
         "edited weight visible in chart");
       await toTab("record");
       expect(await numberOf("body_measurements")).toBe(1);
@@ -477,6 +477,29 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('[...document.querySelectorAll(".manual-history > div:nth-child(2) li")]'
         +'.some(x=>x.textContent.includes("1,234歩"))',"edited steps saved");
       expect(await numberOf("activity_daily")).toBe(1);
+
+      // Home: the second tab displays steps without adding or losing records.
+      await toTab("home");
+      const showSteps=await evaluate('(()=>{const b=document.querySelector(".progress-switch button:nth-child(2)");'
+        +'if(!b)return false;b.click();return true})()');
+      expect(showSteps).toBe(true);
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("1,234")',
+        "steps chart selected on Home");
+      expect(await evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390);
+      // Insights presents two synchronized chart ranges with independent scales.
+      const insights=await evaluate('(()=>{const b=[...document.querySelectorAll(".app-nav-mobile button")]'
+        +'.find(x=>x.textContent.trim()==="分析");if(!b)return false;b.click();return true})()');
+      expect(insights).toBe(true);
+      await until('location.hash==="#insights"&&document.querySelectorAll(".progress-metric").length===2',
+        "paired weight and steps graphs on Insights");
+      expect(await evaluate('document.querySelectorAll(".progress-chart svg").length')).toBe(2);
+      const twelveWeeks=await evaluate('(()=>{const b=[...document.querySelectorAll(".progress-period button")]'
+        +'.find(x=>x.textContent.trim()==="12週");if(!b)return false;b.click();return true})()');
+      expect(twelveWeeks).toBe(true);
+      await until('document.querySelector(".progress-footnote")?.textContent.includes("直近12週")',
+        "shared 12-week range on Insights");
+      expect(await evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390);
+      await toTab("record");
 
       // Declining the browser confirmation must not delete anything.
       expect(await evaluate("(()=>{window.confirm=()=>false;return true})()")).toBe(true);
