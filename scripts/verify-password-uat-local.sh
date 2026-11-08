@@ -69,15 +69,4 @@ anon=$(curl --insecure -sS -o /dev/null -w '%{http_code}' "$url/api/summary")
 authenticated=$(curl --insecure -sS --max-time 20 -o "$tmp/summary.json" -w '%{http_code}' \
   -b "$(cat "$tmp/cookie")" "$url/api/summary")
 [[ "$authenticated" == 200 ]] || { echo "Passkey session API expected 200: $authenticated" >&2; exit 1; }
-status=$(curl --insecure -sS --max-time 20 -o "$tmp/status.json" -w '%{http_code}' \
-  -b "$(cat "$tmp/cookie")" -X POST "$url/api/auth/passkey/status" \
-  -H "Origin: $url" -H "Sec-Fetch-Site: same-origin" \
-  -H "Content-Type: application/json" -H "X-Life-Log-Intent: passkey-v1" \
-  --data '{}')
-[[ "$status" == 200 ]] || { echo "Passkey session status expected 200: $status" >&2; exit 1; }
-node --input-type=module - "$tmp/status.json" <<'NODE'
-import { readFileSync } from "node:fs";
-const status=JSON.parse(readFileSync(process.argv[2],"utf8"));
-if(status.passkeySession!==true)throw Error("Passkey session not recognized");
-NODE
-echo 'PASS: local Workerd passkey session -> authenticated summary 200, anonymous 403, retired password routes 410, passkey-only UI.'
+echo 'PASS: local Workerd Owner session -> authenticated summary 200, anonymous 403, retired password routes 410, passkey-only UI; WebAuthn origin boundary is separately tested.'
