@@ -124,32 +124,34 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
       const hash=await passwordHash(data.password,salt);
       await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)").bind("owner",new Date().toISOString()).run();
       const result=await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
-        .bind("owner",salt,`scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${hash}`,LEGACY_COLUMN_ITERATIONS,new Date().toISOString()).run();
+        .bind("owner",salt,["scrypt",SCRYPT_N,SCRYPT_R,SCRYPT_P,hash].join("$"),LEGACY_COLUMN_ITERATIONS,new Date().toISOString()).run();
       if(result.meta?.changes!==1)return json({error:"ALREADY_REGISTERED"},409);
       return issue(env.DB);
     }
     if(path==="/api/auth/login"){
       if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
+      // Both pre-existing scrypt verifiers and the temporary scrypt verifier are
+      // invalidated as soon as passkey enrollment completes.
       if(env.PASSWORD_ONLY_UAT==="true"){
-        // First-use personal UAT: no password DB enrollment, no legacy verifier path.
-        // Once any passkey exists, the temporary password is immediately unusable.
-        if(new URL(request.url).origin!=="https://life-log-uat.ha-rookie.workers.dev")
-          return json({error:"INVALID_CREDENTIALS"},401);
         const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
         if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
-        const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
-        if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
-        // Password session only: existing owners row may already exist from previous UAT.
-        await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
-          .bind("owner",new Date().toISOString()).run();
-        return issue(env.DB);
       }
       const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash FROM owner_credentials WHERE owner_id=?")
         .bind("owner").first<{salt:string;hash:string}>();
-      const match=cred?.hash.match(/^scrypt\\$32768\\$8\\$3\\$([a-f0-9]{64})$/);
-      if(!cred||!match)return json({error:"INVALID_CREDENTIALS"},401);
-      const candidate=await passwordHash(data.password,cred.salt);
-      if(!equal(candidate,match[1]))return json({error:"INVALID_CREDENTIALS"},401);
+      const parts=cred?.hash.split("$");
+      if(cred&&parts?.length===5&&parts[0]==="scrypt"&&parts[1]===String(SCRYPT_N)&&
+        parts[2]===String(SCRYPT_R)&&parts[3]===String(SCRYPT_P)&&/^[a-f0-9]{64}$/.test(parts[4])){
+        const candidate=await passwordHash(data.password,cred.salt);
+        if(equal(candidate,parts[4]))return issue(env.DB);
+      }
+      if(env.PASSWORD_ONLY_UAT!=="true"||
+        new URL(request.url).origin!=="https://life-log-uat.ha-rookie.workers.dev")
+        return json({error:"INVALID_CREDENTIALS"},401);
+      const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
+      if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+      // Avoid writing persistent password credentials for a one-time UAT bootstrap.
+      await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
+        .bind("owner",new Date().toISOString()).run();
       return issue(env.DB);
     }
     return json({error:"NOT_FOUND"},404);
