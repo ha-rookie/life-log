@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pbkdf2Sync } from "node:crypto";
+import { scrypt as nodeScrypt } from "node:crypto";
 import { authRoute, sessionOwner } from "../src/worker/password-auth";
 
 const url = "https://life-log-uat.ha-rookie.workers.dev";
@@ -128,18 +128,21 @@ describe("owner password authentication boundary",()=>{
   expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
   expect(await sessionOwner(new Request(url+"/",{headers:{Cookie:"__Host-life_log_session=bad"}}),unavailable.DB as never)).toBeNull();
  });
- it("authenticates a synthetic 210k-round Owner verifier and accepts its session",async()=>{
+ it("authenticates a synthetic WORKHUB-compatible scrypt Owner verifier and accepts its session",async()=>{
   // The synthetic password is NOT a real UAT credential; no secrets in tests.
   const password="synthetic-owner-credential-2026";
   const salt="11223344556677889900aabbccddeeff";
-  const storedHash=Array.from(pbkdf2Sync(password,Uint8Array.from(salt.match(/../g)!,v=>parseInt(v,16)),210000,32,"sha256"),b=>b.toString(16).padStart(2,"0")).join("");
+  const bytes=await new Promise<Uint8Array>((resolve,reject)=>
+    nodeScrypt(password,Uint8Array.from(salt.match(/../g)!,v=>parseInt(v,16)),32,
+      {N:32768,r:8,p:3,maxmem:64*1024*1024},(error,derived)=>error?reject(error):resolve(derived)));
+  const storedHash="scrypt$32768$8$3$"+Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
   let issuedTokenHash:string|null=null, sessionWrites=0;
   const statements:string[]=[];
   const db={prepare:(sql:string)=>{
     statements.push(sql);
     return {bind:(...args:unknown[])=>({
       first:async()=>{
-        if(sql.includes("SELECT password_salt"))return {salt,hash:storedHash,iterations:210000};
+        if(sql.includes("SELECT password_salt"))return {salt,hash:storedHash};
         if(sql.includes("SELECT owner_id AS owner FROM owner_sessions"))
           return args[0]===issuedTokenHash?{owner:"owner"}:null;
         return null;
@@ -153,8 +156,7 @@ describe("owner password authentication boundary",()=>{
       }
     })};
   }};
-  const env={DB:db,PASSWORD_ONLY_UAT:"true",
-    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}};
+  const env={DB:db};
   const wrong=req("/api/auth/login",{username:"owner",password:"incorrect-synthetic-credential"});
   wrong.headers.set("CF-Connecting-IP","203.0.113.15");
   const rejected=await authRoute(wrong,env as never);
@@ -176,14 +178,13 @@ describe("owner password authentication boundary",()=>{
  it("rejects malformed stored KDF parameters without issuing a session",async()=>{
   const db={prepare:(sql:string)=>({bind:()=>({
     first:async()=>sql.includes("SELECT password_salt")?
-      {salt:"not-hex",hash:"0".repeat(64),iterations:2000000}:null,
+      {salt:"not-hex",hash:"scrypt$32768$8$3$"+"0".repeat(64)}:null,
     run:async()=>{throw Error("Must never write a session");}
   })})};
   const request=req("/api/auth/login",{username:"owner",password:"synthetic-owner-credential-2026"});
   request.headers.set("CF-Connecting-IP","203.0.113.15");
-  const res=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
-    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
-  expect(res.status).toBe(503);
+  const res=await authRoute(request,{DB:db} as never);
+  expect(res.status).toBe(401);
  });
 
 });
