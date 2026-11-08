@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
 import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
+import { normalizeOfficialCsv } from "../shared/source-adapter";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
 import { MvpFeatures } from "./MvpFeatures";
@@ -27,6 +28,9 @@ export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
   const [csvText, setCsvText] = useState("");
+  const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
+  const [canonicalTotal,setCanonicalTotal] = useState(0);
+  const [missingFitSteps,setMissingFitSteps] = useState(0);
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [importStatus, setImportStatus] = useState("");
@@ -74,19 +78,32 @@ export function App() {
 
   async function selectCsv(file: File, source: CsvSource) {
     const epoch = ++selectionEpoch.current;
-    setCsvText(""); setCsvPreview(null); setReview(null); setImportStatus("");
-    if (file.size > 65536) {
-      setImportStatus("CSVのサイズは64KiB以下にしてください。");
+    setCsvText(""); setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);
+    setCsvPreview(null); setReview(null); setImportStatus("");
+    if (file.size > (source === "lifestyle" ? 65536 : 2_000_000)) {
+      setImportStatus(source === "lifestyle" ? "CSVは64KiB以下にしてください。" : "CSVは2MB以下にしてください。");
       return;
     }
     try {
-      const text = await file.text();
-      const parsed = await previewCsv(source, text);
-      if (epoch !== selectionEpoch.current) return;
-      setCsvText(text);
-      setCsvPreview(parsed);
+      const raw = await file.text();
+      if(source==="lifestyle"){
+        const parsed=await previewCsv(source,raw);
+        if(epoch!==selectionEpoch.current)return;
+        setCsvText(raw);setCsvPreview(parsed);
+      }else{
+        const normalized=normalizeOfficialCsv(source,raw);
+        // Validate ALL chunks before exposing registration; never partially import a malformed file.
+        const checked=await Promise.all(normalized.parts.map(part=>previewCsv(source,part)));
+        if(checked.some(x=>x.errors.length>0||x.rows.length===0))
+          throw Error("INVALID_ROWS");
+        if(epoch!==selectionEpoch.current)return;
+        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);
+        setCanonicalTotal(normalized.total);setMissingFitSteps(normalized.missingSteps);
+        setCsvPreview(checked[0]);
+      }
     } catch {
-      if (epoch === selectionEpoch.current) setImportStatus("CSVの形式または列名が不正です。");
+      if (epoch === selectionEpoch.current)
+        setImportStatus("元ファイルの列・日時・数値・重複に問題があります。データはまだ登録していません。");
     }
   }
 
@@ -97,9 +114,34 @@ export function App() {
     setBusy(true);
     setImportStatus("");
     try {
+      if(csvSource!=="lifestyle"){
+        if(!canonicalParts.length||keepExisting)throw Error("SOURCE_NOT_READY");
+        let inserted=0,skipped=0;
+        for(let n=0;n<canonicalParts.length;n++){
+          // Each chunk is an independently hash-confirmed, auditable, idempotent job.
+          const part=canonicalParts[n],p=await previewCsv(csvSource,part);
+          const response=await fetch("/api/import/confirm",{
+            method:"POST",credentials:"same-origin",cache:"no-store",
+            headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},
+            body:JSON.stringify({source:csvSource,csv:part,hash:p.hash,confirmed:true})
+          });
+          const data=await response.json() as ImportResult;
+          if(!response.ok)throw Error("HTTP "+response.status+" / "+(data.error??"UNKNOWN")+
+            "（"+(n+1)+"/"+canonicalParts.length+"）");
+          inserted+=data.inserted??0;skipped+=data.skipped??0;
+          if(epoch===selectionEpoch.current)
+            setImportStatus("登録中 "+(n+1)+"/"+canonicalParts.length+" 分割");
+        }
+        if(epoch===selectionEpoch.current){
+          setImportStatus("登録完了：追加 "+inserted+"件・スキップ "+skipped+
+            "件。元データ "+canonicalTotal+"件、Fit歩数欠測 "+missingFitSteps+"日。");
+          setRefreshEpoch(n=>n+1);
+        }
+        return;
+      }
       const res = await fetch("/api/import/confirm", {
         method: "POST", credentials: "same-origin", cache: "no-store",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Life-Log-Intent":"manual-write-v1" },
         body: JSON.stringify({
           source: csvSource, csv: csvText, hash: csvPreview.hash, confirmed: true,
           ...(keepExisting && review
@@ -132,7 +174,7 @@ export function App() {
     } catch {
       if (epoch === selectionEpoch.current) {
         setReview(null);
-        setImportStatus("通信に失敗しました。取込状況を確認してから再試行してください。");
+        setImportStatus("取込中断。完了済みの分割は保持されています。同じ原本で再試行すると重複を避けて継続できます。");
       }
     } finally {
       setBusy(false);
@@ -186,16 +228,17 @@ export function App() {
       <WeightTrendPanel key={refreshEpoch} />
       <MvpFeatures onSaved={() => setRefreshEpoch(n => n + 1)} />
       <section className="panel" aria-labelledby="csv-title">
-        <h2 id="csv-title">CSV取込（形式検証済みファイル限定）</h2>
-        <p>実ECLEARの列仕様は未確認。合成サンプルだけに対応します。</p>
+        <h2 id="csv-title">CSV取込（本人専用）</h2>
+        <p>歩数はGoogle Fit、体重はECLEARを正とします。各元ファイルを端末で選択すると、アプリ内で形式検証して分割登録します。原本はGitHubへ送信しません。</p>
         <label>種類{" "}
           <select value={csvSource} disabled={busy} onChange={e => {
             ++selectionEpoch.current;
             setCsvSource(e.target.value as CsvSource);
-            setCsvText(""); setCsvPreview(null); setReview(null); setImportStatus("");
+            setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0); setCsvPreview(null); setReview(null); setImportStatus("");
           }}>
             <option value="lifestyle">生活記録</option>
-            <option value="eclear">ECLEAR</option>
+            <option value="eclear">ECLEAR（体重の正本）</option>
+            <option value="fit">Google Fit（歩数の正本）</option>
           </select>
         </label>
         <p><input type="file" accept=".csv,text/csv" disabled={busy} onChange={e => {
@@ -203,8 +246,11 @@ export function App() {
           if (file) void selectCsv(file, csvSource);
         }} /></p>
         {csvPreview && <div aria-live="polite">
-          <p>対象 {csvPreview.total} 行 / 有効 {csvPreview.rows.length} 行 /
-            異常 {csvPreview.errors.length} 行</p>
+          <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /
+            有効 {canonicalParts.length?canonicalTotal:csvPreview.rows.length} 行 /
+            異常 {csvPreview.errors.length} 行
+            {canonicalParts.length>0?"（"+canonicalParts.length+"分割、Fit欠測 "+missingFitSteps+"日）":""}
+          </p>
           {csvPreview.errors.map(e => <p key={e.line}>行 {e.line}: {e.code}</p>)}
           <button type="button" disabled={busy || !!csvPreview.errors.length ||
             !csvPreview.rows.length} onClick={() => void submit(false)}>

@@ -4,6 +4,7 @@ import { loginScreen } from "./login-screen";
 import { authRoute, sessionOwner } from "./password-auth";
 import { getSummary, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
+import { isSafeRemoteManual } from "./manual-entry";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
 import { handleManualEntry, type ManualDb } from "./manual-entry";
@@ -72,7 +73,13 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
           }
           // Signed owner verification above AND a trusted local-runtime opt-in
           // are required before ANY confirm-path D1 read or write.
-          if (!isSafeLocalImport(request, env.IMPORT_LOCAL_ONLY)) {
+          const remoteImport = ownerSession && env.PASSWORD_ONLY_UAT === "true" &&
+            isSafeRemoteManual(request, {
+              enabled: env.MANUAL_REMOTE_WRITE_ENABLED,
+              target: env.MANUAL_REMOTE_TARGET,
+              origin: env.MANUAL_REMOTE_ORIGIN
+            });
+          if (!isSafeLocalImport(request, env.IMPORT_LOCAL_ONLY) && !remoteImport) {
             return Response.json({ error: "LOCAL_IMPORT_DISABLED" }, { status: 403, headers: privateHeaders });
           }
           return handleImport(request,env.DB as unknown as ImportDb,ownerId);

@@ -43,7 +43,7 @@ type Summary = { inserted: number; skipped: number; conflicted: number };
 function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const p = x as Record<string, unknown>;
-  if (p.source !== "eclear" && p.source !== "lifestyle") return false;
+  if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "fit") return false;
   if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
   if (p.confirmed !== undefined && typeof p.confirmed !== "boolean") return false;
   if (p.hash !== undefined && typeof p.hash !== "string") return false;
@@ -138,6 +138,13 @@ function insertRow(db: ImportDb, owner: string, source: CsvSource, job: string, 
     ).bind(job + ":" + row.line, owner, row.timestamp, "Asia/Tokyo", row.weight, row.fat,
       "csv:eclear", row.key, row.fingerprint, "measured", job);
   }
+  if (source === "fit") {
+    return db.prepare(
+      "INSERT OR IGNORE INTO activity_daily"
+      + "(id,owner_id,local_day,steps,source_id,source_row_key,import_job_id)"
+      + " VALUES (?, ?, ?, ?, 'fit', ?, ?)"
+    ).bind("fit:"+owner+":"+row.day, owner, row.day, row.steps, row.day, job);
+  }
   return db.prepare(
     "INSERT INTO lifestyle_days"
     + "(owner_id,local_day,drinking_presence,drink_cups,steps,source_id,source_row_key,import_job_id)"
@@ -156,6 +163,13 @@ function auditRow(db: ImportDb, owner: string, source: CsvSource, job: string, r
       "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
       + " VALUES (?,?,?,?,CASE WHEN " + inserted + " THEN 'inserted' ELSE 'skipped' END,NULL)"
     ).bind(job + ":" + row.line, job, row.line, row.key, owner, job, row.key);
+  }
+  if (source === "fit") {
+    const inserted = "EXISTS(SELECT 1 FROM activity_daily WHERE owner_id=? AND import_job_id=? AND source_row_key=? AND source_id='fit')";
+    return db.prepare(
+      "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result,error_code)"
+      + " VALUES (?,?,?,?,CASE WHEN " + inserted + " THEN 'inserted' ELSE 'skipped' END,NULL)"
+    ).bind(job+":"+row.line,job,row.line,row.key,owner,job,row.day);
   }
   const inserted = "EXISTS(SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=? "
     + "AND import_job_id=? AND source_row_key=?)";

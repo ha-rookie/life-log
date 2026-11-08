@@ -1,8 +1,8 @@
-export type CsvSource = "eclear" | "lifestyle";
+export type CsvSource = "eclear" | "lifestyle" | "fit";
 export type CsvRow = { line:number; key:string; timestamp?:string; weight?:number; fat?:number|null; day?:string; presence?:0|1|null; cups?:number|null; steps?:number|null; fingerprint?:string };
 export type Preview = { source:CsvSource; hash:string; rows:CsvRow[]; errors:{line:number;code:string}[]; total:number };
 export const MAX_BYTES=65536,MAX_ROWS=100;
-const HEADERS={eclear:["measured_at","weight_kg","body_fat_pct"],lifestyle:["local_day","drinking_presence","drink_cups","steps"]};
+const HEADERS={eclear:["measured_at","weight_kg","body_fat_pct"],lifestyle:["local_day","drinking_presence","drink_cups","steps"],fit:["local_day","steps"]};
 function cells(text:string):string[][] {
   const rows:string[][]=[];let row:string[]=[],value="",quoted=false,closed=false;
   for(let i=0;i<text.length;i++){
@@ -42,6 +42,10 @@ export async function previewCsv(source:CsvSource,text:string):Promise<Preview>{
         if(!validTime(timestamp)||weight===null||weight<=0)throw Error("MEASUREMENT");
         const fingerprint=await hash(JSON.stringify(["eclear-v1",timestamp,weight,fat]));
         rows.push({line,key:digest+":"+line,timestamp,weight,fat,fingerprint});
+      }else if(source==="fit"){
+        const day=c[0].trim(),steps=num(c[1].trim(),1000000,true);
+        if(!validDay(day))throw Error("DAY");
+        rows.push({line,key:day,day,steps});
       }else{
         const day=c[0].trim(),raw=c[1].trim(),cups=num(c[2].trim(),1000,true),steps=num(c[3].trim(),1000000,true);
         if(!validDay(day)||!["","0","1"].includes(raw))throw Error("DAY");
