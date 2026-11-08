@@ -143,4 +143,50 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   expect(csv).toContain('"drinking_presence","'+day(0)+'","",""');
   expect(csv).not.toContain("99999");
  });
+ it("safely writes, corrects and removes Owner meals while preserving separate CSV drinking observations",async()=>{
+  const d=day(0);
+  await db.prepare("INSERT INTO lifestyle_days(owner_id,local_day,drinking_presence,drink_cups,source_id,source_row_key) "+
+   "VALUES(?,?,?,?,?,?)").bind("owner",d,1,null,"csv","from-csv").run();
+  const base={day:d,lunchKind:"restaurant",dinnerKind:null,lateMeal:0 as const};
+  const corrected={day:d,lunchKind:"restaurant",dinnerKind:"takeout",lateMeal:1 as const};
+  expect((await call(db,"/api/mvp/meals","PUT",{...base,expected:null})).status).toBe(200);
+  expect((await call(db,"/api/mvp/meals","PUT",{...corrected,expected:base})).status).toBe(200);
+  expect((await call(db,"/api/mvp/meals","PUT",{...base,expected:base})).status).toBe(409);
+  const meals=await call(db,"/api/mvp/meals");
+  expect(meals.status).toBe(200);
+  const list=await meals.json() as {entries:({day:string;lunchKind:string;dinnerKind:string;lateMeal:number})[]};
+  expect(list.entries.find(x=>x.day===d)).toMatchObject(corrected);
+  const cmp=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:d,bTo:d}));
+  expect(cmp.status).toBe(200);
+  const result=await cmp.json() as {b:{drinking:{drinkingDays:number};meals:{restaurantLunchDays:number;lateMealDays:number}}};
+  expect(result.b.drinking.drinkingDays).toBe(1); // manual meal must NOT hide CSV alcohol observation
+  expect(result.b.meals.restaurantLunchDays).toBe(1);
+  expect(result.b.meals.lateMealDays).toBe(1);
+  expect((await call(db,"/api/mvp/meals","DELETE",{day:d,expected:base})).status).toBe(409);
+  expect((await call(db,"/api/mvp/meals","DELETE",{day:d,expected:corrected})).status).toBe(200);
+  expect((await db.prepare("SELECT COUNT(*) n FROM lifestyle_days WHERE owner_id='owner' AND source_id='csv'").first<{n:number}>())?.n).toBe(1);
+  expect((await db.prepare("SELECT COUNT(*) n FROM lifestyle_days WHERE owner_id='owner' AND source_id='manual:meals'").first<{n:number}>())?.n).toBe(0);
+ });
+ it("records outing participation separately from drink cups, with idempotence and source-scoped cancellation",async()=>{
+  const d=day(0);
+  const initial={key:one,day:d,category:"bar"};
+  expect((await call(db,"/api/mvp/outings","POST",initial)).status).toBe(200);
+  expect((await call(db,"/api/mvp/outings","POST",initial)).status).toBe(200);
+  expect((await db.prepare("SELECT COUNT(*) n FROM outings").first<{n:number}>())?.n).toBe(1);
+  expect((await call(db,"/api/mvp/outings","PATCH",{
+    key:one,day:d,category:"work",expectedDay:d,expectedCategory:"bar"})).status).toBe(200);
+  const result=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:d,bTo:d}));
+  const comp=await result.json() as {b:{outings:{visits:number;work:number};drinking:{recordedAlcoholCups:number}}};
+  expect(comp.b.outings.visits).toBe(1);
+  expect(comp.b.outings.work).toBe(1);
+  expect(comp.b.drinking.recordedAlcoholCups).toBe(0);
+  expect((await call(db,"/api/mvp/outings","DELETE",{
+    key:one,expectedDay:d,expectedCategory:"bar"})).status).toBe(409);
+  expect((await call(db,"/api/mvp/outings","DELETE",{
+    key:one,expectedDay:d,expectedCategory:"work"})).status).toBe(200);
+  expect((await db.prepare("SELECT COUNT(*) n FROM outings").first<{n:number}>())?.n).toBe(0);
+ });
+
 });
