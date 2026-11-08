@@ -248,8 +248,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
 
   return <>
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
-      <h2 id="drink-title">飲酒を1杯ずつ記録</h2>
-      <p className="hint">記録した杯数だけを表示します。過去の「飲酒あり・杯数不明」は勝手に1杯へ変換しません。</p>
+      <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
+      {mode==="record"&&<p className="hint">記録した杯数だけを集計します。杯数不明は補完しません。</p>}
       <p className="metric" aria-live="polite">今日：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
       <div className="mvp-buttons" role="group" aria-label="飲み物を1杯追加">
         {(Object.keys(names) as Kind[]).map(k=><button type="button" key={k}
@@ -277,7 +277,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         <button type="button" disabled={drinksBusy||!editTime} onClick={()=>void updateDrink()}>訂正を保存</button>
         <button type="button" disabled={drinksBusy} onClick={()=>setEditing(null)}>やめる</button>
       </div>}
-    </section>
+      </details>}
+    </section>}
 
     {mode==="record"&&<section className="panel" aria-labelledby="meals-title">
       <h2 id="meals-title">食事区分・夜食</h2>
@@ -407,6 +408,6 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       </div>
       <button type="button" disabled={exportBusy} onClick={()=>void downloadCsv()}>CSVを書き出す</button>
       {exportError&&<p role="alert">{exportError}</p>}
-    </section>
+    </section>}
   </>;
 }
