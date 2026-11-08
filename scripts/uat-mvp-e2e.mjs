@@ -48,10 +48,13 @@ const request=async(path,method="GET",data=undefined,authenticated=true,forgedOr
   }};
   if(data!==undefined)options.body=JSON.stringify(data);
   const response=await fetch(origin+path,options);
-  const raw=await response.text();
+  const bytes=new Uint8Array(await response.arrayBuffer());
+  // Response.text() and TextDecoder strip a UTF-8 BOM; verify raw wire bytes.
+  const utf8Bom=bytes.length>=3&&bytes[0]===0xef&&bytes[1]===0xbb&&bytes[2]===0xbf;
+  const raw=new TextDecoder("utf-8").decode(bytes);
   let json={};
   try{json=JSON.parse(raw);}catch{/* response can be HTML/CSV */}
-  return {status:response.status,json,raw};
+  return {status:response.status,json,raw,utf8Bom};
 };
 const check=(answer,status,what)=>assert(answer.status===status,what+": expected "+status+" got "+answer.status);
 try{
@@ -87,8 +90,10 @@ try{
 
   const exported=await request("/api/mvp/export?"+new URLSearchParams({from:day(29),to:day(0)}));
   check(exported,200,"Export CSV");
-  assert(exported.raw.startsWith("\uFEFF")&&exported.raw.includes('"drink"')&&
-    exported.raw.includes('"green_tea_high"'),"CSV did not export synthetic drink with kind");
+  assert(exported.utf8Bom&&exported.raw.includes('"drink"')&&
+    exported.raw.includes('"green_tea_high"'),"CSV byte-encoding/provenance contract failed (bom="+
+    exported.utf8Bom+",hasDrink="+exported.raw.includes('"drink"')+
+    ",hasCorrectedKind="+exported.raw.includes('"green_tea_high"')+")");
 
   // Do not overwrite or interfere with an already active real Owner experiment.
   const active=sql("SELECT COUNT(*) AS n FROM behavior_experiments WHERE owner_id='owner' AND user_decision IS NULL")[0];
