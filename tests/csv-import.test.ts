@@ -29,6 +29,14 @@ describe("synthetic canonical CSV mapping", () => {
     expect(p.rows.map(r => r.line)).toEqual([2, 3, 4]);
     expect(p.rows[0].key).toContain(p.hash);
   });
+  it("validates canonical Fit steps and rejects invalid/duplicate dates",async()=>{
+    const fit="local_day,steps\n2026-01-01,0\n2026-01-02,\n2026-01-03,5432\n";
+    const p=await previewCsv("fit",fit);
+    expect(p.errors).toEqual([]);
+    expect(p.rows.map(r=>r.steps)).toEqual([0,null,5432]);
+    expect((await previewCsv("fit",fit+"2026-02-30,10\n2026-01-04,-1\n")).errors).toHaveLength(2);
+    await expect(previewCsv("fit","local_day,weight_kg\n2026-01-01,20")).rejects.toThrow();
+  });
   it("rejects wrong header, duplicate columns, malformed and unclosed quotes", async () => {
     await expect(previewCsv("eclear", "x,y\n3,4")).rejects.toThrow();
     await expect(previewCsv("lifestyle", "local_day,steps,steps,steps\n2026-01-01,0,0,0")).rejects.toThrow();
