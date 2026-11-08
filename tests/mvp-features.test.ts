@@ -1,6 +1,7 @@
 import { beforeAll,afterAll,beforeEach,describe,it,expect } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
+import drinksMigration from "../migrations/0004_drink_details.sql?raw";
 import { handleMvpFeatures } from "../src/worker/mvp-features";
 type Statement={bind(...args:unknown[]):Statement;run():Promise<{meta?:{changes?:number}}>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}>};
 type DB={prepare(sql:string):Statement;batch(stmts:unknown[]):Promise<unknown[]>};
@@ -30,6 +31,9 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   db=platform.env.DB;
   const sql=schema.split("\n").filter(x=>!x.trimStart().startsWith("--")).join("\n");
   for(const statement of sql.split(";").map(x=>x.trim()).filter(Boolean))
+   await db.prepare(statement).run();
+  const drinkSql=drinksMigration.split("\n").filter(x=>!x.trimStart().startsWith("--")).join("\n");
+  for(const statement of drinkSql.split(";").map(x=>x.trim()).filter(Boolean))
    await db.prepare(statement).run();
  },60000);
  afterAll(async()=>{await platform?.dispose();},60000);
