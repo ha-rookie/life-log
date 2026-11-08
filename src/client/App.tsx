@@ -3,7 +3,7 @@ import { WeightTrendPanel } from "./WeightTrend";
 import { ProgressCharts } from "./ProgressCharts";
 
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
-import { normalizeOfficialCsv, decodeOfficialCsv } from "../shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource } from "../shared/source-adapter";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
 import { MvpFeatures } from "./MvpFeatures";
@@ -52,6 +52,7 @@ export function App() {
   }
   const todayLabel=new Intl.DateTimeFormat("ja-JP",{timeZone:"Asia/Tokyo",month:"long",day:"numeric",weekday:"long"}).format(new Date());
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
+  const [selectedCsvName,setSelectedCsvName] = useState<string|null>(null);
   const [csvText, setCsvText] = useState("");
   const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
   const [canonicalTotal,setCanonicalTotal] = useState(0);
@@ -102,35 +103,47 @@ export function App() {
     finally{setHistoryBusy(false);}
   }
 
-  async function selectCsv(file: File, source: CsvSource) {
-    const epoch = ++selectionEpoch.current;
-    setCsvText(""); setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null);
-    setCsvPreview(null); setReview(null); setImportStatus("");
-    if (file.size > (source === "lifestyle" ? 65536 : 2_000_000)) {
-      setImportStatus(source === "lifestyle" ? "CSVは64KiB以下にしてください。" : "CSVは2MB以下にしてください。");
+  async function selectCsv(file: File) {
+    const epoch=++selectionEpoch.current;
+    setSelectedCsvName(file.name);
+    setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null);
+    setCsvPreview(null);setReview(null);
+    setImportStatus("ファイルを読み込み、形式を確認しています…");
+    if(file.size>2_000_000){
+      setImportStatus("ファイルが大きすぎます。CSVは2MB以下にしてください。登録は行っていません。");
       return;
     }
-    try {
-      const decoded = decodeOfficialCsv(new Uint8Array(await file.arrayBuffer()));
-      const raw = decoded.text;
-      if(source==="lifestyle"){
-        const parsed=await previewCsv(source,raw);
+    try{
+      const decoded=decodeOfficialCsv(new Uint8Array(await file.arrayBuffer()));
+      const actualSource=detectOfficialCsvSource(decoded.text);
+      if(!actualSource)throw Error("UNKNOWN_SOURCE");
+      if(actualSource==="lifestyle"&&file.size>65536)throw Error("CSV_SIZE");
+      if(actualSource==="lifestyle"){
+        const raw=decoded.text.replace(/^\uFEFF/,"");
+        const parsed=await previewCsv(actualSource,raw);
         if(epoch!==selectionEpoch.current)return;
         setCsvText(raw);setCsvPreview(parsed);setCsvEncoding(decoded.encoding);
+        setCsvSource(actualSource);
       }else{
-        const normalized=normalizeOfficialCsv(source,raw);
-        // Validate ALL chunks before exposing registration; never partially import a malformed file.
-        const checked=await Promise.all(normalized.parts.map(part=>previewCsv(source,part)));
-        if(checked.some(x=>x.errors.length>0||x.rows.length===0))
+        const normalized=normalizeOfficialCsv(actualSource,decoded.text);
+        // Validate ALL chunks before enabling registration.
+        const checked=await Promise.all(normalized.parts.map(part=>previewCsv(actualSource,part)));
+        if(checked.some(item=>item.errors.length>0||item.rows.length===0))
           throw Error("INVALID_ROWS");
         if(epoch!==selectionEpoch.current)return;
-        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);setCsvEncoding(decoded.encoding);
+        setCsvSource(actualSource);
+        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);
+        setCsvEncoding(decoded.encoding);
         setCanonicalTotal(normalized.total);setMissingFitSteps(normalized.missingSteps);
         setCsvPreview(checked[0]);
       }
-    } catch {
-      if (epoch === selectionEpoch.current)
-        setImportStatus("元ファイルの列・日時・数値・重複に問題があります。データはまだ登録していません。");
+      if(epoch===selectionEpoch.current)setImportStatus(
+        "読み取り完了。まだ登録していません。件数を確認し、「確認して登録する」を押してください。"
+      );
+    }catch{
+      if(epoch===selectionEpoch.current)setImportStatus(
+        "CSVの形式・日時・数値・重複を確認できませんでした。データは登録していません。"
+      );
     }
   }
 
@@ -301,21 +314,15 @@ export function App() {
                 <section className="panel" aria-labelledby="csv-title">
         <h2 id="csv-title">CSVを取り込む</h2>
         <p className="hint">Google Fitの歩数・ECLEARの体重を優先します。同じ値はスキップ、違う値は更新します。</p>
-        <label>種類{" "}
-          <select value={csvSource} disabled={busy} onChange={e => {
-            ++selectionEpoch.current;
-            setCsvSource(e.target.value as CsvSource);
-            setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null); setCsvPreview(null); setReview(null); setImportStatus("");
-          }}>
-            <option value="lifestyle">生活記録</option>
-            <option value="eclear">ECLEAR（体重の正本）</option>
-            <option value="fit">Google Fit（歩数の正本）</option>
-          </select>
-        </label>
+        <p className="hint">ファイルを選ぶとECLEAR・Google Fit・生活記録を自動判別します。</p>
         <p><input type="file" accept=".csv,text/csv" disabled={busy} onChange={e => {
           const file = e.target.files?.[0];
-          if (file) void selectCsv(file, csvSource);
+          // Reset picker to allow selecting the same file for a second import.
+          e.currentTarget.value="";
+          if (file) void selectCsv(file);
         }} /></p>
+        {selectedCsvName&&<p role="status" className="hint">選択したファイル：<strong>{selectedCsvName}</strong></p>}
+        {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":csvSource==="fit"?"Google Fit（歩数）":"生活記録"}</p>}
         {csvPreview && <div aria-live="polite">
           <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
           <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /

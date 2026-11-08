@@ -73,6 +73,20 @@ const isAlreadyNormalized=(source:CsvSource,header:string[])=>{
     :["local_day","drinking_presence","drink_cups","steps"];
   return header.join("\x1f")===expected.join("\x1f");
 };
+
+/** Header detection chooses a parser; full validation still gates registration. */
+export function detectOfficialCsvSource(raw:string):CsvSource|null{
+  const text=raw.startsWith("\uFEFF")?raw.slice(1):raw;
+  const header=(text.split(/\r?\n/,1)[0]??"").replace(/\r$/,"").split(",").map(x=>x.trim());
+  if((header.length===10&&header[0]==="年月日"&&header[1]==="時刻"&&
+    header[2]==="体重"&&header[3]==="体脂肪率")||
+    isAlreadyNormalized("eclear",header))return "eclear";
+  if((header.length===28&&header[0]==="日付"&&header[16]==="歩数")||
+    isAlreadyNormalized("fit",header))return "fit";
+  if(isAlreadyNormalized("lifestyle",header))return "lifestyle";
+  return null;
+}
+
 export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSource{
   const text=raw.startsWith("\uFEFF")?raw.slice(1):raw;
   const data=cells(text);
