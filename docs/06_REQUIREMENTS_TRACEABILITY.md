@@ -145,3 +145,14 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
 - Writes retain the existing Owner auth, Origin/Fetch Metadata/custom intent checks and explicit trusted UAT/local allowlist. No local import gate bypass.
 - **Never claim Android form interaction completed solely because CI and UAT APIs pass.** Live Android physical form use requires a distinct observed acceptance result.
 - Raw ECLEAR/Google Fit/Box data conversion remains source-specific and must not be guessed or marked imported without provenance. Existing M08 data migration may remain incomplete.
+
+
+## M06 addendum — meals, late-night eating and outings (2026-11-08)
+
+- `/api/mvp/meals`: owner-only daily lunch/dinner (home/restaurant/takeout/NULL) and late-meal (0/1/NULL), optimistic same-value compare-and-swap for edits/deletes. Only `source_id=manual:meals` is mutable, and existing CSV rows are never overwritten.
+- `/api/mvp/outings`: work/bar/other participation events, independent from alcohol drinks; owner source-only edit/delete, stable UUID retries.
+- `/api/mvp/compare` uses field-wise source choice: a manual meal observation cannot erase drinking_presence recorded by a separate CSV row. Displays explicit outing counts and late-meal observed counts.
+- `MvpFeatures`: Android-friendly food/venue input, correction, cancellation with separate drink counts.
+- `tests/mvp-features.test.ts`: verifies NULL vs 0, correct data source, stale edits 409, drink presence preserved, and no double counting.
+- `scripts/uat-mvp-e2e.mjs`: temporary synthetic meal/outing rows are deleted automatically and all counts checked.
+- This is a technical acceptance with synthetic data; an actual Android form interaction by the user is not silently treated as observed.

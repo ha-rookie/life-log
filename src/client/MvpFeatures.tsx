@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type Kind="highball"|"green_tea_high"|"other_alcohol"|"non_alcohol";
 type Drink={key:string;observedAt:string;kind:Kind;alcohol:number;cups:number};
+type MealKind="home"|"restaurant"|"takeout"|null;
+type Meal={day:string;lunchKind:MealKind;dinnerKind:MealKind;lateMeal:0|1|null};
+type Outing={key:string;day:string;category:"work"|"bar"|"other"};
+const mealLabel:Record<Exclude<MealKind,null>,string>={home:"自炊",restaurant:"外食",takeout:"中食"};
+const venueLabel={work:"会社・接待",bar:"居酒屋・バー",other:"その他"};
 type Experiment={id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;
   status:string;startsOn:string;endsOn:string;targetAction:string;outcomeText:string|null;decision:string|null};
 type Period={from:string;to:string;calendarDays:number;
@@ -9,7 +14,8 @@ type Period={from:string;to:string;calendarDays:number;
   steps:{mean:number|null;observedDays:number;missingDays:number;zeroDays:number;sources:string[]};
   drinking:{observedDays:number;drinkingDays:number;nondrinkingDays:number;missingDays:number;
     recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number};
-  meals:{observedLunchDays:number;observedDinnerDays:number;
+  outings:{visits:number;work:number;bar:number;other:number};
+  meals:{lateMealDays:number;lateMealObservedDays:number;observedLunchDays:number;observedDinnerDays:number;
     restaurantLunchDays:number;restaurantDinnerDays:number;takeoutLunchDays:number;takeoutDinnerDays:number}};
 type CompareResult={a:Period;b:Period;disclaimer:string};
 const names:Record<Kind,string>={highball:"ハイボール",green_tea_high:"緑茶ハイ",
@@ -25,7 +31,7 @@ async function jsonGet<T>(path:string):Promise<T>{
   if(!res.ok)throw Error("取得できません（HTTP "+res.status+"）");
   return await res.json() as T;
 }
-async function mutate(path:string,method:"POST"|"PATCH"|"DELETE",value:Record<string,unknown>){
+async function mutate(path:string,method:"POST"|"PUT"|"PATCH"|"DELETE",value:Record<string,unknown>){
   const res=await fetch(path,{method,credentials:"same-origin",cache:"no-store",
     headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},body:JSON.stringify(value)});
   const data=await res.json().catch(()=>({})) as {error?:string;status?:string};
@@ -43,6 +49,20 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
   const [editing,setEditing]=useState<Drink|null>(null);
   const [editKind,setEditKind]=useState<Kind>("highball");
   const [editTime,setEditTime]=useState("");
+  const [meals,setMeals]=useState<Meal[]>([]);
+  const [mealDay,setMealDay]=useState(jstDay);
+  const [mealLunch,setMealLunch]=useState("");
+  const [mealDinner,setMealDinner]=useState("");
+  const [mealLate,setMealLate]=useState("");
+  const [mealsError,setMealsError]=useState("");
+  const [mealBusy,setMealBusy]=useState(false);
+  const [outings,setOutings]=useState<Outing[]>([]);
+  const [outingDay,setOutingDay]=useState(jstDay);
+  const [outingKind,setOutingKind]=useState<Outing["category"]>("bar");
+  const [outingEdit,setOutingEdit]=useState<Outing|null>(null);
+  const [outingError,setOutingError]=useState("");
+  const [outingBusy,setOutingBusy]=useState(false);
+  const pendingOuting=useRef<string|null>(null);
   const [experimentList,setExperimentList]=useState<Experiment[]>([]);
   const [experimentError,setExperimentError]=useState("");
   const [planBusy,setPlanBusy]=useState(false);
@@ -79,6 +99,26 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
     }catch(e){setExperimentError(e instanceof Error?e.message:"行動計画を取得できません。");}
   },[]);
   useEffect(()=>{void loadDrinks();void loadExperiments();},[loadDrinks,loadExperiments]);
+  const loadMeals=useCallback(async()=>{
+    try{
+      const res=await jsonGet<{entries:Meal[]}>("/api/mvp/meals");
+      setMeals(res.entries);setMealsError("");
+    }catch(err){setMealsError(err instanceof Error?err.message:"食事履歴を取得できません。");}
+  },[]);
+  const loadOutings=useCallback(async()=>{
+    try{
+      const res=await jsonGet<{entries:Outing[]}>("/api/mvp/outings");
+      setOutings(res.entries);setOutingError("");
+    }catch(err){setOutingError(err instanceof Error?err.message:"飲みの場を取得できません。");}
+  },[]);
+  useEffect(()=>{void loadMeals();void loadOutings();},[loadMeals,loadOutings]);
+  useEffect(()=>{
+    const row=meals.find(x=>x.day===mealDay);
+    setMealLunch(row?.lunchKind??"");
+    setMealDinner(row?.dinnerKind??"");
+    setMealLate(row?.lateMeal===null||row?.lateMeal===undefined?"":String(row.lateMeal));
+  },[meals,mealDay]);
+
   const todayDrinks=drinks.filter(d=>localTime(d.observedAt).slice(0,10)===jstDay());
   const todayAlcohol=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>n+d.cups,0);
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
@@ -114,6 +154,51 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
       await loadDrinks();onSaved();
     }catch(e){await loadDrinks();setDrinksError(e instanceof Error?e.message:"取消できませんでした。");}
     finally{setDrinksBusy(false);}
+  }
+
+  async function saveMeal(){
+    if(mealBusy)return;setMealBusy(true);setMealsError("");
+    const old=meals.find(m=>m.day===mealDay)??null;
+    try{
+      await mutate("/api/mvp/meals","PUT",{
+        day:mealDay,lunchKind:mealLunch||null,dinnerKind:mealDinner||null,
+        lateMeal:mealLate===""?null:Number(mealLate),expected:old});
+      await loadMeals();onSaved();
+    }catch(err){await loadMeals();setMealsError(err instanceof Error?err.message:"食事区分を保存できません。");}
+    finally{setMealBusy(false);}
+  }
+  async function cancelMeal(){
+    if(mealBusy)return;
+    const old=meals.find(m=>m.day===mealDay);
+    if(!old||!window.confirm("この日の手入力した食事区分を取り消しますか？"))return;
+    setMealBusy(true);setMealsError("");
+    try{
+      await mutate("/api/mvp/meals","DELETE",{day:old.day,expected:old});
+      await loadMeals();onSaved();
+    }catch(err){await loadMeals();setMealsError(err instanceof Error?err.message:"取り消せませんでした。");}
+    finally{setMealBusy(false);}
+  }
+  async function saveOuting(){
+    if(outingBusy)return;setOutingBusy(true);setOutingError("");
+    const key=outingEdit?.key??(pendingOuting.current??=crypto.randomUUID());
+    try{
+      await mutate("/api/mvp/outings",outingEdit?"PATCH":"POST",{
+        key,day:outingDay,category:outingKind,
+        ...(outingEdit?{expectedDay:outingEdit.day,expectedCategory:outingEdit.category}:{})});
+      pendingOuting.current=null;setOutingEdit(null);await loadOutings();onSaved();
+    }catch(err){await loadOutings();setOutingError(err instanceof Error?err.message:"飲みの場を保存できません。");}
+    finally{setOutingBusy(false);}
+  }
+  async function cancelOuting(row:Outing){
+    if(outingBusy||!window.confirm("この参加記録を取り消しますか？"))return;
+    setOutingBusy(true);setOutingError("");
+    try{
+      await mutate("/api/mvp/outings","DELETE",{
+        key:row.key,expectedDay:row.day,expectedCategory:row.category});
+      if(outingEdit?.key===row.key)setOutingEdit(null);
+      await loadOutings();onSaved();
+    }catch(err){await loadOutings();setOutingError(err instanceof Error?err.message:"取り消せませんでした。");}
+    finally{setOutingBusy(false);}
   }
   async function compare(){
     if(compareBusy)return;
@@ -192,6 +277,55 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
         <button type="button" disabled={drinksBusy} onClick={()=>setEditing(null)}>やめる</button>
       </div>}
     </section>
+
+    <section className="panel" aria-labelledby="meals-title">
+      <h2 id="meals-title">食事区分・夜食</h2>
+      <p className="hint">選んでいない項目は「不明」として保存します。実際の記録がない日を外食なし・夜食なしとはみなしません。</p>
+      <div className="mvp-grid">
+        <label>日付（JST）<input type="date" value={mealDay} max={jstDay()}
+          onChange={e=>setMealDay(e.target.value)}/></label>
+        <label>昼食<select value={mealLunch} onChange={e=>setMealLunch(e.target.value)}>
+          <option value="">不明・未入力</option>
+          {Object.entries(mealLabel).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+        </select></label>
+        <label>夕食<select value={mealDinner} onChange={e=>setMealDinner(e.target.value)}>
+          <option value="">不明・未入力</option>
+          {Object.entries(mealLabel).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+        </select></label>
+        <label>夜食<select value={mealLate} onChange={e=>setMealLate(e.target.value)}>
+          <option value="">不明・未入力</option><option value="0">なし</option><option value="1">あり</option>
+        </select></label>
+      </div>
+      <button type="button" disabled={mealBusy} onClick={()=>void saveMeal()}>食事区分を保存・訂正</button>
+      <button type="button" disabled={mealBusy||!meals.some(x=>x.day===mealDay)}
+        onClick={()=>void cancelMeal()}>この日の手入力を取消</button>
+      {mealsError&&<p role="alert">{mealsError}</p>}
+      <p className="hint">直近の本人手入力：{meals.length}日。CSV由来の食事記録は上書きしません。</p>
+    </section>
+    <section className="panel" aria-labelledby="outings-title">
+      <h2 id="outings-title">飲みの場・会食の参加</h2>
+      <p className="hint">参加回数は飲酒杯数とは別に記録します。飲酒していない会食も参加として残せます。</p>
+      <div className="mvp-grid">
+        <label>日付（JST）<input type="date" value={outingDay} max={jstDay()}
+          onChange={e=>setOutingDay(e.target.value)}/></label>
+        <label>場の種類<select value={outingKind} onChange={e=>setOutingKind(e.target.value as Outing["category"])}>
+          {Object.entries(venueLabel).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+        </select></label>
+      </div>
+      <button type="button" disabled={outingBusy} onClick={()=>void saveOuting()}>
+        {outingEdit?"参加記録を訂正":"参加を記録"}</button>
+      {outingEdit&&<button type="button" disabled={outingBusy} onClick={()=>{
+        setOutingEdit(null);setOutingDay(jstDay());setOutingKind("bar");
+      }}>訂正をやめる</button>}
+      {outingError&&<p role="alert">{outingError}</p>}
+      <ul>{outings.map(row=><li className="mvp-entry" key={row.key}>
+        <span>{row.day} · {venueLabel[row.category]}</span>
+        <button type="button" disabled={outingBusy} onClick={()=>{
+          setOutingEdit(row);setOutingDay(row.day);setOutingKind(row.category);
+        }}>訂正</button>
+        <button type="button" disabled={outingBusy} onClick={()=>void cancelOuting(row)}>取消</button>
+      </li>)}</ul>
+    </section>
     <section className="panel" aria-labelledby="compare-title">
       <h2 id="compare-title">2期間の体重・生活比較</h2>
       <p className="hint">両期間は重ならないよう指定してください。測定数が少ない場合、変化や原因を断定しません。</p>
@@ -218,6 +352,8 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
               <dt>飲酒した日</dt><dd>{p.drinking.drinkingDays}日／観測 {p.drinking.observedDays}日（欠測 {p.drinking.missingDays}日）</dd>
               <dt>実際に記録したお酒</dt><dd>{p.drinking.recordedAlcoholCups}杯（ノンアル {p.drinking.recordedNonAlcoholCups}杯）</dd>
               <dt>外食（昼・夜）</dt><dd>{p.meals.restaurantLunchDays}昼／{p.meals.restaurantDinnerDays}夜（観測 {p.meals.observedLunchDays}昼・{p.meals.observedDinnerDays}夜）</dd>
+              <dt>夜食</dt><dd>あり {p.meals.lateMealDays}日／観測 {p.meals.lateMealObservedDays}日</dd>
+              <dt>飲みの場への参加</dt><dd>{p.outings.visits}回（会社 {p.outings.work}・居酒屋/バー {p.outings.bar}・その他 {p.outings.other}）</dd>
             </dl>
           </section>)}
         </div>

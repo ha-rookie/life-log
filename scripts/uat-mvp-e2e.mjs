@@ -28,17 +28,19 @@ const count=()=>sql("SELECT "+
   "(SELECT COUNT(*) FROM body_measurements) AS weights,"+
   "(SELECT COUNT(*) FROM activity_daily) AS steps,"+
   "(SELECT COUNT(*) FROM drink_entries) AS drinks,"+
+  "(SELECT COUNT(*) FROM lifestyle_days) AS lifestyle,"+
+  "(SELECT COUNT(*) FROM outings) AS outings,"+
   "(SELECT COUNT(*) FROM behavior_hypotheses) AS hypotheses,"+
   "(SELECT COUNT(*) FROM behavior_experiments) AS experiments")[0];
 const token=randomBytes(32).toString("hex");
 const tokenHash=createHash("sha256").update(token).digest("hex");
 const cookie="__Host-life_log_session="+token;
-const drinkKey1=randomUUID(),drinkKey2=randomUUID(),planId=randomUUID();
+const drinkKey1=randomUUID(),drinkKey2=randomUUID(),planId=randomUUID(),venueKey=randomUUID();
 const current=new Date().toISOString();
 const day=(ago)=>new Date(Date.now()+9*3600000-ago*86400000).toISOString().slice(0,10);
 const before=count();
 assert(before&&before.owners===1&&before.passkeys>=1,"Owner/passkey precondition missing");
-let sessionCreated=false,failed;
+let sessionCreated=false,failed,syntheticMealDay;
 const request=async(path,method="GET",data=undefined,authenticated=true,forgedOrigin=false)=>{
   const options={method,redirect:"manual",signal:AbortSignal.timeout(20000),headers:{
     ...(authenticated?{Cookie:cookie}:{}),
@@ -112,11 +114,42 @@ try{
   }else{
     console.log("SKIP: no synthetic experiment creation because real Owner already has active plan");
   }
+
+  const empty=sql("WITH RECURSIVE d(day,n) AS ("+
+    "SELECT date('now','+9 hours'),0 UNION ALL SELECT date(day,'-1 day'),n+1 FROM d WHERE n<29) "+
+    "SELECT d.day FROM d WHERE NOT EXISTS(SELECT 1 FROM lifestyle_days l "+
+    "WHERE l.owner_id='owner' AND l.source_id='manual:meals' AND l.local_day=d.day) "+
+    "ORDER BY d.day DESC LIMIT 1");
+  assert(empty.length===1,"No unused day for temporary meal record");
+  syntheticMealDay=empty[0].day;
+  const meal0={day:syntheticMealDay,lunchKind:"restaurant",dinnerKind:null,lateMeal:0};
+  const meal1={day:syntheticMealDay,lunchKind:"restaurant",dinnerKind:"takeout",lateMeal:1};
+  check(await request("/api/mvp/meals","PUT",{...meal0,expected:null}),200,"Meal create");
+  check(await request("/api/mvp/meals","PUT",{...meal1,expected:meal0}),200,"Meal correction");
+  const mealRows=await request("/api/mvp/meals");
+  check(mealRows,200,"Meal list");
+  assert(mealRows.json.entries?.some(x=>x.day===syntheticMealDay&&
+    x.lateMeal===1&&x.dinnerKind==="takeout"),"Meal update not returned");
+  check(await request("/api/mvp/meals","DELETE",{day:syntheticMealDay,expected:meal1}),200,
+    "Meal cancellation");
+  const outing0={key:venueKey,day:day(0),category:"bar"};
+  check(await request("/api/mvp/outings","POST",outing0),200,"Outing create");
+  check(await request("/api/mvp/outings","POST",outing0),200,"Outing idempotent retry");
+  check(await request("/api/mvp/outings","PATCH",{
+    ...outing0,category:"work",expectedDay:outing0.day,expectedCategory:"bar"
+  }),200,"Outing correction");
+  const outingRows=await request("/api/mvp/outings");
+  check(outingRows,200,"Outing list");
+  assert(outingRows.json.entries?.some(x=>x.key===venueKey&&x.category==="work"),
+    "Outing update not returned");
+  check(await request("/api/mvp/outings","DELETE",{
+    key:venueKey,expectedDay:outing0.day,expectedCategory:"work"
+  }),200,"Outing cancellation");
   check(await request("/api/mvp/drinks","DELETE",{
     key:drinkKey1,expectedObservedAt:current,expectedKind:"green_tea_high"}),200,"Cancel drink 1");
   check(await request("/api/mvp/drinks","DELETE",{
     key:drinkKey2,expectedObservedAt:current,expectedKind:"non_alcohol"}),200,"Cancel drink 2");
-  console.log("PASS: real UAT drinks +1/duplicate/correct/cancel, private export, comparison, experiments conditional, auth and forged Origin");
+  console.log("PASS: real UAT drinks/meals/outings CRUD, CSV, comparison and conditional experiment");
 }catch(e){failed=e;console.error("FAIL: "+e.message);}
 finally{
   try{
@@ -124,6 +157,10 @@ finally{
       " AND source_row_key IN ('"+drinkKey1+"','"+drinkKey2+"')");
     sql("DELETE FROM behavior_experiments WHERE owner_id='owner' AND id='"+planId+"'");
     sql("DELETE FROM behavior_hypotheses WHERE owner_id='owner' AND id='h:"+planId+"'");
+    if(syntheticMealDay)sql("DELETE FROM lifestyle_days WHERE owner_id='owner' "+
+      "AND source_id='manual:meals' AND local_day='"+syntheticMealDay+"'");
+    sql("DELETE FROM outings WHERE owner_id='owner' AND source_id='manual:outing' "+
+      "AND source_row_key='"+venueKey+"'");
     if(sessionCreated)sql("DELETE FROM owner_sessions WHERE owner_id='owner' AND token_hash='"+tokenHash+"'");
     const after=count();
     for(const key of Object.keys(before)){
