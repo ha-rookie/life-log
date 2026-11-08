@@ -1,4 +1,5 @@
 import { passkeyRoute } from "./passkey-auth";
+import { pbkdf2Sync } from "node:crypto";
 
 type Stmt = { bind(...args: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<{ meta?: { changes?: number } }> } };
 export type AuthDb = { prepare(sql: string): Stmt; batch?(statements:unknown[]):Promise<unknown[]> };
@@ -7,7 +8,6 @@ const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options"
 const json = (v: unknown, status = 200) => Response.json(v, { status, headers: HEADERS });
 const encoder = new TextEncoder();
 const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
-const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
 const ITERATIONS = 210000;
 // High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
@@ -17,9 +17,12 @@ const ITERATIONS = 210000;
 const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
 const UAT_TEMP_HASH = "9992a444eb48fd6383004bbbb404d0b53227bdbe3242edc3788d19ed08e7eeac";
 async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
-  const key = await crypto.subtle.importKey("raw",encoder.encode(password),"PBKDF2",false,["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:fromHex(salt),iterations,hash:"SHA-256"},key,256);
-  return toHex(new Uint8Array(bits));
+  // Workers WebCrypto caps PBKDF2 at 100,000 iterations. The native
+  // node:crypto API is available for our 2026-11-04 compatibility date;
+  // preserve existing 210,000-round verifiers without lowering their cost.
+  if(!Number.isSafeInteger(iterations)||iterations<100000||iterations>1000000||
+     !/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_VERIFIER");
+  return pbkdf2Sync(password,Buffer.from(salt,"hex"),iterations,32,"sha256").toString("hex");
 }
 function equal(a: string,b: string) {
   if(a.length!==b.length)return false;
