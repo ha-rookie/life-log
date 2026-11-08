@@ -7,6 +7,7 @@ import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { isSafeRemoteManual } from "./manual-entry";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
+import { handleStepsTrend, type StepsTrendDb } from "./steps-trend";
 import { handleManualEntry, type ManualDb } from "./manual-entry";
 import { handleMvpFeatures, type MvpDb } from "./mvp-features";
 
@@ -52,6 +53,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
         if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
+        if (path === "/api/steps/trend") return handleStepsTrend(request,env.DB as unknown as StepsTrendDb,ownerId);
         if (path.startsWith("/api/mvp/")) return handleMvpFeatures(request,env.DB as unknown as MvpDb,ownerId,{
           local:env.MANUAL_ENTRY_LOCAL_ONLY,
           remote:{
