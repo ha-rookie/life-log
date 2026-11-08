@@ -126,3 +126,22 @@ Release前に全ACTIVE要件の実装・テストEvidenceを確認し、未実�
 - **NFR-002 integrity:** weight updates/deletes compare owner/source/UUID and the previously displayed timestamp and kg in the same SQL mutation. Steps updates/deletes compare previous steps and verify affected-row count; stale actions return 409 and preserve the latest value, including equal-target stale retries. Client detects failures, re-reads the manual history and does not claim success for ambiguous outcomes. Existing CSV provenance is never silently mutated; missing remains distinct from 0 steps.
 - **Synthetic acceptance:** signed owner/other-owner JWTs, missing and mismatched Origin/Fetch Metadata/CSRF intent, disabled/misconfigured UAT settings, stale weight/steps updates and cancel, bad date range, plus the existing React19 Chromium 390px full-App local D1 test. All test outcomes must be checked at final HEAD; not presumed.
 - **Still separately gated:** exact UAT origin and isolated D1/Access resources; actual Android device, remote write authorization/secret provision, real health data, deployment and main merge. This Draft contains no enabling values in wrangler config and none are created remotely.
+
+
+## MVP-γ/δ integration status (2026-11-08)
+
+Issue #80 provides a shared implementation for the remaining MVP features, reusing the existing `0001_initial.sql` schema without migrating Remote D1.
+
+| Requirement | Entry point / API | Acceptance evidence |
+| --- | --- | --- |
+| M04 #28 4種類の飲み物の+1・訂正・取消 | `MvpFeatures.tsx`, `/api/mvp/drinks` | `tests/mvp-features.test.ts`, Worker UAT test |
+| M02 #26 2期間体重の変化・観測・欠測 | `/api/mvp/compare` | synthetic D1 period calculation and UAT |
+| M03 #27 歩数・飲酒有無・食事の比較 | 同じ比較API・UI | missing != 0; selected source and observed day counts |
+| M07 #30 仮説1件・行動実験・本人判定 | `/api/mvp/experiments` | synthetic D1, one-active-plan boundary |
+| M08/09 #31 CSV再出力 | `/api/mvp/export` | owner-scoped UTF-8 BOM, NULL empty vs 0, formula-injection escaping |
+
+- This code does **not** infer past alcohol cup counts from legacy drinking_presence=1.
+- Comparison shows observational association only; no causal or weight-loss-effect assertions.
+- Writes retain the existing Owner auth, Origin/Fetch Metadata/custom intent checks and explicit trusted UAT/local allowlist. No local import gate bypass.
+- **Never claim Android form interaction completed solely because CI and UAT APIs pass.** Live Android physical form use requires a distinct observed acceptance result.
+- Raw ECLEAR/Google Fit/Box data conversion remains source-specific and must not be guessed or marked imported without provenance. Existing M08 data migration may remain incomplete.

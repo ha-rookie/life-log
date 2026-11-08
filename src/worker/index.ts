@@ -7,6 +7,7 @@ import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
 import { handleManualEntry, type ManualDb } from "./manual-entry";
+import { handleMvpFeatures, type MvpDb } from "./mvp-features";
 
 export interface Env extends AccessEnv {
   DB: Database;
@@ -50,6 +51,13 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
         if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
+        if (path.startsWith("/api/mvp/")) return handleMvpFeatures(request,env.DB as unknown as MvpDb,ownerId,{
+          local:env.MANUAL_ENTRY_LOCAL_ONLY,
+          remote:{
+            enabled:env.PASSWORD_ONLY_UAT === "true" && !ownerSession ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
+            target:env.MANUAL_REMOTE_TARGET,origin:env.MANUAL_REMOTE_ORIGIN
+          }
+        });
         if (path === "/api/manual/records" || path === "/api/manual/weight" || path === "/api/manual/steps") return handleManualEntry(request, env.DB as unknown as ManualDb, ownerId,
           env.MANUAL_ENTRY_LOCAL_ONLY, {
             // Remote writes without Access require an authenticated Owner session AND explicit UAT opt-in.
