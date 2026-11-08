@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { scrypt as nodeScrypt } from "node:crypto";
 import { authRoute, sessionOwner } from "../src/worker/password-auth";
 
 const url = "https://life-log-uat.ha-rookie.workers.dev";
@@ -127,4 +128,63 @@ describe("owner password authentication boundary",()=>{
   expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
   expect(await sessionOwner(new Request(url+"/",{headers:{Cookie:"__Host-life_log_session=bad"}}),unavailable.DB as never)).toBeNull();
  });
+ it("authenticates a synthetic WORKHUB-compatible scrypt Owner verifier and accepts its session",async()=>{
+  // The synthetic password is NOT a real UAT credential; no secrets in tests.
+  const password="synthetic-owner-credential-2026";
+  const salt="11223344556677889900aabbccddeeff";
+  const bytes=await new Promise<Uint8Array>((resolve,reject)=>
+    nodeScrypt(password,Uint8Array.from(salt.match(/../g)!,v=>parseInt(v,16)),32,
+      {N:32768,r:8,p:3,maxmem:64*1024*1024},(error,derived)=>error?reject(error):resolve(derived)));
+  const storedHash="scrypt$32768$8$3$"+Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+  let issuedTokenHash:string|null=null, sessionWrites=0;
+  const statements:string[]=[];
+  const db={prepare:(sql:string)=>{
+    statements.push(sql);
+    return {bind:(...args:unknown[])=>({
+      first:async()=>{
+        if(sql.includes("SELECT password_salt"))return {salt,hash:storedHash};
+        if(sql.includes("SELECT owner_id AS owner FROM owner_sessions"))
+          return args[0]===issuedTokenHash?{owner:"owner"}:null;
+        return null;
+      },
+      run:async()=>{
+        if(sql.includes("INSERT INTO owner_sessions")){
+          issuedTokenHash=String(args[0]);
+          sessionWrites++;
+        }
+        return {meta:{changes:1}};
+      }
+    })};
+  }};
+  const env={DB:db};
+  const wrong=req("/api/auth/login",{username:"owner",password:"incorrect-synthetic-credential"});
+  wrong.headers.set("CF-Connecting-IP","203.0.113.15");
+  const rejected=await authRoute(wrong,env as never);
+  expect(rejected.status).toBe(401);
+  expect(sessionWrites).toBe(0);
+  const right=req("/api/auth/login",{username:"owner",password});
+  right.headers.set("CF-Connecting-IP","203.0.113.15");
+  const login=await authRoute(right,env as never);
+  expect(login.status).toBe(200);
+  expect(sessionWrites).toBe(1);
+  const cookie=login.headers.get("Set-Cookie");
+  expect(cookie).toContain("__Host-life_log_session=");
+  expect(cookie).toContain("HttpOnly; Secure; SameSite=Strict");
+  const token=cookie!.split(";")[0];
+  const authenticated=new Request(url+"/api/summary",{headers:{Cookie:token}});
+  expect(await sessionOwner(authenticated,db as never)).toBe("owner");
+  expect(statements.some(sql=>sql.includes("INSERT INTO owner_credentials"))).toBe(false);
+ });
+ it("rejects malformed stored KDF parameters without issuing a session",async()=>{
+  const db={prepare:(sql:string)=>({bind:()=>({
+    first:async()=>sql.includes("SELECT password_salt")?
+      {salt:"not-hex",hash:"scrypt$32768$8$3$"+"0".repeat(64)}:null,
+    run:async()=>{throw Error("Must never write a session");}
+  })})};
+  const request=req("/api/auth/login",{username:"owner",password:"synthetic-owner-credential-2026"});
+  request.headers.set("CF-Connecting-IP","203.0.113.15");
+  const res=await authRoute(request,{DB:db} as never);
+  expect(res.status).toBe(401);
+ });
+
 });

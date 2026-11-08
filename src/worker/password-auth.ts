@@ -1,4 +1,5 @@
 import { passkeyRoute } from "./passkey-auth";
+import { scrypt as nodeScrypt } from "node:crypto";
 
 type Stmt = { bind(...args: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<{ meta?: { changes?: number } }> } };
 export type AuthDb = { prepare(sql: string): Stmt; batch?(statements:unknown[]):Promise<unknown[]> };
@@ -9,17 +10,19 @@ const encoder = new TextEncoder();
 const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
 const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
-const ITERATIONS = 210000;
-// High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
-// Enabled exclusively for password-only UAT while no credential is provisioned.
-// First successful login persists it to D1. A registered passkey prevents re-bootstrap
-// after the temporary password is retired; no GitHub setup Secret is required.
-const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
-const UAT_TEMP_HASH = "9992a444eb48fd6383004bbbb404d0b53227bdbe3242edc3788d19ed08e7eeac";
-async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
-  const key = await crypto.subtle.importKey("raw",encoder.encode(password),"PBKDF2",false,["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:fromHex(salt),iterations,hash:"SHA-256"},key,256);
-  return toHex(new Uint8Array(bits));
+const LEGACY_COLUMN_ITERATIONS = 100000;
+const SCRYPT_N = 32768, SCRYPT_R = 8, SCRYPT_P = 3, SCRYPT_MAXMEM = 64 * 1024 * 1024;
+// Reuse the WORKHUB scrypt N=32768, r=8, p=3 profile. The UAT password
+// verifier is temporary, and is never persisted to D1 or re-enabled after passkey setup.
+const UAT_TEMP_SALT = "01224a57fdb3e657d6bf74181e7cb403";
+const UAT_TEMP_HASH = "b230594443d6290f0507815bcc6471efa44d8373c3897da5771fad26c4a4c484";
+async function passwordHash(password: string, salt: string): Promise<string> {
+  if(!/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_SCRYPT_SALT");
+  return new Promise((resolve,reject)=>{
+    nodeScrypt(password.normalize("NFC"),fromHex(salt),32,
+      {N:SCRYPT_N,r:SCRYPT_R,p:SCRYPT_P,maxmem:SCRYPT_MAXMEM},
+      (error,bytes)=>error?reject(error):resolve(toHex(bytes)));
+  });
 }
 function equal(a: string,b: string) {
   if(a.length!==b.length)return false;
@@ -121,30 +124,35 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
       const hash=await passwordHash(data.password,salt);
       await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)").bind("owner",new Date().toISOString()).run();
       const result=await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
-        .bind("owner",salt,hash,ITERATIONS,new Date().toISOString()).run();
+        .bind("owner",salt,["scrypt",SCRYPT_N,SCRYPT_R,SCRYPT_P,hash].join("$"),LEGACY_COLUMN_ITERATIONS,new Date().toISOString()).run();
       if(result.meta?.changes!==1)return json({error:"ALREADY_REGISTERED"},409);
       return issue(env.DB);
     }
     if(path==="/api/auth/login"){
       if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
-      let cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
-        .bind("owner").first<{salt:string;hash:string;iterations:number}>();
-      if(!cred && env.PASSWORD_ONLY_UAT==="true"){
-        // Never recreate the temporary login once a passkey has been enrolled.
+      // Both pre-existing scrypt verifiers and the temporary scrypt verifier are
+      // invalidated as soon as passkey enrollment completes.
+      if(env.PASSWORD_ONLY_UAT==="true"){
         const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
         if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
-        const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
-        if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
-        await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
-          .bind("owner",new Date().toISOString()).run();
-        await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
-          .bind("owner",UAT_TEMP_SALT,UAT_TEMP_HASH,ITERATIONS,new Date().toISOString()).run();
-        cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
-          .bind("owner").first<{salt:string;hash:string;iterations:number}>();
       }
-      if(!cred)return json({error:"INVALID_CREDENTIALS"},401);
-      const hash=await passwordHash(data.password,cred.salt,cred.iterations);
-      if(!equal(hash,cred.hash))return json({error:"INVALID_CREDENTIALS"},401);
+      const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash FROM owner_credentials WHERE owner_id=?")
+        .bind("owner").first<{salt:string;hash:string}>();
+      const parts=cred?.hash.split("$");
+      if(cred&&parts?.length===5&&parts[0]==="scrypt"&&parts[1]===String(SCRYPT_N)&&
+        parts[2]===String(SCRYPT_R)&&parts[3]===String(SCRYPT_P)&&
+        /^[a-f0-9]{32}$/.test(cred.salt)&&/^[a-f0-9]{64}$/.test(parts[4])){
+        const candidate=await passwordHash(data.password,cred.salt);
+        if(equal(candidate,parts[4]))return issue(env.DB);
+      }
+      if(env.PASSWORD_ONLY_UAT!=="true"||
+        new URL(request.url).origin!=="https://life-log-uat.ha-rookie.workers.dev")
+        return json({error:"INVALID_CREDENTIALS"},401);
+      const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
+      if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+      // Avoid writing persistent password credentials for a one-time UAT bootstrap.
+      await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
+        .bind("owner",new Date().toISOString()).run();
       return issue(env.DB);
     }
     return json({error:"NOT_FOUND"},404);
