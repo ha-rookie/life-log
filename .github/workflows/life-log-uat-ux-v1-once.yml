@@ -1,4 +1,4 @@
-name: Life-log one-shot date-only weight CSV UAT release
+name: Life-log one-shot drinks beer-size UAT release after 0004
 on:
   workflow_run:
     workflows: ["Life-log local app and D1 CI"]
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: life-log-weight-day-csv-uat
+  group: life-log-drinks-118-uat
   cancel-in-progress: false
 jobs:
   release-and-accept:
@@ -16,7 +16,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'feat(csv): date-only weight import and no-duplicate days ')
+      startsWith(github.event.workflow_run.head_commit.message, 'feat(drinks): beer, mega serving and pure alcohol tracking ')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
@@ -40,21 +40,16 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^feat\(csv\): date-only weight import and no-duplicate days \(#[0-9]+\)$'
+          git show -s --format=%s HEAD | grep -Eq '^feat\(drinks\): beer, mega serving and pure alcohol tracking \(#118\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
           printf '%s\n' \
-            ".github/workflows/life-log-uat-ux-v1-once.yml" \
-            "src/client/App.tsx" \
-            "src/client/WeightTrend.tsx" \
-            "src/shared/csv-import.ts" \
-            "src/shared/source-adapter.ts" \
-            "src/shared/weight-trend.ts" \
-            "src/worker/import.ts" \
-            "src/worker/summary.ts" \
-            "tests/csv-import.test.ts" \
-            "tests/import-worker.test.ts" \
-            "tests/source-adapter.test.ts" \
-            "tests/weight-trend.test.ts" | sort > "$RUNNER_TEMP/expected.txt"
+            "migrations/0004_drink_details.sql" \
+            "scripts/validate-schema.py" \
+            "src/client/MvpFeatures.tsx" \
+            "src/shared/drink-measures.ts" \
+            "src/worker/mvp-features.ts" \
+            "tests/drink-measures.test.ts" \
+            "tests/mvp-features.test.ts" | sort > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
@@ -81,7 +76,22 @@ jobs:
           curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
             | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
-      - name: Deploy existing UAT Worker only; keep registered passkeys and D1 schema
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" \
+            > "$RUNNER_TEMP/drink-0004-columns.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const doc=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/drink-0004-columns.json","utf8"));
+          const packets=Array.isArray(doc)?doc:[doc];
+          if(packets.length!==1||packets[0].success!==true||!Array.isArray(packets[0].results))
+            throw Error("UAT D1 schema check unavailable; DO NOT deploy");
+          const cols=new Set(packets[0].results.map(x=>x.name));
+          if(!cols.has("drink_variant")||!cols.has("size_label")||
+             !cols.has("volume_ml")||!cols.has("abv_pct"))
+            throw Error("Drink migration 0004 missing; DO NOT deploy");
+          console.log("PASS: existing UAT drink metadata migration 0004 present before Worker deploy");
+          JS
+      - name: Deploy existing UAT Worker only; keep Owner passkeys and migrated D1 schema
         shell: bash
         run: |
           set -euo pipefail
@@ -106,11 +116,18 @@ jobs:
           done
           test "$ready" = 1
           echo "PASS: UAT login200, anonymous app403, retired password API410"
-      - name: Verify new read-only dashboard remains Owner-only
+      - name: Verify dashboard and drinks API reject anonymous access
         shell: bash
         run: |
           set -euo pipefail
           anon_dashboard=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/dashboard")
+          anon_drinks_get=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/drinks")
+          anon_drinks_post=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+            -X POST "$UAT_URL/api/mvp/drinks" \
+            -H "Content-Type: application/json" --data '{}')
           test "$anon_dashboard" = 403
+          test "$anon_drinks_get" = 403
+          test "$anon_drinks_post" = 403
           test -f dist/index.html
-          echo "PASS: existing UAT deploy serves protected HTML; /api/dashboard denies anonymous access; no D1 data mutated"
+          echo "PASS: UAT dashboard and drinks GET/POST denied without Owner credentials; no drink records written"
+          echo "Authenticated drink CRUD verified by local CI only; real Owner UI test remains unverified."
