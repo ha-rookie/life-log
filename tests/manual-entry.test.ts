@@ -405,8 +405,8 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
             +'&&!document.querySelector(".manual-records [role=status]")',"manual entry loaded");
           expect(await evaluate('(()=>{document.querySelector(".manual-records").open=true;return true})()')).toBe(true);
         }else{
-          await until('!!document.querySelector(".trend-table-scroll tbody")'
-            +'&&!!document.querySelector("#overview-weight")',"home trend loaded");
+          await until('!!document.querySelector(".progress-table tbody")'
+            +'&&!!document.querySelector("#overview-weight")',"home progress loaded");
         }
       }
       await cdp("Page.enable");await cdp("Runtime.enable");
@@ -440,7 +440,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
         +'.some(x=>x.textContent.includes("75.1"))',"weight saved to history");
       await toTab("home");
-      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.1")',
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("75.1")',
         "weight visible in home trend");
       await until('document.querySelector("#overview-weight")?.parentElement?.textContent.includes("75.1")',
         "home weight metric refreshed");
@@ -457,7 +457,7 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
         +'.some(x=>x.textContent.includes("75.6"))',"edited weight history");
       await toTab("home");
-      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.6")',
+      await until('document.querySelector(".progress-table tbody")?.textContent.includes("75.6")',
         "edited weight visible in chart");
       await toTab("record");
       expect(await numberOf("body_measurements")).toBe(1);
