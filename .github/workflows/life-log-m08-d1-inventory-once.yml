@@ -61,7 +61,7 @@ jobs:
             | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
       - name: Install pinned Wrangler
         run: npm ci --no-audit --no-fund
-      # Aggregate-only; Google Fit steps / ECLEAR weight are canonical (user decision).
+      # Post-UX one-shot inventory: aggregate COUNT only, without row values; Google Fit / ECLEAR stay canonical.
       - name: Read ONLY aggregate Owner record counts, without personal values
         shell: bash
         run: |
