@@ -127,24 +127,31 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
     }
     if(path==="/api/auth/login"){
       if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
-      let cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
+      const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
         .bind("owner").first<{salt:string;hash:string;iterations:number}>();
-      if(!cred && env.PASSWORD_ONLY_UAT==="true"){
-        // Never recreate the temporary login once a passkey has been enrolled.
-        const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
-        if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
-        const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
-        if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+      // Honor an existing Owner credential without overwriting its verifier.
+      if(cred){
+        const existingHash=await passwordHash(data.password,cred.salt,cred.iterations);
+        if(equal(existingHash,cred.hash))return issue(env.DB);
+      }
+      // Temporary Owner recovery is available on the fixed personal UAT
+      // hostname, and only until the first passkey has been registered.
+      if(env.PASSWORD_ONLY_UAT!=="true" ||
+         new URL(request.url).origin!=="https://life-log-uat.ha-rookie.workers.dev")
+        return json({error:"INVALID_CREDENTIALS"},401);
+      const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
+      if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
+      const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
+      if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+      if(!cred){
         await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
           .bind("owner",new Date().toISOString()).run();
         await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
           .bind("owner",UAT_TEMP_SALT,UAT_TEMP_HASH,ITERATIONS,new Date().toISOString()).run();
-        cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
-          .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+        const persisted=await env.DB.prepare("SELECT owner_id FROM owner_credentials WHERE owner_id=?")
+          .bind("owner").first();
+        if(!persisted)return json({error:"UNAVAILABLE"},503);
       }
-      if(!cred)return json({error:"INVALID_CREDENTIALS"},401);
-      const hash=await passwordHash(data.password,cred.salt,cred.iterations);
-      if(!equal(hash,cred.hash))return json({error:"INVALID_CREDENTIALS"},401);
       return issue(env.DB);
     }
     return json({error:"NOT_FOUND"},404);
