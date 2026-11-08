@@ -16,7 +16,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'feat(ux): mobile-first life log navigation ')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(ux): mobile navigation UAT release retry ')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
@@ -40,23 +40,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^feat\(ux\): mobile-first life log navigation \(#[0-9]+\)$'
+          git show -s --format=%s HEAD | grep -Eq '^ci\(ux\): mobile navigation UAT release retry \(#[0-9]+\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
-          printf '%s\n' \
-            .github/workflows/life-log-uat-ux-v1-once.yml \
-            docs/design/life-log-mobile-ux-v1.md \
-            src/client/App.tsx \
-            src/client/ManualEntry.tsx \
-            src/client/MvpFeatures.tsx \
-            src/client/WeightTrend.tsx \
-            src/client/styles.css \
-            src/worker/index.ts \
-            src/worker/summary.ts \
-            tests/dashboard.test.ts \
-            tests/manual-entry.test.ts \
-            tests/weight-trend-worker.test.ts \
-            tests/weight-trend.test.ts
-            | sort > "$RUNNER_TEMP/expected.txt"
+          printf '%s\n' ".github/workflows/life-log-uat-ux-v1-once.yml" | sort > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
