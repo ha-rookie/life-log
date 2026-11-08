@@ -49,7 +49,7 @@ jobs:
             src/worker/audit-history.ts \
             src/worker/import.ts \
             tests/audit-history.test.ts \
-            tests/import-worker.test.ts
+            tests/import-worker.test.ts \
             | sort > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test -n "$CLOUDFLARE_API_TOKEN"
