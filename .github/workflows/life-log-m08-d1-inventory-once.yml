@@ -61,7 +61,7 @@ jobs:
             | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
       - name: Install pinned Wrangler
         run: npm ci --no-audit --no-fund
-      # Post-UX one-shot inventory: aggregate COUNT only, without row values; Google Fit / ECLEAR stay canonical.
+      # Post-date-only import audit: aggregate counts and overlap detection; never output weight values, dates, or rows.
       - name: Read ONLY aggregate Owner record counts, without personal values
         shell: bash
         run: |
@@ -70,6 +70,22 @@ jobs:
             --command "SELECT
               (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weight_total,
               (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id NOT LIKE 'manual:%') AS weight_external,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:weight_day') AS weight_day_total,
+              (SELECT COUNT(DISTINCT measured_at) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:weight_day') AS weight_day_distinct,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:weight_day'
+                AND (source_kind<>'reported' OR length(measured_at)<>10 OR measured_at NOT GLOB '????-??-??')) AS weight_day_invalid_precision,
+              (SELECT COUNT(*) FROM body_measurements w WHERE w.owner_id='owner'
+                AND w.source_id='csv:weight_day' AND EXISTS (
+                  SELECT 1 FROM body_measurements x WHERE x.owner_id=w.owner_id
+                    AND x.id<>w.id AND date(x.measured_at,'+9 hours')=w.measured_at
+                    AND x.weight_kg IS NOT NULL
+                )) AS weight_day_overlap,
+              (SELECT COUNT(*) FROM import_jobs WHERE owner_id='owner'
+                AND source_type='weight_day' AND status IN ('confirmed','partial')) AS weight_day_jobs,
+              (SELECT COUNT(*) FROM import_row_audit a JOIN import_jobs j ON a.import_job_id=j.id
+                WHERE j.owner_id='owner' AND j.source_type='weight_day' AND a.result='inserted') AS weight_day_audit_inserted,
+              (SELECT COUNT(*) FROM import_row_audit a JOIN import_jobs j ON a.import_job_id=j.id
+                WHERE j.owner_id='owner' AND j.source_type='weight_day' AND a.result='skipped') AS weight_day_audit_skipped,
               (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps_total,
               (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner' AND source_id NOT LIKE 'manual:%') AS steps_external,
               (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id='owner') AS lifestyle_total,
@@ -86,13 +102,19 @@ jobs:
           const rows=(Array.isArray(data)?data:[data]).flatMap(x=>x.success===true?(x.results??[]):[]);
           if(rows.length!==1)throw Error("D1 aggregate query did not complete");
           const a=rows[0];
-          const keys=["weight_total","weight_external","steps_total","steps_external",
+          const keys=["weight_total","weight_external","weight_day_total","weight_day_distinct",
+                      "weight_day_invalid_precision","weight_day_overlap","weight_day_jobs",
+                      "weight_day_audit_inserted","weight_day_audit_skipped",
+                      "steps_total","steps_external",
                       "lifestyle_total","lifestyle_external","drinks_total","outings_total",
                       "experiments_total","registered_passkeys","owner_count"];
           if(keys.some(k=>!Number.isSafeInteger(a[k])||a[k]<0))
             throw Error("Invalid D1 aggregate count");
           if(a.registered_passkeys<1||a.owner_count!==1)
             throw Error("Expected registered passkey and sole Owner missing");
+          if(a.weight_day_total!==a.weight_day_distinct ||
+             a.weight_day_invalid_precision!==0 || a.weight_day_overlap!==0)
+            throw Error("Weight-day dedupe/precision invariant violated; counts only");
           console.log("M08_D1_AGGREGATES_JSON="+JSON.stringify(Object.fromEntries(keys.map(k=>[k,a[k]]))));
           console.log("PASS: no D1 mutation, migration, personal measurement output, secrets or deploy");
           JS
