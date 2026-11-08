@@ -1,16 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
-import type { Summary } from "../shared/legacy";
+
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
 import { normalizeOfficialCsv, decodeOfficialCsv } from "../shared/source-adapter";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
 import { MvpFeatures } from "./MvpFeatures";
 
+type Page = "home" | "record" | "insights" | "data";
+type Overview = {
+  latestWeightKg:number|null; measuredAt:string|null; weightSource:string|null;
+  latestSteps:number|null; stepsDay:string|null; stepsSource:string|null;
+};
+const PAGES:readonly {id:Page;name:string}[]=[
+  {id:"home",name:"ホーム"},{id:"record",name:"記録"},
+  {id:"insights",name:"ふりかえり"},{id:"data",name:"データ管理"}
+];
+function pageFromHash():Page {
+  const v=window.location.hash.slice(1);
+  return PAGES.some(x=>x.id===v)?v as Page:"home";
+}
 type LoadState =
   | { kind: "loading" }
   | { kind: "blocked"; message: string }
-  | { kind: "ok"; summary: Summary };
+  | { kind: "ok"; summary: Overview };
 type Conflict = { day: string; fields: string[] };
 type Review = { token: string; conflicts: Conflict[] };
 type ImportResult = {
@@ -26,6 +39,17 @@ type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;co
 const showValue=(n:number|null)=>n===null?"欠測（NULL）":String(n);
 export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [page,setPage]=useState<Page>(pageFromHash);
+  useEffect(()=>{
+    const changed=()=>setPage(pageFromHash());
+    window.addEventListener("hashchange",changed);
+    return ()=>window.removeEventListener("hashchange",changed);
+  },[]);
+  function navigate(to:Page){
+    setPage(to);if(window.location.hash!=="#"+to)window.location.hash=to;
+    window.scrollTo({top:0,behavior:"instant"});
+  }
+  const todayLabel=new Intl.DateTimeFormat("ja-JP",{timeZone:"Asia/Tokyo",month:"long",day:"numeric",weekday:"long"}).format(new Date());
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
   const [csvText, setCsvText] = useState("");
   const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
@@ -187,20 +211,20 @@ export function App() {
     const controller = new AbortController();
     async function load() {
       try {
-        const res = await fetch("/api/summary", {
+        const res = await fetch("/api/dashboard", {
           credentials: "same-origin", cache: "no-store", signal: controller.signal,
         });
         if (!res.ok) {
           if (!controller.signal.aborted) setState({
-            kind: "blocked", message: "認証またはデータ取得ができません。公開環境は未設定です。",
+            kind: "blocked", message: "記録を表示できません。ログイン状態を確認してください。",
           });
           return;
         }
-        const summary: Summary = await res.json();
+        const summary: Overview = await res.json();
         if (!controller.signal.aborted) setState({ kind: "ok", summary });
       } catch {
         if (!controller.signal.aborted) setState({
-          kind: "blocked", message: "APIに接続できません。開発中の画面です。",
+          kind: "blocked", message: "データに接続できません。再読み込みしてください。",
         });
       }
     }
@@ -209,30 +233,64 @@ export function App() {
   }, [refreshEpoch]);
 
   return (
-    <main className="container">
-      <div className="eyebrow">PERSONAL LIFE LOG</div>
-      <h1>今日と次の一手</h1>
-      <p className="intro">体重と日々の行動を、推測ではなく記録に基づいて振り返る。</p>
-      <section className="panel" aria-labelledby="weight-title">
-        <h2 id="weight-title">直近の体重</h2>
-        {state.kind === "loading" && <p role="status">認証済みのデータを確認中…</p>}
-        {state.kind === "blocked" && <p role="alert">{state.message}</p>}
-        {state.kind === "ok" && <p className="metric">
-          {state.summary.latestWeightKg === null
-            ? "記録なし" : state.summary.latestWeightKg.toFixed(1) + " kg"}
-        </p>}
-        {state.kind === "ok" && <p className="hint">
-          {state.summary.measuredAt ?? "測定日時は不明"} · 記録のない日は0kgとして扱いません
-        </p>}
-      </section>
-      <PasskeySetup />
-      <ManualEntry onSaved={() => setRefreshEpoch(n => n + 1)} />
-      <WeightTrendPanel key={refreshEpoch} />
-      <MvpFeatures onSaved={() => setRefreshEpoch(n => n + 1)} />
-      <section className="panel" aria-labelledby="csv-title">
-        <h2 id="csv-title">CSV取込（本人専用）</h2>
-        <p>歩数はGoogle Fit、体重はECLEARを正とします。各元ファイルを端末で選択すると、アプリ内で形式検証して分割登録します。原本はGitHubへ送信しません。</p>
-        <p>CSVの正本は手入力より優先されます。同じ値はスキップし、異なる値はCSVで更新します（手入力記録は残します）。</p>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">L</span>
+          <span className="brand-name">ライフログ</span>
+        </div>
+        <span className="today-label">{todayLabel}</span>
+      </header>
+      <nav className="app-nav app-nav-desktop" aria-label="メインメニュー">
+        {PAGES.map(item=><button key={item.id} type="button" aria-current={page===item.id?"page":undefined}
+          className={page===item.id?"active":""} onClick={()=>navigate(item.id)}>
+          <span className={"nav-icon nav-icon-"+item.id} aria-hidden="true"></span>
+          <span>{item.name}</span>
+        </button>)}
+      </nav>
+      <main className="container" id="content">
+        <div className="page-heading">
+          <span className="eyebrow">{page==="home"?"OVERVIEW":page==="record"?"DAILY LOG":page==="insights"?"INSIGHTS":"YOUR DATA"}</span>
+          <h1>{page==="home"?"今日の状況":page==="record"?"記録する":page==="insights"?"変化をふりかえる":"データ管理"}</h1>
+          <p className="intro">{page==="home"?"いまの記録をひと目で確認。":page==="record"?"必要な項目だけ記録できます。":page==="insights"?"変化を比べて、次の行動に役立てます。":"CSVの取込やデータの書き出しはこちら。"}</p>
+        </div>
+        {page==="home"&&<>
+          <div className="overview-grid">
+            <section className="metric-card" aria-labelledby="overview-weight">
+              <p className="card-kicker" id="overview-weight">最新の体重</p>
+              <p className="hero-number">{state.kind==="ok"&&state.summary.latestWeightKg!==null
+                 ? <>{state.summary.latestWeightKg.toFixed(1)}<span>kg</span></>
+                 : state.kind==="loading"?"…":"—"}</p>
+              <p className="metric-meta">{state.kind==="ok"&&state.summary.measuredAt
+                ? state.summary.measuredAt.slice(0,10).replaceAll("-","/")+
+                  (state.summary.weightSource?.startsWith("manual:")?" · 手入力":" · ECLEAR")
+                : "測定記録なし"}</p>
+            </section>
+            <section className="metric-card" aria-labelledby="overview-steps">
+              <p className="card-kicker" id="overview-steps">最新の歩数</p>
+              <p className="hero-number">{state.kind==="ok"&&state.summary.latestSteps!==null
+                ? <>{state.summary.latestSteps.toLocaleString("ja-JP")}<span>歩</span></>
+                : state.kind==="loading"?"…":"—"}</p>
+              <p className="metric-meta">{state.kind==="ok"&&state.summary.stepsDay
+                ? state.summary.stepsDay.replaceAll("-","/")+
+                  (state.summary.stepsSource?.startsWith("manual:")?" · 手入力":" · Google Fit")
+                : "歩数記録なし"}</p>
+            </section>
+          </div>
+          {state.kind==="blocked"&&<p role="alert" className="notice-error">{state.message}</p>}
+          <MvpFeatures mode="quick" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
+          <WeightTrendPanel key={refreshEpoch}/>
+          <button className="cta-link" type="button" onClick={()=>navigate("record")}>体重・歩数・食事を記録する <span aria-hidden="true">→</span></button>
+        </>}
+        {page==="record"&&<>
+          <ManualEntry onSaved={()=>setRefreshEpoch(n=>n+1)}/>
+          <MvpFeatures mode="record" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
+        </>}
+        {page==="insights"&&<MvpFeatures mode="analysis" onSaved={()=>setRefreshEpoch(n=>n+1)}/>}
+        {page==="data"&&<>
+                <section className="panel" aria-labelledby="csv-title">
+        <h2 id="csv-title">CSVを取り込む</h2>
+        <p className="hint">Google Fitの歩数・ECLEARの体重を優先します。同じ値はスキップ、違う値は更新します。</p>
         <label>種類{" "}
           <select value={csvSource} disabled={busy} onChange={e => {
             ++selectionEpoch.current;
@@ -278,8 +336,15 @@ export function App() {
         </div>}
         {importStatus && <p role="alert">{importStatus}</p>}
       </section>
-      <section className="panel" aria-labelledby="history-title">
-        <h2 id="history-title">CSV取込監査履歴（本人専用）</h2>
+
+          <details className="advanced-group">
+            <summary>CSVを書き出す</summary>
+            <MvpFeatures mode="data" onSaved={()=>setRefreshEpoch(n=>n+1)}/>
+          </details>
+          <details className="advanced-group">
+            <summary>取込履歴・監査の詳細</summary>
+                  <section className="panel" aria-labelledby="history-title">
+        <h2 id="history-title">取込履歴の詳細</h2>
         <p>監査は読み取り専用。過去の取込結果が存在しない場合、推測して補完しません。</p>
         <button type="button" disabled={historyBusy} onClick={()=>{setSelectedJob(null);setAuditRows([]);void loadHistory();}}>履歴を表示・更新</button>
         {historyError&&<p role="alert">{historyError}</p>}
@@ -300,7 +365,22 @@ export function App() {
           {rowCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,rowCursor)}>さらに監査行を表示</button>}
         </div>}
       </section>
-      <footer>本人限定・パスキー認証が必要 · 未認証アクセスは拒否</footer>
-    </main>
+
+          </details>
+          <details className="advanced-group">
+            <summary>ログイン・パスキー設定</summary>
+            <PasskeySetup/>
+          </details>
+        </>}
+        <footer>ライフログは本人専用です。記録のない日は0として扱いません。</footer>
+      </main>
+      <nav className="app-nav app-nav-mobile" aria-label="画面の切り替え">
+        {PAGES.map(item=><button key={item.id} type="button" aria-current={page===item.id?"page":undefined}
+          className={page===item.id?"active":""} onClick={()=>navigate(item.id)}>
+          <span className={"nav-icon nav-icon-"+item.id} aria-hidden="true"></span>
+          <span>{item.name}</span>
+        </button>)}
+      </nav>
+    </div>
   );
 }
