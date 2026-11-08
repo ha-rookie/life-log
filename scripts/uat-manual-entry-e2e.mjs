@@ -14,11 +14,17 @@ const STEPS_SOURCE = "manual:steps";
 const assert = (condition, reason) => { if (!condition) throw Error(reason); };
 const jstToday = () => new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
 const wranglerSql = (sql) => {
-  const raw = execFileSync("npx",[
-    "--no-install","wrangler","d1","execute","DB","--env","uat","--remote",
-    "--json","--command",sql
-  ],{encoding:"utf8",timeout:90000,stdio:["ignore","pipe","pipe"]});
-  const parsed = JSON.parse(raw);
+  let parsed;
+  try {
+    const raw = execFileSync("npx",[
+      "--no-install","wrangler","d1","execute","DB","--env","uat","--remote",
+      "--json","--command",sql
+    ],{encoding:"utf8",timeout:90000,stdio:["ignore","pipe","pipe"]});
+    parsed=JSON.parse(raw);
+  } catch(e) {
+    // Do not log child_process Error.message/command: SQL carries an ephemeral token hash.
+    throw Error("UAT D1 operation failed (exit status "+(Number.isInteger(e.status)?e.status:"unknown")+")");
+  }
   const results = Array.isArray(parsed) ? parsed : [parsed];
   assert(results.length>0 && results.every(r=>r.success===true),"D1 query rejected");
   return results.flatMap(r=>r.results ?? []);
