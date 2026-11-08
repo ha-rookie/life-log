@@ -7,7 +7,7 @@ type Count = { n: number };
 type Outcome = { result: string; error_code: string|null; n: number };
 type Row = { source_row_number: number; result: string; error_code: string | null;
   drinking_presence: number | null; drink_cups: number | null; steps: number | null;
-  weight_kg: number | null; body_fat_pct: number | null };
+  weight_kg: number | null; body_fat_pct: number | null; fit_steps: number|null };
 type Cursor = { time: string; id: string } | { row: number };
 const encode = (value: Cursor) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 function decode(input: string, kind: "jobs" | "rows"): Cursor | null {
@@ -116,15 +116,18 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     }
     const rows=await db.prepare(
       "SELECT a.source_row_number,a.result,a.error_code,"
-      + "l.drinking_presence,l.drink_cups,l.steps,b.weight_kg,b.body_fat_pct "
+      + "l.drinking_presence,l.drink_cups,l.steps,b.weight_kg,b.body_fat_pct,"
+      + "f.steps AS fit_steps "
       + "FROM import_row_audit a "
       + "LEFT JOIN lifestyle_days l ON l.owner_id=? AND l.import_job_id=a.import_job_id "
       + "AND l.source_row_key=a.source_row_key AND a.result='inserted' AND ?='lifestyle' "
       + "LEFT JOIN body_measurements b ON b.owner_id=? AND b.import_job_id=a.import_job_id "
       + "AND b.source_row_key=a.source_row_key AND a.result='inserted' AND ?='eclear' "
+      + "LEFT JOIN activity_daily f ON f.owner_id=? AND f.import_job_id=a.import_job_id "
+      + "AND f.source_row_key=a.source_row_key AND a.result='inserted' AND ?='fit' "
       + "WHERE a.import_job_id=?"+(cursor?" AND a.source_row_number>?":"")
       + " ORDER BY a.source_row_number ASC LIMIT ?"
-    ).bind(owner,job.source_type,owner,job.source_type,job.id,...(cursor?[cursor.row]:[]),args.limit+1).all<Row>();
+    ).bind(owner,job.source_type,owner,job.source_type,owner,job.source_type,job.id,...(cursor?[cursor.row]:[]),args.limit+1).all<Row>();
     const selected=rows.results.slice(0,args.limit);
     const last=selected.at(-1);
     return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
@@ -136,6 +139,7 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
         // past readings by joining today's updated destination rows.
         values:r.error_code==="UPDATED"||r.result!=="inserted"?null:job.source_type==="lifestyle"
           ?{drinkingPresence:r.drinking_presence,drinkCups:r.drink_cups,steps:r.steps}
+          :job.source_type==="fit"?{steps:r.fit_steps}
           :{weightKg:r.weight_kg,bodyFatPct:r.body_fat_pct}})),
       nextCursor:rows.results.length>args.limit&&last?encode({row:last.source_row_number}):null});
   } catch {
