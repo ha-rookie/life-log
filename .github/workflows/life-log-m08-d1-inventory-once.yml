@@ -1,0 +1,98 @@
+name: Life-log one-shot M08 existing UAT D1 aggregate inventory
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: life-log-m08-inventory
+  cancel-in-progress: false
+jobs:
+  inventory:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'audit(m08): remote D1 source inventory ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate pinned existing UAT D1 identity and exact one-file change
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git show -s --format=%s HEAD | grep -Eq '^audit\(m08\): remote D1 source inventory \(#[0-9]+\)$'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' ".github/workflows/life-log-m08-d1-inventory-once.yml" > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8")
+            .split(/\r?\n/).filter(line=>!line.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.d1_databases?.length!==1||
+             d?.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+             d?.database_name!=="life-log-dev"||d?.binding!=="DB")
+            throw Error("UAT D1 identity mismatch");
+          JS
+          curl -fsS --max-time 20 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
+      - name: Install pinned Wrangler
+        run: npm ci --no-audit --no-fund
+      # Aggregate-only; Google Fit steps / ECLEAR weight are canonical (user decision).
+      - name: Read ONLY aggregate Owner record counts, without personal values
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weight_total,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id NOT LIKE 'manual:%') AS weight_external,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps_total,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner' AND source_id NOT LIKE 'manual:%') AS steps_external,
+              (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id='owner') AS lifestyle_total,
+              (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id='owner' AND source_id NOT LIKE 'manual:%') AS lifestyle_external,
+              (SELECT COUNT(*) FROM drink_entries WHERE owner_id='owner') AS drinks_total,
+              (SELECT COUNT(*) FROM outings WHERE owner_id='owner') AS outings_total,
+              (SELECT COUNT(*) FROM behavior_experiments WHERE owner_id='owner') AS experiments_total,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS registered_passkeys,
+              (SELECT COUNT(*) FROM owners WHERE id='owner') AS owner_count" \
+            > "$RUNNER_TEMP/m08-aggregates.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const data=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/m08-aggregates.json","utf8"));
+          const rows=(Array.isArray(data)?data:[data]).flatMap(x=>x.success===true?(x.results??[]):[]);
+          if(rows.length!==1)throw Error("D1 aggregate query did not complete");
+          const a=rows[0];
+          const keys=["weight_total","weight_external","steps_total","steps_external",
+                      "lifestyle_total","lifestyle_external","drinks_total","outings_total",
+                      "experiments_total","registered_passkeys","owner_count"];
+          if(keys.some(k=>!Number.isSafeInteger(a[k])||a[k]<0))
+            throw Error("Invalid D1 aggregate count");
+          if(a.registered_passkeys<1||a.owner_count!==1)
+            throw Error("Expected registered passkey and sole Owner missing");
+          console.log("M08_D1_AGGREGATES_JSON="+JSON.stringify(Object.fromEntries(keys.map(k=>[k,a[k]]))));
+          console.log("PASS: no D1 mutation, migration, personal measurement output, secrets or deploy");
+          JS
