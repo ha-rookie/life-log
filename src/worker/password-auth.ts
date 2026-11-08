@@ -8,6 +8,7 @@ const HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options"
 const json = (v: unknown, status = 200) => Response.json(v, { status, headers: HEADERS });
 const encoder = new TextEncoder();
 const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
+const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
 const ITERATIONS = 210000;
 // High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
@@ -22,7 +23,7 @@ async function passwordHash(password: string, salt: string, iterations = ITERATI
   // preserve existing 210,000-round verifiers without lowering their cost.
   if(!Number.isSafeInteger(iterations)||iterations<100000||iterations>1000000||
      !/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_VERIFIER");
-  return pbkdf2Sync(password,Buffer.from(salt,"hex"),iterations,32,"sha256").toString("hex");
+  return toHex(pbkdf2Sync(password,fromHex(salt),iterations,32,"sha256"));
 }
 function equal(a: string,b: string) {
   if(a.length!==b.length)return false;
