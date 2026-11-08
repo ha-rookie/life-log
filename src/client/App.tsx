@@ -53,7 +53,6 @@ export function App() {
   const todayLabel=new Intl.DateTimeFormat("ja-JP",{timeZone:"Asia/Tokyo",month:"long",day:"numeric",weekday:"long"}).format(new Date());
   const [csvSource, setCsvSource] = useState<CsvSource>("lifestyle");
   const [selectedCsvName,setSelectedCsvName] = useState<string|null>(null);
-  const [csvText, setCsvText] = useState("");
   const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
   const [canonicalTotal,setCanonicalTotal] = useState(0);
   const [missingFitSteps,setMissingFitSteps] = useState(0);
@@ -117,7 +116,7 @@ export function App() {
     setSelectedCsvName(displayName);
     completedParts.current.clear();
     setReviewPartIndex(null);setReview(null);
-    setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);
+    setCanonicalParts([]);setCanonicalTotal(0);
     setMissingFitSteps(0);setCsvEncoding(null);setCsvPreview(null);
     setImportStatus("ファイルを読み込み、形式を確認しています…");
     if(file.size>2_000_000){
@@ -136,7 +135,6 @@ export function App() {
         throw Error("INVALID_ROWS");
       if(epoch!==selectionEpoch.current)return;
       setCsvSource(actualSource);
-      setCsvText(normalized.parts[0]);
       setCanonicalParts(normalized.parts);
       setCanonicalTotal(normalized.total);
       setMissingFitSteps(normalized.missingSteps);
