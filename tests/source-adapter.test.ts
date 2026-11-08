@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import { normalizeOfficialCsv, decodeOfficialCsv } from "../src/shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource } from "../src/shared/source-adapter";
 import { previewCsv } from "../src/shared/csv-import";
 
 const eclearHeader="年月日,時刻,体重,体脂肪率,骨格筋率,BMI,内蔵脂肪レベル,骨量,基礎代謝量,メモ";
@@ -82,5 +82,19 @@ describe("Original Japanese official CSVs are normalized entirely on-device",()=
   expect(out.total).toBe(1);
   expect(()=>normalizeOfficialCsv("eclear",ec.replace('"note, in quotes"','"unclosed')))
     .toThrow("UNCLOSED_CSV_QUOTE");
+ });
+});
+
+describe("CSV picker automatic source recognition",()=>{
+ it("recognizes supported original and normalized headers",()=>{
+  expect(detectOfficialCsvSource("\uFEFF"+eclearHeader+"\n")).toBe("eclear");
+  expect(detectOfficialCsvSource(fitHeader.join(",")+"\n"+fitRow("2026-01-01","100"))).toBe("fit");
+  expect(detectOfficialCsvSource("measured_at,weight_kg,body_fat_pct\n")).toBe("eclear");
+  expect(detectOfficialCsvSource("local_day,steps\n")).toBe("fit");
+  expect(detectOfficialCsvSource("local_day,drinking_presence,drink_cups,steps\n")).toBe("lifestyle");
+ });
+ it("does not guess unsupported CSV headers",()=>{
+  expect(detectOfficialCsvSource("local_day,weight\n2026-01-01,80\n")).toBeNull();
+  expect(detectOfficialCsvSource("other,steps\n2026-01-01,120\n")).toBeNull();
  });
 });
