@@ -31,7 +31,7 @@ async function jsonGet<T>(path:string):Promise<T>{
   if(!res.ok)throw Error("取得できません（HTTP "+res.status+"）");
   return await res.json() as T;
 }
-async function mutate(path:string,method:"POST"|"PATCH"|"DELETE",value:Record<string,unknown>){
+async function mutate(path:string,method:"POST"|"PUT"|"PATCH"|"DELETE",value:Record<string,unknown>){
   const res=await fetch(path,{method,credentials:"same-origin",cache:"no-store",
     headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},body:JSON.stringify(value)});
   const data=await res.json().catch(()=>({})) as {error?:string;status?:string};
