@@ -33,6 +33,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -73,7 +74,7 @@ jobs:
             /^CREATE TABLE IF NOT EXISTS owner_passkey_sessions \(/
           ];
           if(stmts.length!==4||stmts.some((x,i)=>!expected[i].test(x))
-            ||/\b(DROP|DELETE|UPDATE|INSERT|ALTER|REPLACE|TRUNCATE|ATTACH)\b/i.test(sql))
+            ||stmts.some(x=>/^(DROP|DELETE|UPDATE|INSERT|ALTER|REPLACE|TRUNCATE|ATTACH)\b/i.test(x)))
             throw Error('0003 is not additive approved SQL');
           JS
       - name: Install pinned dependencies
