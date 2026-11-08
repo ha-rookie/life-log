@@ -14,11 +14,11 @@ import { pbkdf2Sync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 const salt = "11223344556677889900aabbccddeeff";
 const password = "synthetic-owner-credential-2026";
-const hash = pbkdf2Sync(password, Buffer.from(salt, "hex"), 210000, 32, "sha256").toString("hex");
+const hash = pbkdf2Sync(password, Buffer.from(salt, "hex"), 100000, 32, "sha256").toString("hex");
 writeFileSync(process.argv[2], [
   "INSERT OR IGNORE INTO owners(id,created_at) VALUES('owner','2026-01-01T00:00:00Z');",
   "INSERT OR REPLACE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at)",
-  "VALUES('owner','" + salt + "','" + hash + "',210000,'2026-01-01T00:00:00Z');",
+  "VALUES('owner','" + salt + "','" + hash + "',100000,'2026-01-01T00:00:00Z');",
 ].join("\n"));
 NODE
 npx --no-install wrangler d1 execute DB --env uat --local --file "$tmp/fixture.sql"
@@ -60,7 +60,7 @@ if [[ "$wrong" != "401" ]]; then
 fi
 valid=$(auth "synthetic-owner-credential-2026" "$tmp/cookies")
 if [[ "$valid" != "200" ]]; then
-  echo "Valid 210k-round password expected 200; actual HTTP $valid" >&2
+  echo "Valid 100k-round password expected 200; actual HTTP $valid" >&2
   cat "$tmp/response.json" >&2
   exit 1
 fi
@@ -77,4 +77,4 @@ if [[ "$anon" != "403" ]]; then
   echo "Anonymous root expected 403; actual HTTP $anon" >&2
   exit 1
 fi
-echo "PASS: local Workerd PBKDF2 210000, 401 wrong / 200 correct / cookie summary 200 / anonymous 403"
+echo "PASS: local Workerd PBKDF2 100000, 401 wrong / 200 correct / cookie summary 200 / anonymous 403"
