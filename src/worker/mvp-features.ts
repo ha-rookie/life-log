@@ -455,10 +455,20 @@ async function exportCsv(req:Request,db:MvpDb,owner:string):Promise<Response>{
   for(const x of lifestyle.results)for(const [key,value] of Object.entries(x)){
     if(!["local_day","source_id"].includes(key))parts.push([key,x.local_day,value,"",x.source_id,"lifestyle"]);
   }
-  const drinks=await db.prepare("SELECT observed_at,drink_kind,cups,source_id FROM drink_entries "+
-    "WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? LIMIT 10001").bind(owner,a,b)
-    .all<{observed_at:string;drink_kind:string;cups:number;source_id:string}>();
-  for(const x of drinks.results)parts.push(["drink",x.observed_at,x.cups,"cups",x.source_id,x.drink_kind]);
+  const drinks=await db.prepare(
+    "SELECT observed_at,drink_kind,drink_variant,size_label,alcohol,cups,volume_ml,abv_pct,source_id FROM drink_entries "+
+    "WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? LIMIT 10001"
+  ).bind(owner,a,b).all<D&{source_id:string}>();
+  for(const x of drinks.results){
+    const label=x.drink_variant==="beer"?"beer":x.drink_kind;
+    parts.push(["drink",x.observed_at,x.cups,"ordered_cups",x.source_id,label]);
+    parts.push(["drink_size",x.observed_at,x.size_label,"size",x.source_id,label]);
+    parts.push(["drink_volume_per_cup",x.observed_at,x.volume_ml,"ml",x.source_id,label]);
+    parts.push(["drink_abv",x.observed_at,x.abv_pct,"percent",x.source_id,label]);
+    parts.push(["drink_pure_alcohol",x.observed_at,
+      pureAlcoholGrams({cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol}),
+      "g",x.source_id,label]);
+  }
   const outings=await db.prepare("SELECT local_day,category,source_id FROM outings "+
     "WHERE owner_id=? AND local_day>=? AND local_day<=? LIMIT 10001").bind(owner,p.from,p.to)
     .all<{local_day:string;category:string;source_id:string}>();
