@@ -10,17 +10,17 @@ const encoder = new TextEncoder();
 const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
 const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
-const ITERATIONS = 210000;
+const ITERATIONS = 100000;
 // High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
 // Enabled exclusively for password-only UAT while no credential is provisioned.
 // First successful login persists it to D1. A registered passkey prevents re-bootstrap
 // after the temporary password is retired; no GitHub setup Secret is required.
 const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
-const UAT_TEMP_HASH = "9992a444eb48fd6383004bbbb404d0b53227bdbe3242edc3788d19ed08e7eeac";
+const UAT_TEMP_HASH = "fdc3688d4855f30457c3a550d1c8580e2c4135212af668ed71727814a51762f3";
 async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
   // Workers WebCrypto caps PBKDF2 at 100,000 iterations. The native
   // node:crypto API is available for our 2026-11-04 compatibility date;
-  // preserve existing 210,000-round verifiers without lowering their cost.
+  // accept previously stored 210,000-round verifiers while first-use UAT is 100,000.
   if(!Number.isSafeInteger(iterations)||iterations<100000||iterations>1000000||
      !/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_VERIFIER");
   return toHex(pbkdf2Sync(password,fromHex(salt),iterations,32,"sha256"));
