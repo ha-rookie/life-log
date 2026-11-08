@@ -55,10 +55,10 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
   async function request(url: string, token?: string, method = "GET") {
     return new Request(url, { method, headers: token ? { "Cf-Access-Jwt-Assertion": token } : {} });
   }
-  async function insert(id: string, owner: string, at: string, weight: number, kind = "measured", anomaly = 0) {
+  async function insert(id: string, owner: string, at: string, weight: number, kind = "measured", anomaly = 0, source = "synthetic") {
     await db.prepare(
       "INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind,anomaly_flag) VALUES (?,?,?,?,?,?,?,?)"
-    ).bind(id,owner,at,weight,"synthetic",id,kind,anomaly).run();
+    ).bind(id,owner,at,weight,source,id,kind,anomaly).run();
   }
   it("denies unsigned, spoofed, forged, and other owner without any D1 read", async () => {
     const badTokens = [undefined, "forged", await sign("other@example.invalid")];
@@ -98,6 +98,20 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
     expect(JSON.stringify(data)).not.toContain("other");
     expect(JSON.stringify(data)).not.toContain("synthetic");
   }, 100_000);
+  it("selects ECLEAR measurement on a conflicting day in authenticated local D1", async () => {
+    await insert("legacy","owner","2026-02-01T22:00:00+09:00",93,"measured",0,"csv:lifestyle");
+    await insert("eclear","owner","2026-02-01T08:00:00+09:00",76,"measured",0,"csv:eclear");
+    await insert("manual","owner","2026-02-01T23:00:00+09:00",91,"measured",0,"manual:weight");
+    await insert("no-eclear","owner","2026-02-02T08:00:00+09:00",88,"measured",0,"legacy:txt");
+    const res=await handler().fetch(
+      await request(URL+"?from=2026-02-01&to=2026-02-02",await sign(AUTH.OWNER_EMAIL)),
+      watched().env
+    );
+    expect(res.status).toBe(200);
+    const result=await res.json() as {days:{weightKg:number|null;source:string|null}[]};
+    expect(result.days.map(d=>d.weightKg)).toEqual([76,null]);
+    expect(result.days.map(d=>d.source)).toEqual(["ECLEAR",null]);
+  },100_000);
   it("computes the first-window average from exactly six preceding JST days, then drops stale observations", async () => {
     const weight = [
       ["early-1","2026-01-01T08:00:00+09:00",70],
