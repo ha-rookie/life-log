@@ -107,6 +107,36 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   const again=await call(db,"/api/mvp/compare"+query);
   expect((await again.json() as {b:any}).b.weight.deltaKg).toBe(-1);
  });
+ it("prefers Google Fit over conflicting lifestyle/manual steps and ECLEAR over conflicting weights",async()=>{
+  const a=day(10),b=day(9),legacyOnly=day(8);
+  const weight=async(id:string,date:string,kg:number,source:string,hour="08")=>
+    db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+      "VALUES(?,?,?,?,?,?,?)").bind(id,"owner",date+"T"+hour+":00:00+09:00",kg,source,id,"measured").run();
+  await weight("ec1",a,80,"csv:eclear");
+  await weight("manual1",a,90,"manual:weight","23");
+  await weight("ec2",b,79,"eclear");
+  await weight("old2",b,93,"legacy:txt","22");
+  await weight("old3",legacyOnly,95,"csv:lifestyle");
+  const step=async(id:string,date:string,n:number,source:string)=>
+    db.prepare("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key) VALUES(?,?,?,?,?,?)")
+      .bind(id,"owner",date,n,source,id).run();
+  await step("fit1",a,1000,"google_fit");
+  await step("legacy1",a,9999,"csv:lifestyle");
+  await step("manual1",a,3000,"manual:steps");
+  await step("fit2",b,0,"fit");
+  await step("legacy2",b,3333,"csv:lifestyle");
+  await step("legacy3",legacyOnly,4444,"csv:lifestyle");
+  const q=new URLSearchParams({aFrom:day(11),aTo:day(8),bFrom:day(7),bTo:day(5)});
+  const res=await call(db,"/api/mvp/compare?"+q);
+  expect(res.status).toBe(200);
+  const result=await res.json() as {a:{
+    weight:{startKg:number|null;endKg:number|null;deltaKg:number|null;observedDays:number};
+    steps:{mean:number|null;observedDays:number;zeroDays:number;sources:string[]}
+  }};
+  expect(result.a.weight).toMatchObject({startKg:80,endKg:79,deltaKg:-1,observedDays:2});
+  expect(result.a.steps).toMatchObject({mean:500,observedDays:2,zeroDays:1});
+  expect(result.a.steps.sources).toEqual(["google_fit","fit"]);
+ });
  it("persists one active hypothesis and records explicit user decision",async()=>{
   const plan={id:one,statement:"Evening walks change my steps",supportText:"some observations",
    counterText:"missing weight",unknownText:"alcohol/food",targetAction:"Walk after dinner",
