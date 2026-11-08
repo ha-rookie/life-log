@@ -12,9 +12,9 @@ interface LocalStatement extends Statement {
 }
 interface LocalDb extends ImportDb { prepare(sql: string): LocalStatement; }
 type Audit = { source_row_number:number;source_row_key:string;result:string;error_code:string|null };
-type Reply = { status?:string;error?:string;inserted?:number;skipped?:number;conflicted?:number;
+type Reply = { status?:string;error?:string;inserted?:number;updated?:number;skipped?:number;conflicted?:number;
   reviewToken?:string;conflicts?:{day:string;fields:string[]}[];
-  original?:{inserted:number;skipped:number;conflicted:number} };
+  original?:{inserted:number;updated?:number;skipped:number;conflicted:number} };
 const hdr = "local_day,drinking_presence,drink_cups,steps\n";
 const life = hdr+"2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
 const ec = "measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
@@ -75,6 +75,69 @@ describe("real ephemeral local D1 audited import",()=>{
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("owner","2026-01-01T00:00:00Z").run();
   });
+
+  it("Fit: manual entry remains, overlapping CSV updates only canonical Fit rows and reports updated/skip/insert",async()=>{
+    await db.prepare("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key) VALUES (?,?,?,?,?,?)")
+      .bind("manual-steps","owner","2026-01-02",9100,"manual:steps","owner-step-1").run();
+    const firstCsv="local_day,steps\n2026-01-02,4000\n2026-01-03,\n";
+    const secondCsv="local_day,steps\n2026-01-02,4200\n2026-01-03,0\n2026-01-04,3800\n";
+    const thirdCsv="local_day,steps\n2026-01-02,4200\n2026-01-05,2700\n";
+    expect(await send(db,firstCsv,{source:"fit"})).toMatchObject({
+      code:200,data:{inserted:2,updated:0,skipped:0}});
+    expect(await send(db,secondCsv,{source:"fit"})).toMatchObject({
+      code:200,data:{inserted:1,updated:2,skipped:0}});
+    expect(await send(db,thirdCsv,{source:"fit"})).toMatchObject({
+      code:200,data:{inserted:1,updated:0,skipped:1}});
+    expect(await send(db,secondCsv,{source:"fit"})).toMatchObject({
+      code:200,data:{status:"already_imported",inserted:0,updated:0,skipped:3}});
+    // An older identical file is never allowed to revert a newer correction.
+    expect(await send(db,firstCsv,{source:"fit"})).toMatchObject({
+      code:200,data:{status:"already_imported",inserted:0,updated:0,skipped:2}});
+    const rows=await db.prepare("SELECT local_day,steps,source_id,import_job_id FROM activity_daily WHERE owner_id=? ORDER BY local_day,source_id")
+      .bind("owner").all<{local_day:string;steps:number|null;source_id:string;import_job_id:string|null}>();
+    expect(rows.results.map(r=>[r.local_day,r.steps,r.source_id])).toEqual([
+      ["2026-01-02",4200,"fit"],["2026-01-02",9100,"manual:steps"],
+      ["2026-01-03",0,"fit"],["2026-01-04",3800,"fit"],["2026-01-05",2700,"fit"]
+    ]);
+    expect(rows.results[0].import_job_id).toBe("owner:fit:"+await hash(firstCsv));
+    const audit=await db.prepare(
+      "SELECT source_row_number,result,error_code FROM import_row_audit WHERE import_job_id=? ORDER BY source_row_number"
+    ).bind("owner:fit:"+await hash(secondCsv)).all<{source_row_number:number;result:string;error_code:string|null}>();
+    expect(audit.results.map(r=>[r.result,r.error_code])).toEqual([
+      ["inserted","UPDATED"],["inserted","UPDATED"],["inserted",null]
+    ]);
+    const activityCount=await db.prepare("SELECT COUNT(*) AS n FROM activity_daily WHERE owner_id='owner'").first<{n:number}>();
+    expect(activityCount?.n).toBe(5);
+  },100_000);
+  it("Fit: value corrected from explicit zero back to missing without becoming zero",async()=>{
+    const a="local_day,steps\n2026-01-03,0\n",b="local_day,steps\n2026-01-03,\n";
+    expect((await send(db,a,{source:"fit"})).data.inserted).toBe(1);
+    expect((await send(db,b,{source:"fit"})).data.updated).toBe(1);
+    const current=await db.prepare("SELECT steps FROM activity_daily WHERE owner_id='owner' AND source_id='fit'")
+      .first<{steps:number|null}>();
+    expect(current?.steps).toBeNull();
+  },100_000);
+
+  it("ECLEAR: same timestamp different weight/body fat replaces canonical value, leaving manual intact",async()=>{
+    await db.prepare(
+      "INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,body_fat_pct,source_id,source_row_key,source_kind) VALUES(?,?,?,?,?,?,?,'measured')"
+    ).bind("manual-weight","owner","2026-01-02T07:00:00+09:00",90.1,null,"manual:weight","manual-key").run();
+    const original="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
+    const corrected="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,73.1,22.7\n";
+    const overlap="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,73.1,22.7\n2026-01-02T21:00:00+09:00,72.9,22.4\n";
+    expect(await send(db,original,{source:"eclear"})).toMatchObject({code:200,data:{inserted:1,updated:0,skipped:0}});
+    expect(await send(db,corrected,{source:"eclear"})).toMatchObject({code:200,data:{inserted:0,updated:1,skipped:0}});
+    expect(await send(db,overlap,{source:"eclear"})).toMatchObject({code:200,data:{inserted:1,updated:0,skipped:1}});
+    expect(await send(db,corrected,{source:"eclear"})).toMatchObject({code:200,data:{status:"already_imported",updated:0,skipped:1}});
+    const rows=await db.prepare("SELECT measured_at,weight_kg,body_fat_pct,source_id,import_job_id FROM body_measurements WHERE owner_id='owner' ORDER BY source_id,measured_at")
+      .all<{measured_at:string;weight_kg:number;body_fat_pct:number|null;source_id:string;import_job_id:string|null}>();
+    expect(rows.results.map(r=>[r.weight_kg,r.body_fat_pct,r.source_id])).toEqual([
+      [73.1,22.7,"csv:eclear"],[72.9,22.4,"csv:eclear"],[90.1,null,"manual:weight"]
+    ]);
+    expect(rows.results[0].import_job_id).toBe("owner:eclear:"+await hash(original));
+    const correction=await audit(db,"eclear",corrected);
+    expect(correction.map(a=>[a.result,a.error_code])).toEqual([["inserted","UPDATED"]]);
+  },100_000);
 
   it("imports Fit canonical steps, preserves missing versus zero and source-scoped retry",async()=>{
     const payload="local_day,steps\n2026-01-02,4000\n2026-01-03,0\n2026-01-04,\n";
