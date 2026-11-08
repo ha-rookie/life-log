@@ -4,7 +4,7 @@ const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options"
 const reply = (body: unknown, status = 200) => Response.json(body, { status, headers });
 type Job = { handle: number; id: string; source_type: string; source_id: string; status: string; started_at: string; completed_at: string | null };
 type Count = { n: number };
-type Outcome = { result: string; n: number };
+type Outcome = { result: string; error_code: string|null; n: number };
 type Row = { source_row_number: number; result: string; error_code: string | null;
   drinking_presence: number | null; drink_cups: number | null; steps: number | null;
   weight_kg: number | null; body_fat_pct: number | null };
@@ -38,10 +38,11 @@ function pageArgs(request: Request, kind: "jobs" | "rows") {
   return { limit: raw === null ? 10 : Number(raw), cursor };
 }
 async function countAudit(db: ImportDb, job: string) {
-  const r = await db.prepare("SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result")
+  const r = await db.prepare("SELECT result,error_code,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result,error_code")
     .bind(job).all<Outcome>();
-  const counts = { inserted: 0, skipped: 0, conflict: 0, invalid: 0 };
+  const counts = { inserted: 0, updated: 0, skipped: 0, conflict: 0, invalid: 0 };
   for (const item of r.results) {
+    if (item.result === "inserted" && item.error_code === "UPDATED") { counts.updated += item.n; continue; }
     if (!(item.result in counts)) return { counts, total: -1 };
     counts[item.result as keyof typeof counts] += item.n;
   }
@@ -52,8 +53,9 @@ async function countAudit(db: ImportDb, job: string) {
 async function countDestinations(db: ImportDb, owner: string, job: string): Promise<number> {
   const result = await db.prepare(
     "SELECT (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND import_job_id=?)"
-    + "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?) AS n"
-  ).bind(owner, job, owner, job).first<Count>();
+    + "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?)"
+    + "+(SELECT COUNT(*) FROM activity_daily WHERE owner_id=? AND import_job_id=?) AS n"
+  ).bind(owner, job, owner, job, owner, job).first<Count>();
   if (!result || !Number.isSafeInteger(result.n) || result.n < 0) throw Error("DESTINATION_COUNT_UNAVAILABLE");
   return result.n;
 }
@@ -127,8 +129,12 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     const last=selected.at(-1);
     return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
       auditStatus:status,counts:status==="available"?stats.counts:null},
-      rows:selected.map(r=>({line:r.source_row_number,result:r.result,errorCode:r.error_code,
-        values:r.result!=="inserted"?null:job.source_type==="lifestyle"
+      rows:selected.map(r=>({line:r.source_row_number,
+        result:r.result==="inserted"&&r.error_code==="UPDATED"?"updated":r.result,
+        errorCode:r.error_code==="UPDATED"?null:r.error_code,
+        // Historic before/after values were never stored; do not manufacture
+        // past readings by joining today's updated destination rows.
+        values:r.error_code==="UPDATED"||r.result!=="inserted"?null:job.source_type==="lifestyle"
           ?{drinkingPresence:r.drinking_presence,drinkCups:r.drink_cups,steps:r.steps}
           :{weightKg:r.weight_kg,bodyFatPct:r.body_fat_pct}})),
       nextCursor:rows.results.length>args.limit&&last?encode({row:last.source_row_number}):null});
