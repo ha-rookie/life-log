@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import { normalizeOfficialCsv } from "../src/shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv } from "../src/shared/source-adapter";
 import { previewCsv } from "../src/shared/csv-import";
 
 const eclearHeader="年月日,時刻,体重,体脂肪率,骨格筋率,BMI,内蔵脂肪レベル,骨量,基礎代謝量,メモ";
@@ -10,6 +10,32 @@ const fitHeader=["日付","年","年月","曜日","平日休日","通常運動�
 "非アクティブ（分）","ウォーキング（分）","ランニング（分）","自転車（ms・原値）",
 "非アクティブ（ms・原値）","ウォーキング（ms・原値）","ランニング（ms・原値）"];
 const fitRow=(date:string,steps:string)=>[date,...Array(15).fill(""),steps,...Array(11).fill("")].join(",");
+describe("Actual ECLEAR CSV encoding decoding regression",()=>{
+ it("decodes a synthetic CP932/Shift_JIS ECLEAR 10-column fixture from raw bytes",async()=>{
+  // Synthetic data only. Header bytes replicate official format; no personal measurements.
+  const hex="944e8c8e93fa2c8e9e8d8f2c91cc8f642c91cc8e89966297a62c8d9c8a698bd897a62c424d492c93e091a08e899662838c8378838b2c8d9c97ca2c8aee916291e38ed397ca2c838183820d0a323032352f30312f33312c30373a34322c37352e332c32322e352c2c2c2c2c2c0d0a";
+  const raw=Uint8Array.from(hex.match(/../g)!.map(s=>parseInt(s,16)));
+  const decoded=decodeOfficialCsv(raw);
+  expect(decoded.encoding).toBe("Shift_JIS");
+  const chunks=normalizeOfficialCsv("eclear",decoded.text);
+  expect(chunks.total).toBe(1);
+  const p=await previewCsv("eclear",chunks.parts[0]);
+  expect(p.errors).toEqual([]);
+  expect(p.rows[0]).toMatchObject({timestamp:"2025-01-31T07:42:00+09:00",weight:75.3,fat:22.5});
+ });
+ it("keeps ordinary UTF-8 source files and optional BOM",()=>{
+  const csv=fitHeader.join(",")+"\n"+fitRow("2026-01-01","0")+"\n";
+  const bytes=new TextEncoder().encode("\uFEFF"+csv);
+  const decoded=decodeOfficialCsv(bytes);
+  expect(decoded.encoding).toBe("UTF-8");
+  expect(normalizeOfficialCsv("fit",decoded.text).total).toBe(1);
+ });
+ it("fails closed for malformed multibyte input rather than replacing header characters",()=>{
+  expect(()=>decodeOfficialCsv(Uint8Array.of(0x81))).toThrow("CSV_ENCODING_UNSUPPORTED");
+  expect(()=>decodeOfficialCsv(new Uint8Array())).toThrow("CSV_SIZE");
+ });
+});
+
 describe("Original Japanese official CSVs are normalized entirely on-device",()=>{
  it("recognizes ECLEAR date/time and preserves weight/fat without inventing a time",async()=>{
   const original="\uFEFF"+eclearHeader+"\r\n2025/01/31,07:42,75.3,22.5,,,,,,\r\n"+

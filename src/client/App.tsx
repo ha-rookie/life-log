@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
 import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
-import { normalizeOfficialCsv } from "../shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv } from "../shared/source-adapter";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
 import { MvpFeatures } from "./MvpFeatures";
@@ -31,6 +31,7 @@ export function App() {
   const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
   const [canonicalTotal,setCanonicalTotal] = useState(0);
   const [missingFitSteps,setMissingFitSteps] = useState(0);
+  const [csvEncoding,setCsvEncoding] = useState<"UTF-8"|"Shift_JIS"|null>(null);
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [importStatus, setImportStatus] = useState("");
@@ -78,18 +79,19 @@ export function App() {
 
   async function selectCsv(file: File, source: CsvSource) {
     const epoch = ++selectionEpoch.current;
-    setCsvText(""); setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);
+    setCsvText(""); setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null);
     setCsvPreview(null); setReview(null); setImportStatus("");
     if (file.size > (source === "lifestyle" ? 65536 : 2_000_000)) {
       setImportStatus(source === "lifestyle" ? "CSVは64KiB以下にしてください。" : "CSVは2MB以下にしてください。");
       return;
     }
     try {
-      const raw = await file.text();
+      const decoded = decodeOfficialCsv(new Uint8Array(await file.arrayBuffer()));
+      const raw = decoded.text;
       if(source==="lifestyle"){
         const parsed=await previewCsv(source,raw);
         if(epoch!==selectionEpoch.current)return;
-        setCsvText(raw);setCsvPreview(parsed);
+        setCsvText(raw);setCsvPreview(parsed);setCsvEncoding(decoded.encoding);
       }else{
         const normalized=normalizeOfficialCsv(source,raw);
         // Validate ALL chunks before exposing registration; never partially import a malformed file.
@@ -97,7 +99,7 @@ export function App() {
         if(checked.some(x=>x.errors.length>0||x.rows.length===0))
           throw Error("INVALID_ROWS");
         if(epoch!==selectionEpoch.current)return;
-        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);
+        setCsvText(normalized.parts[0]);setCanonicalParts(normalized.parts);setCsvEncoding(decoded.encoding);
         setCanonicalTotal(normalized.total);setMissingFitSteps(normalized.missingSteps);
         setCsvPreview(checked[0]);
       }
@@ -234,7 +236,7 @@ export function App() {
           <select value={csvSource} disabled={busy} onChange={e => {
             ++selectionEpoch.current;
             setCsvSource(e.target.value as CsvSource);
-            setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0); setCsvPreview(null); setReview(null); setImportStatus("");
+            setCsvText("");setCanonicalParts([]);setCanonicalTotal(0);setMissingFitSteps(0);setCsvEncoding(null); setCsvPreview(null); setReview(null); setImportStatus("");
           }}>
             <option value="lifestyle">生活記録</option>
             <option value="eclear">ECLEAR（体重の正本）</option>
@@ -246,6 +248,7 @@ export function App() {
           if (file) void selectCsv(file, csvSource);
         }} /></p>
         {csvPreview && <div aria-live="polite">
+          <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
           <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /
             有効 {canonicalParts.length?canonicalTotal:csvPreview.rows.length} 行 /
             異常 {csvPreview.errors.length} 行

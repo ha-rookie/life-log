@@ -3,6 +3,24 @@ import type { CsvSource } from "./csv-import";
 /** Browser-only normalization. Original files never enter GitHub or CI. */
 export type NormalizedSource = { parts:string[]; total:number; missingSteps:number; };
 const MAX_ORIGINAL_BYTES=2_000_000;
+/**
+ * Browser File.text() always assumes UTF-8. ECLEAR exports Japanese CSV in
+ * Shift_JIS/CP932, so decode the original bytes instead of lossy replacement.
+ * Strict decoding rejects corrupted bytes; values are never logged.
+ */
+export function decodeOfficialCsv(bytes: Uint8Array):{text:string;encoding:"UTF-8"|"Shift_JIS"}{
+  if(bytes.byteLength===0||bytes.byteLength>2_000_000)throw Error("CSV_SIZE");
+  try{
+    return {text:new TextDecoder("utf-8",{fatal:true}).decode(bytes),encoding:"UTF-8"};
+  }catch{
+    try{
+      return {text:new TextDecoder("shift_jis",{fatal:true}).decode(bytes),encoding:"Shift_JIS"};
+    }catch{
+      throw Error("CSV_ENCODING_UNSUPPORTED");
+    }
+  }
+}
+
 const PART_ROWS=40;
 function cells(text:string):string[][] {
   if(new TextEncoder().encode(text).length>MAX_ORIGINAL_BYTES||text.includes("\0"))
