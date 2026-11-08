@@ -68,9 +68,10 @@ jobs:
              u.vars?.MANUAL_REMOTE_ORIGIN!=='https://life-log-uat.ha-rookie.workers.dev')
               throw Error('Unexpected UAT target');
           const auth=fs.readFileSync('src/worker/password-auth.ts','utf8');
-          if(!auth.includes('const ITERATIONS = 100000;')||
-             !auth.includes('pbkdf2Sync(')||
-             !auth.includes('UAT_TEMP_HASH'))throw Error('Fix not present');
+          if(!auth.includes('const SCRYPT_N = 32768')||
+             !auth.includes('nodeScrypt(')||
+             !auth.includes('UAT_TEMP_HASH')||
+             /pbkdf2/i.test(auth))throw Error('WORKHUB scrypt fix not present');
           JS
       - name: Build approved Owner login fix
         run: |
