@@ -1,4 +1,4 @@
-name: Life-log one-shot lifestyle CSV multi-part UAT release
+name: Life-log one-shot date-only weight CSV UAT release
 on:
   workflow_run:
     workflows: ["Life-log local app and D1 CI"]
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: life-log-lifestyle-csv-uat
+  group: life-log-weight-day-csv-uat
   cancel-in-progress: false
 jobs:
   release-and-accept:
@@ -16,7 +16,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'fix(csv): Android lifestyle CSV multi-part import ')
+      startsWith(github.event.workflow_run.head_commit.message, 'feat(csv): date-only weight import and no-duplicate days ')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
@@ -40,13 +40,21 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^fix\(csv\): Android lifestyle CSV multi-part import \(#[0-9]+\)$'
+          git show -s --format=%s HEAD | grep -Eq '^feat\(csv\): date-only weight import and no-duplicate days \(#[0-9]+\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
           printf '%s\n' \
             ".github/workflows/life-log-uat-ux-v1-once.yml" \
             "src/client/App.tsx" \
+            "src/client/WeightTrend.tsx" \
+            "src/shared/csv-import.ts" \
             "src/shared/source-adapter.ts" \
-            "tests/source-adapter.test.ts" | sort > "$RUNNER_TEMP/expected.txt"
+            "src/shared/weight-trend.ts" \
+            "src/worker/import.ts" \
+            "src/worker/summary.ts" \
+            "tests/csv-import.test.ts" \
+            "tests/import-worker.test.ts" \
+            "tests/source-adapter.test.ts" \
+            "tests/weight-trend.test.ts" | sort > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
