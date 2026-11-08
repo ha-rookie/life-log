@@ -132,7 +132,7 @@ describe("owner password authentication boundary",()=>{
   // The synthetic password is NOT a real UAT credential; no secrets in tests.
   const password="synthetic-owner-credential-2026";
   const salt="11223344556677889900aabbccddeeff";
-  const storedHash=pbkdf2Sync(password,Buffer.from(salt,"hex"),210000,32,"sha256").toString("hex");
+  const storedHash=Array.from(pbkdf2Sync(password,Uint8Array.from(salt.match(/../g)!,v=>parseInt(v,16)),210000,32,"sha256"),b=>b.toString(16).padStart(2,"0")).join("");
   let issuedTokenHash:string|null=null, sessionWrites=0;
   const statements:string[]=[];
   const db={prepare:(sql:string)=>{
