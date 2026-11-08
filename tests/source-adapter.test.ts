@@ -93,8 +93,7 @@ describe("Full-length lifestyle original on Android",()=>{
     const day=new Date(start+i*86400000).toISOString().slice(0,10);
     return day+","+(i%3===0?"1,,":"0,0,");
   });
-  const original="local_day,drinking_presence,drink_cups,steps\\n".replace("\\n","\n")+
-    days.join("\n")+"\n";
+  const original="local_day,drinking_presence,drink_cups,steps\n"+days.join("\n")+"\n";
   expect(detectOfficialCsvSource(original)).toBe("lifestyle");
   const normalized=normalizeOfficialCsv("lifestyle",original);
   expect(normalized.total).toBe(163);
