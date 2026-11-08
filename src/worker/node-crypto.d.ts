@@ -1,12 +1,11 @@
-// Cloudflare Workers 2026-11+ supports the native Node.js crypto API.
-// Limited local typing because this project intentionally excludes broad Node globals.
-// Node Buffer is a Uint8Array; no ambient Buffer or other Node types are required.
+// WORKHUB-compatible Cloudflare Workers Node.js crypto interface.
+// Narrow declaration only; avoids widening application ambient Node types.
 declare module "node:crypto" {
-  export function pbkdf2Sync(
+  export function scrypt(
     password: string,
     salt: Uint8Array,
-    iterations: number,
     keylen: number,
-    digest: "sha256",
-  ): Uint8Array;
+    options: { N: number; r: number; p: number; maxmem: number },
+    callback: (error: Error | null, derivedKey: Uint8Array) => void,
+  ): void;
 }
