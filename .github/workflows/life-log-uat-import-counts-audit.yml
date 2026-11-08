@@ -1,0 +1,69 @@
+name: Read-only UAT import counts
+on:
+  push:
+    branches: ["audit/uat-import-counts-20261108"]
+permissions:
+  contents: read
+jobs:
+  inventory:
+    if: github.repository == 'ha-rookie/life-log' && github.ref == 'refs/heads/audit/uat-import-counts-20261108'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate exact one-file scope and pinned existing UAT D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          echo ".github/workflows/life-log-uat-import-counts-audit.yml" > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
+              .filter(line=>!line.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u.d1_databases?.length!==1||
+             d?.binding!=="DB"||d.database_name!=="life-log-dev"||
+             d.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956")
+              throw Error("Unexpected UAT D1 target");
+          JS
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
+      - name: Query aggregate counts only
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund > /dev/null
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:eclear') AS eclear_count,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS all_weights_count,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner' AND source_id='fit') AS fit_count,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS all_steps_count,
+              (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id='owner') AS lifestyle_count,
+              (SELECT COUNT(*) FROM import_jobs WHERE owner_id='owner' AND source_type='eclear') AS eclear_jobs,
+              (SELECT COUNT(*) FROM import_jobs WHERE owner_id='owner' AND source_type='fit') AS fit_jobs,
+              (SELECT COUNT(*) FROM import_jobs WHERE owner_id='owner') AS all_jobs" > "$RUNNER_TEMP/counts.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/counts.json","utf8"));
+          const rows=(Array.isArray(r)?r:[r]).flatMap(x=>x.success===true?(x.results??[]):[]);
+          if(rows.length!==1)throw Error("Aggregate query failed");
+          const a=rows[0];
+          const keys=["eclear_count","all_weights_count","fit_count","all_steps_count","lifestyle_count","eclear_jobs","fit_jobs","all_jobs"];
+          if(keys.some(k=>!Number.isSafeInteger(a[k])||a[k]<0))throw Error("Invalid count");
+          console.log("UAT_IMPORT_COUNTS_JSON="+JSON.stringify(Object.fromEntries(keys.map(k=>[k,a[k]]))));
+          console.log("PASS: read-only; health values and credentials not output");
+          JS
