@@ -140,7 +140,8 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
         .bind("owner").first<{salt:string;hash:string}>();
       const parts=cred?.hash.split("$");
       if(cred&&parts?.length===5&&parts[0]==="scrypt"&&parts[1]===String(SCRYPT_N)&&
-        parts[2]===String(SCRYPT_R)&&parts[3]===String(SCRYPT_P)&&/^[a-f0-9]{64}$/.test(parts[4])){
+        parts[2]===String(SCRYPT_R)&&parts[3]===String(SCRYPT_P)&&
+        /^[a-f0-9]{32}$/.test(cred.salt)&&/^[a-f0-9]{64}$/.test(parts[4])){
         const candidate=await passwordHash(data.password,cred.salt);
         if(equal(candidate,parts[4]))return issue(env.DB);
       }
