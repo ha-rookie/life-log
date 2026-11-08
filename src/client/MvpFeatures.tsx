@@ -291,7 +291,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
       <p className="metric" aria-live="polite">注文した杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
-      <p className="hint" aria-live="polite">純アルコール計算可能分：{Math.round(todayKnownG*10)/10}g
+      <p className="hint" aria-live="polite">参考純アルコール量（算出可能分）：{Math.round(todayKnownG*10)/10}g
         {todayUnknownCups>0?`（度数・容量が不明な ${todayUnknownCups}杯は含めず）`:""}
       </p>
       <div className="mvp-grid" aria-label="飲酒の種類と量">
@@ -309,18 +309,23 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         <label>注文した杯数（1〜50）<input type="number" min="1" max="50" step="1"
           value={drinkCups} disabled={drinksBusy}
           onChange={e=>setDrinkCups(e.target.value===""?0:Number(e.target.value))}/></label>
-        <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
-          value={drinkVolume} disabled={drinksBusy}
-          onChange={e=>setDrinkVolume(e.target.value)}/></label>
-        <label>度数（%・分かる場合だけ）<input type="number" min="0" max="100" step="0.1"
-          value={drinkAbv} disabled={drinksBusy||drinkKind==="non_alcohol"}
-          placeholder="不明なら空欄"
-          onChange={e=>setDrinkAbv(e.target.value)}/></label>
       </div>
-      <p className="hint">容量の目安：普通350ml・大500ml・メガ700ml。店の実際の量に合わせて修正してください。
-        度数を空欄にすると純アルコール量は「不明」で記録します。</p>
+      <details className="sub-details">
+        <summary>容量・度数を確認／変更（任意）</summary>
+        <div className="mvp-grid">
+          <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
+            value={drinkVolume} disabled={drinksBusy}
+            onChange={e=>setDrinkVolume(e.target.value)}/></label>
+          <label>度数（%・分かる場合だけ）<input type="number" min="0" max="100" step="0.1"
+            value={drinkAbv} disabled={drinksBusy||drinkKind==="non_alcohol"}
+            placeholder="不明なら空欄" onChange={e=>setDrinkAbv(e.target.value)}/></label>
+        </div>
+        <p className="hint">容量は仮の目安（普通350ml・大500ml・メガ700ml）です。
+          店によって異なります。正確な容量が分かれば修正してください。
+          度数が不明なら空欄のまま保存し、純アルコール量は未算出にします。</p>
+      </details>
       <p aria-live="polite">参考：普通350ml換算 <strong>{draftEquivalent===null?"不明":draftEquivalent+"杯分"}</strong>
-        ／ 純アルコール量 <strong>{draftG===null?"不明（未算出）":draftG+"g"}</strong>
+        ／ 参考純アルコール量 <strong>{draftG===null?"不明（未算出）":draftG+"g"}</strong>
       </p>
       <button type="button" disabled={drinksBusy||!drinkDraftValid} onClick={()=>void addDrink()}>
         {drinksBusy?"登録中…":names[drinkKind]+"を"+drinkCups+"杯記録"}
@@ -441,7 +446,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
               <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日）</dd>
               <dt>飲酒した日</dt><dd>{p.drinking.drinkingDays}日／観測 {p.drinking.observedDays}日（欠測 {p.drinking.missingDays}日）</dd>
               <dt>実際に記録したお酒</dt><dd>{p.drinking.recordedAlcoholCups}杯（ノンアル {p.drinking.recordedNonAlcoholCups}杯）</dd>
-              <dt>純アルコール（度数・容量が分かる分）</dt>
+              <dt>参考純アルコール（度数・容量が分かる分）</dt>
               <dd>{p.drinking.knownAlcoholG}g
                 {p.drinking.unknownAlcoholCups>0?` ／ 未算出 ${p.drinking.unknownAlcoholCups}杯`:""}
               </dd>
