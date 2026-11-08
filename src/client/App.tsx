@@ -141,7 +141,7 @@ export function App() {
       }
       const res = await fetch("/api/import/confirm", {
         method: "POST", credentials: "same-origin", cache: "no-store",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Life-Log-Intent":"manual-write-v1" },
         body: JSON.stringify({
           source: csvSource, csv: csvText, hash: csvPreview.hash, confirmed: true,
           ...(keepExisting && review
