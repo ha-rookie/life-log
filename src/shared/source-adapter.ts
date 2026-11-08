@@ -74,6 +74,7 @@ const isAlreadyNormalized=(source:CsvSource,header:string[])=>{
   const expected=source==="eclear"
     ?["measured_at","weight_kg","body_fat_pct"]
     :source==="fit"?["local_day","steps"]
+    :source==="weight_day"?["local_day","weight_kg"]
     :["local_day","drinking_presence","drink_cups","steps"];
   return header.join("\x1f")===expected.join("\x1f");
 };
@@ -87,6 +88,7 @@ export function detectOfficialCsvSource(raw:string):CsvSource|null{
     isAlreadyNormalized("eclear",header))return "eclear";
   if((header.length===28&&header[0]==="日付"&&header[16]==="歩数")||
     isAlreadyNormalized("fit",header))return "fit";
+  if(isAlreadyNormalized("weight_day",header))return "weight_day";
   if(isAlreadyNormalized("lifestyle",header))return "lifestyle";
   return null;
 }
@@ -129,7 +131,8 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
   }
   const chunks:string[]=[];
   const h=source==="eclear"?"measured_at,weight_kg,body_fat_pct":
-    source==="fit"?"local_day,steps":"local_day,drinking_presence,drink_cups,steps";
+    source==="fit"?"local_day,steps":source==="weight_day"?"local_day,weight_kg":
+    "local_day,drinking_presence,drink_cups,steps";
   const partSize=source==="lifestyle"?LIFESTYLE_PART_ROWS:PART_ROWS;
   for(let i=0;i<output.length;i+=partSize)
     chunks.push(h+"\n"+output.slice(i,i+partSize)

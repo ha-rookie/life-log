@@ -2,7 +2,7 @@ export type TrendDay = {
   day: string;
   weightKg: number | null;
   measuredAt: string | null;
-  source: "実測" | "ECLEAR" | "手入力" | null;
+  source: "実測" | "ECLEAR" | "手入力" | "過去記録" | null;
   measuredDaysInWindow: number;
   average7Kg: number | null;
 };
@@ -31,9 +31,9 @@ const JST_MS = 9 * 3_600_000;
 export const isEclearWeightSource=(s:string|undefined):boolean=>
   s==="eclear"||s?.startsWith("csv:eclear")===true||s?.startsWith("eclear:")===true;
 const weightRank=(s:string|undefined):number=>
-  isEclearWeightSource(s)?0:s?.startsWith("manual:")?1:2;
+  isEclearWeightSource(s)?0:s?.startsWith("manual:")?1:s==="csv:weight_day"?2:3;
 const allowedWeight=(s:string|undefined):boolean=>
-  s===undefined||s==="synthetic"||weightRank(s)<2;
+  s===undefined||s==="synthetic"||weightRank(s)<3;
 export const DEFAULT_GOAL = { lowKg: 75, highKg: 76, targetDate: "2026-12-22" } as const;
 export function parseDay(day: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
@@ -82,7 +82,10 @@ export function buildWeightTrend(
       excludedAnomaly++;
       continue;
     }
-    if (row.source_kind !== "measured") { excludedNonMeasured++; continue; }
+    if (row.source_kind !== "measured" &&
+      !(row.source_kind==="reported"&&row.source_id==="csv:weight_day")) {
+      excludedNonMeasured++; continue;
+    }
     const old = chosen.get(day);
     if (!old || weightRank(row.source_id)<weightRank(old.row.source_id) ||
       (weightRank(row.source_id)===weightRank(old.row.source_id) &&
@@ -100,7 +103,8 @@ export function buildWeightTrend(
       day, weightKg: found ? found.row.weight_kg : null,
       measuredAt: found ? found.row.measured_at : null,
       source: !found ? null : isEclearWeightSource(found.row.source_id) ? "ECLEAR" :
-        found.row.source_id?.startsWith("manual:") ? "手入力" : "実測",
+        found.row.source_id?.startsWith("manual:") ? "手入力" :
+        found.row.source_id==="csv:weight_day"?"過去記録":"実測",
       measuredDaysInWindow: 0, average7Kg: null,
     });
   }

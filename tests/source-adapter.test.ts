@@ -115,12 +115,33 @@ describe("Full-length lifestyle original on Android",()=>{
  });
 });
 
+describe("Unique date-only historical weight CSV",()=>{
+ it("recognizes and splits 100 date-only weights with strict day validation",async()=>{
+  const base=Date.parse("2020-05-28T00:00:00Z");
+  const days=Array.from({length:100},(_,n)=>
+    new Date(base+n*86400000).toISOString().slice(0,10)+",73.40");
+  const normalized=normalizeOfficialCsv("weight_day",
+    "local_day,weight_kg\n"+days.join("\n")+"\n");
+  expect(normalized.total).toBe(100);
+  expect(normalized.parts).toHaveLength(3);
+  const checked=await Promise.all(normalized.parts.map(chunk=>previewCsv("weight_day",chunk)));
+  expect(checked.every(p=>p.errors.length===0&&p.rows.length<=40)).toBe(true);
+  expect(checked.flatMap(p=>p.rows).every(r=>!r.timestamp&&r.weight===73.4)).toBe(true);
+ });
+ it("rejects duplicated days even when split across chunks",()=>{
+  const original="local_day,weight_kg\n2020-05-28,73.4\n2020-05-28,74\n";
+  expect(()=>normalizeOfficialCsv("weight_day",original))
+    .toThrow("DUPLICATE_DATE_OR_TIMESTAMP_IN_SOURCE");
+ });
+});
+
 describe("CSV picker automatic source recognition",()=>{
  it("recognizes supported original and normalized headers",()=>{
   expect(detectOfficialCsvSource("\uFEFF"+eclearHeader+"\n")).toBe("eclear");
   expect(detectOfficialCsvSource(fitHeader.join(",")+"\n"+fitRow("2026-01-01","100"))).toBe("fit");
   expect(detectOfficialCsvSource("measured_at,weight_kg,body_fat_pct\n")).toBe("eclear");
   expect(detectOfficialCsvSource("local_day,steps\n")).toBe("fit");
+  expect(detectOfficialCsvSource("local_day,weight_kg\n")).toBe("weight_day");
   expect(detectOfficialCsvSource("local_day,drinking_presence,drink_cups,steps\n")).toBe("lifestyle");
  });
  it("does not guess unsupported CSV headers",()=>{

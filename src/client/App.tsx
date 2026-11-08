@@ -278,7 +278,8 @@ export function App() {
                  : state.kind==="loading"?"…":"—"}</p>
               <p className="metric-meta">{state.kind==="ok"&&state.summary.measuredAt
                 ? state.summary.measuredAt.slice(0,10).replaceAll("-","/")+
-                  (state.summary.weightSource?.startsWith("manual:")?" · 手入力":" · ECLEAR")
+                  (state.summary.weightSource?.startsWith("manual:")?" · 手入力":
+                    state.summary.weightSource==="csv:weight_day"?" · 過去記録（日付のみ）":" · ECLEAR")
                 : "測定記録なし"}</p>
             </section>
             <section className="metric-card" aria-labelledby="overview-steps">
@@ -328,7 +329,9 @@ export function App() {
           </button>
         </p>
         {selectedCsvName&&<p role="status" className="hint">選択したファイル：<strong>{selectedCsvName}</strong></p>}
-        {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":csvSource==="fit"?"Google Fit（歩数）":"生活記録"}</p>}
+        {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":
+          csvSource==="fit"?"Google Fit（歩数）":
+          csvSource==="weight_day"?"体重（日付のみ・既存日付はスキップ）":"生活記録"}</p>}
         {csvPreview && <div aria-live="polite">
           <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
           <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /

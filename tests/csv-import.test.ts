@@ -19,6 +19,20 @@ function blockedDb() {
 }
 
 describe("synthetic canonical CSV mapping", () => {
+  it("parses date-only weight without inventing measured time, keeps 0 invalid",async()=>{
+    const csv="local_day,weight_kg\n2020-05-28,73.40\n2026-05-29,75.60\n";
+    const p=await previewCsv("weight_day",csv);
+    expect(p.errors).toEqual([]);
+    expect(p.rows.map(r=>({day:r.day,weight:r.weight,timestamp:r.timestamp??null})))
+      .toEqual([
+        {day:"2020-05-28",weight:73.4,timestamp:null},
+        {day:"2026-05-29",weight:75.6,timestamp:null},
+      ]);
+    const bad=await previewCsv("weight_day",
+      "local_day,weight_kg\n2026-02-30,73\n2026-05-29,0\n");
+    expect(bad.errors).toHaveLength(2);
+  });
+
   it("distinguishes missing from explicit zero and retains source row identity", async () => {
     const p = await previewCsv("lifestyle", life);
     expect(p.errors).toEqual([]);

@@ -53,6 +53,23 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     expect(trend.measuredDays).toBe(2);
     expect(trend.missingDays).toBe(1);
   });
+  it("recognizes date-only historical report, never inventing a time or superseding ECLEAR",()=>{
+    const trend=buildWeightTrend([
+      row("2026-04-01",88,"hist-overlap",{
+        measured_at:"2026-04-01",source_kind:"reported",source_id:"csv:weight_day"}),
+      row("2026-04-01",73,"eclear",{
+        measured_at:"2026-04-01T07:00:00+09:00",source_id:"csv:eclear"}),
+      row("2026-04-02",74,"hist-only",{
+        measured_at:"2026-04-02",source_kind:"reported",source_id:"csv:weight_day"}),
+      row("2026-04-03",75,"other-report",{
+        measured_at:"2026-04-03",source_kind:"reported",source_id:"csv:lifestyle"}),
+    ],"2026-04-01","2026-04-03");
+    expect(trend.days.map(x=>x.weightKg)).toEqual([73,74,null]);
+    expect(trend.days.map(x=>x.source)).toEqual(["ECLEAR","過去記録",null]);
+    expect(trend.days[1].measuredAt).toBe("2026-04-02");
+    expect(trend.excludedNonMeasured).toBe(0);
+  });
+
   it("uses calendar days and six-day prefetch; 1-3 observations are insufficient", () => {
     const pre = [row("2026-01-01", 70),row("2026-01-02", 71),row("2026-01-03", 72)];
     const requested = [row("2026-01-04", 73),row("2026-01-06", 75)];

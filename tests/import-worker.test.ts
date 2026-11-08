@@ -19,7 +19,7 @@ const hdr = "local_day,drinking_presence,drink_cups,steps\n";
 const life = hdr+"2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
 const ec = "measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
 async function send(db:ImportDb,csv:string,opts:{
-  source?:"lifestyle"|"eclear"|"fit";owner?:string;confirmed?:boolean;
+  source?:"lifestyle"|"eclear"|"fit"|"weight_day";owner?:string;confirmed?:boolean;
   resolution?:{mode:"keep_existing";token:string}
 }={}){
   const source=opts.source??"lifestyle",confirmed=opts.confirmed??true;
@@ -75,6 +75,42 @@ describe("real ephemeral local D1 audited import",()=>{
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("owner","2026-01-01T00:00:00Z").run();
   });
+
+  it("weight_day: inserts only missing calendar days and preserves actual ECLEAR time",async()=>{
+    const original="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
+    expect((await send(db,original,{source:"eclear"})).data.inserted).toBe(1);
+    const historical="local_day,weight_kg\n2026-01-01,73.40\n2026-01-02,88.00\n2026-01-03,73.80\n";
+    const first=await send(db,historical,{source:"weight_day"});
+    expect(first).toMatchObject({code:200,data:{inserted:2,skipped:1,updated:0}});
+    const rows=await db.prepare(
+      "SELECT measured_at,weight_kg,source_kind,source_id FROM body_measurements WHERE owner_id='owner' ORDER BY measured_at"
+    ).all<{measured_at:string;weight_kg:number;source_kind:string;source_id:string}>();
+    expect(rows.results).toEqual([
+      {measured_at:"2026-01-01",weight_kg:73.4,source_kind:"reported",source_id:"csv:weight_day"},
+      {measured_at:"2026-01-02T07:00:00+09:00",weight_kg:72.2,
+        source_kind:"measured",source_id:"csv:eclear"},
+      {measured_at:"2026-01-03",weight_kg:73.8,source_kind:"reported",source_id:"csv:weight_day"}
+    ]);
+    expect(await send(db,historical,{source:"weight_day"})).toMatchObject({
+      code:200,data:{status:"already_imported",inserted:0,skipped:3}
+    });
+    const overlap="local_day,weight_kg\n2026-01-02,89.00\n2026-01-03,99.00\n2026-01-04,74.20\n";
+    expect(await send(db,overlap,{source:"weight_day"})).toMatchObject({
+      code:200,data:{inserted:1,skipped:2}
+    });
+    const dateOnly=await db.prepare(
+      "SELECT local_day,weight_kg FROM (SELECT substr(measured_at,1,10) AS local_day,weight_kg FROM body_measurements WHERE source_id='csv:weight_day') ORDER BY local_day"
+    ).all<{local_day:string;weight_kg:number}>();
+    expect(dateOnly.results).toEqual([
+      {local_day:"2026-01-01",weight_kg:73.4},
+      {local_day:"2026-01-03",weight_kg:73.8},
+      {local_day:"2026-01-04",weight_kg:74.2}
+    ]);
+    const aud=await db.prepare(
+      "SELECT result,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result ORDER BY result"
+    ).bind("owner:weight_day:"+await hash(historical)).all<{result:string;n:number}>();
+    expect(aud.results).toEqual([{result:"inserted",n:2},{result:"skipped",n:1}]);
+  },100_000);
 
   it("Fit: manual entry remains, overlapping CSV updates only canonical Fit rows and reports updated/skip/insert",async()=>{
     await db.prepare("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key) VALUES (?,?,?,?,?,?)")

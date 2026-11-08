@@ -286,7 +286,7 @@ export function WeightTrendPanel() {
             <th scope="row">{d.day}</th><td>{d.weightKg === null ? "欠測" : fmt(d.weightKg)}</td>
             <td>{d.average7Kg === null ? "データ不足" : fmt(d.average7Kg)}</td>
             <td>{d.measuredDaysInWindow}/7</td>
-            <td>{d.measuredAt ? `実測 · ${d.measuredAt}` : "記録なし"}</td>
+            <td>{d.measuredAt ? `${d.source ?? "記録"} · ${d.measuredAt}` : "記録なし"}</td>
           </tr>)}</tbody>
         </table>
       </div></details>}
