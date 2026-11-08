@@ -136,7 +136,7 @@ function writeRows(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvR
       "INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key,import_job_id)"+
       " VALUES (?,?,?,?,'fit',?,?)"+
       " ON CONFLICT(owner_id,source_id,source_row_key) DO UPDATE SET"+
-      " steps=excluded.steps,import_job_id=excluded.import_job_id"+
+      " steps=excluded.steps"+
       " WHERE activity_daily.steps IS NOT excluded.steps"
     ).bind("fit:"+owner+":"+row.day,owner,row.day,row.steps,row.day,job)];
   }
@@ -147,12 +147,12 @@ function writeRows(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvR
     // Refuse to pick an arbitrary winner if pre-existing duplicates exist.
     const update=db.prepare(
       "UPDATE body_measurements SET weight_kg=?,body_fat_pct=?,"+
-      " reliable_fingerprint=?,import_job_id=?"+
+      " reliable_fingerprint=?"+
       " WHERE owner_id=? AND source_id='csv:eclear' AND measured_at=?"+
       " AND (weight_kg IS NOT ? OR body_fat_pct IS NOT ?)"+
       " AND (SELECT COUNT(*) FROM body_measurements"+
       " WHERE owner_id=? AND source_id='csv:eclear' AND measured_at=?)=1"
-    ).bind(row.weight,row.fat,row.fingerprint,job,
+    ).bind(row.weight,row.fat,row.fingerprint,
       owner,row.timestamp,row.weight,row.fat,owner,row.timestamp);
     const insert=db.prepare(
       "INSERT OR IGNORE INTO body_measurements"+
