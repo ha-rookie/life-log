@@ -30,12 +30,14 @@ export async function getDashboard(db:Database,ownerId:string):Promise<Dashboard
     db.prepare(
       "SELECT weight_kg,measured_at,source_id FROM body_measurements"+
       " WHERE owner_id=? AND weight_kg IS NOT NULL AND anomaly_flag=0"+
-      " AND source_kind='measured' AND"+
+      " AND ((source_kind='measured' AND"+
       " (source_id='eclear' OR source_id LIKE 'csv:eclear%'"+
-      " OR source_id LIKE 'eclear:%' OR source_id LIKE 'manual:%')"+
+      " OR source_id LIKE 'eclear:%' OR source_id LIKE 'manual:%'))"+
+      " OR (source_kind='reported' AND source_id='csv:weight_day'))"+
       " ORDER BY date(measured_at,'+9 hours') DESC,"+
       " CASE WHEN source_id='eclear' OR source_id LIKE 'csv:eclear%' OR source_id LIKE 'eclear:%'"+
-      " THEN 0 ELSE 1 END ASC, unixepoch(measured_at) DESC,id DESC LIMIT 1"
+      " THEN 0 WHEN source_id LIKE 'manual:%' THEN 1 ELSE 2 END ASC,"+
+      " unixepoch(measured_at) DESC,id DESC LIMIT 1"
     ).bind(ownerId).first<{weight_kg:number;measured_at:string;source_id:string}>(),
     db.prepare(
       "SELECT steps,local_day,source_id FROM activity_daily WHERE owner_id=?"+
