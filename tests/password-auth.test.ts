@@ -1,190 +1,99 @@
 import { describe, expect, it } from "vitest";
-import { scrypt as nodeScrypt } from "node:crypto";
-import { authRoute, sessionOwner } from "../src/worker/password-auth";
+import {
+  authRoute, issuePasskeySession, sessionIsPasskey, sessionOwner
+} from "../src/worker/password-auth";
 
-const url = "https://life-log-uat.ha-rookie.workers.dev";
-const req = (path:string, payload:unknown, origin=url) => new Request(url+path,{
- method:"POST",headers:{"Origin":origin,"Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"register-v1","Content-Type":"application/json"},
- body:JSON.stringify(payload)
-});
-describe("owner password authentication boundary",()=>{
- const unavailable={DB:{prepare:()=>{throw new Error("DB must not be accessed")}}};
- it("rejects CSRF variants, insecure transport, wrong intent and missing metadata before D1",async()=>{
-  const base=req("/api/auth/login",{password:"a".repeat(12)});
-  const variants=[
-    {name:"missing origin",headers:{"Origin":null}},
-    {name:"cross-site",headers:{"Sec-Fetch-Site":"cross-site"}},
-    {name:"missing fetch metadata",headers:{"Sec-Fetch-Site":null}},
-    {name:"wrong intent",headers:{"X-Life-Log-Intent":"manual-write-v1"}},
-    {name:"wrong content type",headers:{"Content-Type":"text/plain"}},
-  ];
-  for(const v of variants){
-    const headers=new Headers(base.headers);
-    for(const [key,value] of Object.entries(v.headers)){if(value===null)headers.delete(key);else headers.set(key,value);}
-    const res=await authRoute(new Request(base.url,{method:"POST",headers,body:JSON.stringify({password:"a".repeat(12)})}),unavailable as never);
-    expect(res.status,v.name).toBe(403);
+const origin="https://life-log-uat.ha-rookie.workers.dev";
+function request(path:string,extra:Record<string,string>={}){
+ return new Request(origin+path,{method:"POST",headers:{
+  Origin:origin,"Sec-Fetch-Site":"same-origin",
+  "X-Life-Log-Intent":"register-v1","Content-Type":"application/json",
+  ...extra
+ },body:"{}"});
+}
+describe("passkey-only UAT session and retired password boundary",()=>{
+ const forbidden={DB:{prepare(){throw Error("No DB query expected");}}};
+ it("rejects password login and registration permanently without reading D1",async()=>{
+  for(const path of ["/api/auth/login","/api/auth/register"]){
+    for(const method of ["POST","GET"]){
+      const res=await authRoute(new Request(origin+path,{method}),forbidden as never);
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual({error:"PASSWORD_AUTH_RETIRED"});
+    }
   }
-  const insecure=new Request("http://life-log-uat.ha-rookie.workers.dev/api/auth/login",{
-    method:"POST",headers:{"Origin":"http://life-log-uat.ha-rookie.workers.dev","Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"register-v1","Content-Type":"application/json"},
-    body:JSON.stringify({password:"a".repeat(12)})
-  });
-  expect((await authRoute(insecure,unavailable as never)).status).toBe(403);
  });
- it("rejects cross-origin enrollment before any DB access",async()=>{
-  const res=await authRoute(req("/api/auth/register",{setupCode:"x",password:"a".repeat(12)},"https://attacker.example"),unavailable as never);
-  expect(res.status).toBe(403);
- });
- it("does not allow enrollment without a provisioned setup secret",async()=>{
-  const res=await authRoute(req("/api/auth/register",{setupCode:"x",password:"a".repeat(12)}),unavailable as never);
-  expect(res.status).toBe(503);
- });
- it("rejects weak passwords before accessing D1",async()=>{
-  const res=await authRoute(req("/api/auth/register",{setupCode:"x",password:"short"}),unavailable as never);
-  expect(res.status).toBe(422);
- });
- it("rejects invalid login even if credentials table is missing",async()=>{
-  const res=await authRoute(req("/api/auth/login",{password:"a".repeat(12)}),unavailable as never);
-  expect(res.status).toBe(503);
- });
- it("fails closed when password-only UAT has no platform rate limiter",async()=>{
-  const res=await authRoute(req("/api/auth/login",{password:"a".repeat(12)}),{
-   ...unavailable,PASSWORD_ONLY_UAT:"true",
+ it("retired endpoints cannot be used to re-bootstrap or bypass passkeys",async()=>{
+  const res=await authRoute(request("/api/auth/login"),{
+    ...forbidden,PASSWORD_ONLY_UAT:"true",
   } as never);
-  expect(res.status).toBe(503);
-  expect(await res.json()).toEqual({error:"AUTH_PROTECTION_UNAVAILABLE"});
+  expect(res.status).toBe(410);
  });
- it("rejects missing client IP in password-only UAT",async()=>{
-  const res=await authRoute(req("/api/auth/login",{password:"a".repeat(12)}),{
-   ...unavailable,PASSWORD_ONLY_UAT:"true",AUTH_RATE_LIMITER:{limit:async()=>({success:true})},
-  } as never);
-  expect(res.status).toBe(503);
+ it("preserves CSRF, origin and method protection for logout",async()=>{
+  const wrong=[
+    request("/api/auth/logout",{Origin:"https://evil.invalid"}),
+    request("/api/auth/logout",{"Sec-Fetch-Site":"cross-site"}),
+    request("/api/auth/logout",{"X-Life-Log-Intent":"bad"}),
+    request("/api/auth/logout",{"Content-Type":"text/plain"}),
+  ];
+  for(const r of wrong){
+    expect((await authRoute(r,forbidden as never)).status).toBe(403);
+  }
+  expect((await authRoute(new Request(origin+"/api/auth/logout"),forbidden as never)).status).toBe(405);
  });
- it("rejects rate-limited login before touching D1",async()=>{
-  const request=req("/api/auth/login",{password:"a".repeat(12)});
-  request.headers.set("CF-Connecting-IP","203.0.113.1");
-  const res=await authRoute(request,{
-   ...unavailable,PASSWORD_ONLY_UAT:"true",AUTH_RATE_LIMITER:{limit:async()=>({success:false})},
-  } as never);
-  expect(res.status).toBe(429);
- });
- it("rejects broken rate limiter before touching D1",async()=>{
-  const request=req("/api/auth/register",{setupCode:"x",password:"a".repeat(12)});
-  request.headers.set("CF-Connecting-IP","203.0.113.1");
-  const res=await authRoute(request,{
-   ...unavailable,PASSWORD_ONLY_UAT:"true",AUTH_RATE_LIMITER:{limit:async()=>{throw Error("unavailable")}},
-  } as never);
-  expect(res.status).toBe(503);
- });
- it("rejects second enrollment before writing owner credentials",async()=>{
-  const statements:string[]=[];
-  const db={prepare:(sql:string)=>{
-    statements.push(sql);
-    return {bind:(..._args:unknown[])=>({
-      first:async()=>({owner_id:"owner"}),
-      run:async()=>{throw Error("second enrollment must not mutate D1");},
-    })};
-  }};
-  const request=req("/api/auth/register",{setupCode:"s".repeat(32),password:"strong-password-123"});
-  const res=await authRoute(request,{DB:db,OWNER_SETUP_CODE:"s".repeat(32)} as never);
-  expect(res.status).toBe(409);
-  expect(statements).toEqual(["SELECT owner_id FROM owner_credentials LIMIT 1"]);
- });
- it("disables setup-code enrollment in password-only UAT without D1 access",async()=>{
-  const request=req("/api/auth/register",{setupCode:"x".repeat(32),password:"strong-password-123"});
-  request.headers.set("CF-Connecting-IP","203.0.113.1");
-  const env={...unavailable,PASSWORD_ONLY_UAT:"true",
-    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}};
-  expect((await authRoute(request,env as never)).status).toBe(404);
- });
- it("rejects an incorrect temporary Owner password without provisioning credentials",async()=>{
-  const queries:string[]=[];
-  const db={prepare:(sql:string)=>{queries.push(sql);return {bind:()=>({
-    first:async()=>null,run:async()=>{throw Error("incorrect password must not write");}
-  })};}};
-  const request=req("/api/auth/login",{username:"owner",password:"incorrect-password"});
-  request.headers.set("CF-Connecting-IP","203.0.113.1");
-  const res=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
-    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
-  expect(res.status).toBe(401);
-  expect(queries).not.toContain(expect.stringContaining("INSERT"));
- });
- it("never re-provisions a retired temporary password after passkey enrollment",async()=>{
-  const queries:string[]=[];
-  const db={prepare:(sql:string)=>{queries.push(sql);return {bind:()=>({
-    first:async()=>{
-      if(sql.includes("owner_passkey_credentials"))return {credential_id:"registered"};
-      return null;
-    },
-    run:async()=>{throw Error("retired login must not write");}
-  })};}};
-  const request=req("/api/auth/login",{username:"owner",password:"arbitrary-password"});
-  request.headers.set("CF-Connecting-IP","203.0.113.1");
-  const res=await authRoute(request,{DB:db,PASSWORD_ONLY_UAT:"true",
-    AUTH_RATE_LIMITER:{limit:async()=>({success:true})}} as never);
-  expect(res.status).toBe(401);
-  expect(queries.filter(sql=>sql.includes("INSERT"))).toHaveLength(0);
- });
- it("rejects missing and malformed session cookies without DB access",async()=>{
-  expect(await sessionOwner(new Request(url+"/"),unavailable.DB as never)).toBeNull();
-  expect(await sessionOwner(new Request(url+"/",{headers:{Cookie:"__Host-life_log_session=bad"}}),unavailable.DB as never)).toBeNull();
- });
- it("authenticates a synthetic WORKHUB-compatible scrypt Owner verifier and accepts its session",async()=>{
-  // The synthetic password is NOT a real UAT credential; no secrets in tests.
-  const password="synthetic-owner-credential-2026";
-  const salt="11223344556677889900aabbccddeeff";
-  const bytes=await new Promise<Uint8Array>((resolve,reject)=>
-    nodeScrypt(password,Uint8Array.from(salt.match(/../g)!,v=>parseInt(v,16)),32,
-      {N:32768,r:8,p:3,maxmem:64*1024*1024},(error,derived)=>error?reject(error):resolve(derived)));
-  const storedHash="scrypt$32768$8$3$"+Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
-  let issuedTokenHash:string|null=null, sessionWrites=0;
-  const statements:string[]=[];
-  const db={prepare:(sql:string)=>{
-    statements.push(sql);
-    return {bind:(...args:unknown[])=>({
-      first:async()=>{
-        if(sql.includes("SELECT password_salt"))return {salt,hash:storedHash};
-        if(sql.includes("SELECT owner_id AS owner FROM owner_sessions"))
-          return args[0]===issuedTokenHash?{owner:"owner"}:null;
-        return null;
-      },
-      run:async()=>{
-        if(sql.includes("INSERT INTO owner_sessions")){
-          issuedTokenHash=String(args[0]);
-          sessionWrites++;
+ it("keeps existing passkey session cookie and verifies owner against D1",async()=>{
+  let tokenHash="",passkeySessionHash="",createdSessions=0;
+  const db={
+    prepare(sql:string){
+      return {bind:(...args:unknown[])=>({
+        sql,args,
+        first:async()=>{
+          if(sql.includes("JOIN owner_passkey_sessions"))
+            return args[0]===passkeySessionHash?{owner_id:"owner"}:null;
+          if(sql.includes("SELECT owner_id AS owner"))
+            return args[0]===tokenHash?{owner:"owner"}:null;
+          return null;
+        },
+        run:async()=>{
+          if(sql.startsWith("DELETE FROM owner_sessions"))tokenHash="";
+          return {meta:{changes:1}};
         }
-        return {meta:{changes:1}};
-      }
-    })};
-  }};
-  const env={DB:db};
-  const wrong=req("/api/auth/login",{username:"owner",password:"incorrect-synthetic-credential"});
-  wrong.headers.set("CF-Connecting-IP","203.0.113.15");
-  const rejected=await authRoute(wrong,env as never);
-  expect(rejected.status).toBe(401);
-  expect(sessionWrites).toBe(0);
-  const right=req("/api/auth/login",{username:"owner",password});
-  right.headers.set("CF-Connecting-IP","203.0.113.15");
-  const login=await authRoute(right,env as never);
-  expect(login.status).toBe(200);
-  expect(sessionWrites).toBe(1);
-  const cookie=login.headers.get("Set-Cookie");
-  expect(cookie).toContain("__Host-life_log_session=");
+      })};
+    },
+    batch:async(statements:{sql:string;args:unknown[]}[])=>{
+      expect(statements).toHaveLength(2);
+      expect(statements[0].sql).toContain("INSERT INTO owner_sessions");
+      expect(statements[1].sql).toContain("INSERT INTO owner_passkey_sessions");
+      tokenHash=String(statements[0].args[0]);
+      passkeySessionHash=String(statements[1].args[0]);
+      createdSessions++;
+      return [];
+    }
+  };
+  const response=await issuePasskeySession(db as never);
+  expect(response.status).toBe(200);
+  expect(createdSessions).toBe(1);
+  const cookie=response.headers.get("Set-Cookie");
+  expect(cookie).toMatch(/^__Host-life_log_session=[a-f0-9]{64};/);
   expect(cookie).toContain("HttpOnly; Secure; SameSite=Strict");
-  const token=cookie!.split(";")[0];
-  const authenticated=new Request(url+"/api/summary",{headers:{Cookie:token}});
-  expect(await sessionOwner(authenticated,db as never)).toBe("owner");
-  expect(statements.some(sql=>sql.includes("INSERT INTO owner_credentials"))).toBe(false);
+  const sessionRequest=new Request(origin+"/api/summary",{
+    headers:{Cookie:cookie!.split(";")[0]}
+  });
+  expect(await sessionOwner(sessionRequest,db as never)).toBe("owner");
+  expect(await sessionIsPasskey(sessionRequest,db as never)).toBe(true);
+  expect(await sessionIsPasskey(new Request(origin+"/"),db as never)).toBe(false);
+  expect(await sessionOwner(new Request(origin+"/"),db as never)).toBeNull();
  });
- it("rejects malformed stored KDF parameters without issuing a session",async()=>{
-  const db={prepare:(sql:string)=>({bind:()=>({
-    first:async()=>sql.includes("SELECT password_salt")?
-      {salt:"not-hex",hash:"scrypt$32768$8$3$"+"0".repeat(64)}:null,
-    run:async()=>{throw Error("Must never write a session");}
-  })})};
-  const request=req("/api/auth/login",{username:"owner",password:"synthetic-owner-credential-2026"});
-  request.headers.set("CF-Connecting-IP","203.0.113.15");
-  const res=await authRoute(request,{DB:db} as never);
-  expect(res.status).toBe(401);
+ it("allows protected logout and invalidates cookie with a D1 delete",async()=>{
+  const sqls:string[]=[];
+  const db={prepare(sql:string){sqls.push(sql);return {bind:()=>({
+    run:async()=>({meta:{changes:1}}),
+    first:async()=>null
+  })}}};
+  const res=await authRoute(request("/api/auth/logout",{
+    Cookie:"__Host-life_log_session="+"a".repeat(64)
+  }),{DB:db} as never);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
+  expect(sqls).toEqual([expect.stringContaining("DELETE FROM owner_sessions")]);
  });
-
 });
