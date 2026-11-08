@@ -19,7 +19,8 @@ jobs:
       github.repository == 'ha-rookie/life-log' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.conclusion == 'success'
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'chore(uat): one-time WebAuthn D1 and Worker release')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
