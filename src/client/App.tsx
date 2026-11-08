@@ -4,6 +4,7 @@ import type { Summary } from "../shared/legacy";
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
+import { MvpFeatures } from "./MvpFeatures";
 
 type LoadState =
   | { kind: "loading" }
@@ -165,7 +166,7 @@ export function App() {
 
   return (
     <main className="container">
-      <div className="eyebrow">PERSONAL LIFE LOG · DEVELOPMENT</div>
+      <div className="eyebrow">PERSONAL LIFE LOG</div>
       <h1>今日と次の一手</h1>
       <p className="intro">体重と日々の行動を、推測ではなく記録に基づいて振り返る。</p>
       <section className="panel" aria-labelledby="weight-title">
@@ -183,12 +184,9 @@ export function App() {
       <PasskeySetup />
       <ManualEntry onSaved={() => setRefreshEpoch(n => n + 1)} />
       <WeightTrendPanel key={refreshEpoch} />
-      <section className="panel" aria-labelledby="next-title">
-        <h2 id="next-title">次の一手</h2>
-        <p>行動実験・飲酒+1は後続Issueで実装予定です。</p>
-      </section>
+      <MvpFeatures onSaved={() => setRefreshEpoch(n => n + 1)} />
       <section className="panel" aria-labelledby="csv-title">
-        <h2 id="csv-title">合成CSV取込（開発用）</h2>
+        <h2 id="csv-title">CSV取込（形式検証済みファイル限定）</h2>
         <p>実ECLEARの列仕様は未確認。合成サンプルだけに対応します。</p>
         <label>種類{" "}
           <select value={csvSource} disabled={busy} onChange={e => {
@@ -252,7 +250,7 @@ export function App() {
           {rowCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,rowCursor)}>さらに監査行を表示</button>}
         </div>}
       </section>
-      <footer>本人限定・認証未設定では配信とAPIを拒否 · 実データ未登録</footer>
+      <footer>本人限定・パスキー認証が必要 · 未認証アクセスは拒否</footer>
     </main>
   );
 }
