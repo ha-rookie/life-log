@@ -37,7 +37,7 @@ export async function handleWeightTrend(request: Request, db: TrendDb, ownerId: 
     // Explicit owner scope, bounded time, stable tie-break, hard cap.
     // SQLite unixepoch handles timestamps with timezone offsets.
     const result = await db.prepare(
-      "SELECT id, measured_at, weight_kg, source_kind, anomaly_flag " +
+      "SELECT id, measured_at, weight_kg, source_id, source_kind, anomaly_flag " +
       "FROM body_measurements WHERE owner_id = ? " +
       "AND unixepoch(measured_at) >= ? AND unixepoch(measured_at) < ? " +
       "ORDER BY unixepoch(measured_at) ASC, id ASC LIMIT ?"
