@@ -42,5 +42,5 @@ jobs:
         run: npm run db:fixture:local
       - name: Confirm schema/fixtures in local Wrangler D1
         run: npx --no-install wrangler d1 execute life-log-dev --local --command "SELECT count(*) AS n FROM body_measurements"
-      - name: Local Workerd Owner login and 210k PBKDF2 compatibility acceptance
+      - name: Local Workerd login with WORKHUB scrypt and authenticated API
         run: bash scripts/verify-password-uat-local.sh
