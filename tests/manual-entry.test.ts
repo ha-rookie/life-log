@@ -665,6 +665,6 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     expect(html).toContain("歩数を記録");
     expect(html).toContain("CSVの数値がある日はCSVを優先表示");
     expect(html).toContain("手入力の履歴・訂正・取消");
-    expect(html).toContain("時刻不明の体重は登録せず");
+    expect(html).toContain("体重には実際の測定日時を入力します");
   });
 });
