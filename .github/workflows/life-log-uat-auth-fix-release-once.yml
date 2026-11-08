@@ -110,3 +110,26 @@ jobs:
           done
           echo "UAT HTTP smoke failed: root=$root login=$login" >&2
           exit 1
+
+      - name: Verify deployed Owner login path without using a real credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A synthetic incorrect credential must reach the verifier and return 401.
+          # Unlike the anonymous GET smoke, this POST detects unavailable D1, rate
+          # limiter or KDF as HTTP 503. Never expose or store a real Owner password.
+          result=$(curl --silent --show-error --max-time 25 \
+            -o "$RUNNER_TEMP/uat-login-probe.json" -w '%{http_code}' \
+            --request POST "$UAT_URL/api/auth/login" \
+            --header "Origin: $UAT_URL" \
+            --header "Sec-Fetch-Site: same-origin" \
+            --header "Content-Type: application/json" \
+            --header "X-Life-Log-Intent: register-v1" \
+            --data '{"username":"owner","password":"deliberately-invalid-synthetic-credential"}')
+          if [[ "$result" != "401" ]]; then
+            echo "UAT Owner login negative probe failed: HTTP $result (expected 401)" >&2
+            jq -r '.error // "UNKNOWN"' "$RUNNER_TEMP/uat-login-probe.json" >&2 || true
+            exit 1
+          fi
+          echo 'PASS: live UAT password authentication path rejected synthetic credential with HTTP 401 (no 503).'
+          echo 'NOTE: real Owner login and Android passkey registration not exercised by this synthetic probe.'
