@@ -42,8 +42,15 @@ const date=one("SELECT date('now','+9 hours','-1 day') AS day").day;
 assert(/^\d{4}-\d\d-\d\d$/.test(date),"Invalid JST day");
 const eclear="measured_at,weight_kg,body_fat_pct\n"+date+"T07:45:00+09:00,75.4,22.1\n";
 const fit="local_day,steps\n"+date+",1234\n";
+const correctedEclear="measured_at,weight_kg,body_fat_pct\n"+date+"T07:45:00+09:00,75.8,22.6\n";
+const correctedFit="local_day,steps\n"+date+",2010\n";
 const ecHash=sha(eclear),fitHash=sha(fit);
+const correctionEcHash=sha(correctedEclear),correctionFitHash=sha(correctedFit);
 const job=(source,h)=>"owner:"+source+":"+h;
+const importJobIds=[job("eclear",ecHash),job("fit",fitHash),
+  job("eclear",correctionEcHash),job("fit",correctionFitHash)];
+const jobSqlList=importJobIds.map(x=>"'"+x+"'").join(",");
+const manualId="synthetic-"+sha(randomToken).slice(0,20);
 const pre=snapshot();
 let session=false,failed;
 try{
@@ -57,6 +64,12 @@ try{
    " VALUES('"+tokenHash+"','owner',"+(now+900)+","+now+");");
  session=true;
  sql("INSERT INTO owner_passkey_sessions(token_hash) VALUES('"+tokenHash+"');");
+ // Preserve a synthetic manual observation as a second source, exactly like
+ // the user's same-day manual data. Neither source may be removed by import.
+ sql("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,body_fat_pct,source_id,source_row_key,source_kind)"+
+   " VALUES('"+manualId+"-w','owner','"+date+"T07:45:00+09:00',88.1,NULL,'manual:weight','"+manualId+"-w','measured')");
+ sql("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key)"+
+   " VALUES('"+manualId+"-s','owner','"+date+"',9100,'manual:steps','"+manualId+"-s')");
  expectStatus(await request("/api/import/confirm",
    {source:"fit",csv:fit,hash:fitHash,confirmed:true},false),403,"anonymous import");
  for(const [source,csv,h] of [["eclear",eclear,ecHash],["fit",fit,fitHash]]){
@@ -68,20 +81,50 @@ try{
    expectStatus(second,200,"idempotent replay "+source);
    assert(second.value.status==="already_imported","Duplicate status incorrect "+source);
  }
+ // A DIFFERENT CSV whose calendar day or ECLEAR timestamp overlaps
+ // must update the canonical value without replacing the manual record.
+ for(const [source,csv,h] of [["eclear",correctedEclear,correctionEcHash],
+                              ["fit",correctedFit,correctionFitHash]]){
+   const changed=await request("/api/import/confirm",{source,csv,hash:h,confirmed:true});
+   expectStatus(changed,200,"canonical correction "+source);
+   assert(changed.value.inserted===0&&changed.value.updated===1&&changed.value.skipped===0,
+     "Canonical CSV correction was not audited as updated "+source);
+   const replay=await request("/api/import/confirm",{source,csv,hash:h,confirmed:true});
+   expectStatus(replay,200,"canonical correction replay "+source);
+   assert(replay.value.status==="already_imported"&&replay.value.updated===0&&replay.value.skipped===1,
+     "Corrected CSV replay not idempotent "+source);
+ }
+ // A byte-identical OLD file may not silently revert a newer CSV correction.
+ for(const [source,csv,h] of [["eclear",eclear,ecHash],["fit",fit,fitHash]]){
+   const old=await request("/api/import/confirm",{source,csv,hash:h,confirmed:true});
+   expectStatus(old,200,"original CSV replay "+source);
+   assert(old.value.updated===0&&old.value.skipped===1,"Old CSV replay rewrote canonical value");
+ }
+ const corrected=one("SELECT"+
+   " (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:eclear' AND weight_kg=75.8 AND body_fat_pct=22.6 AND import_job_id='"+job("eclear",ecHash)+"') AS ew,"+
+   " (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner' AND source_id='fit' AND steps=2010 AND import_job_id='"+job("fit",fitHash)+"') AS fs,"+
+   " (SELECT COUNT(*) FROM body_measurements WHERE id='"+manualId+"-w' AND weight_kg=88.1) AS mw,"+
+   " (SELECT COUNT(*) FROM activity_daily WHERE id='"+manualId+"-s' AND steps=9100) AS ms,"+
+   " (SELECT COUNT(*) FROM import_row_audit WHERE import_job_id IN ('"+job("eclear",correctionEcHash)+"','"+job("fit",correctionFitHash)+"') AND result='inserted' AND error_code='UPDATED') AS audited");
+ assert(corrected.ew===1&&corrected.fs===1&&corrected.mw===1&&corrected.ms===1&&corrected.audited===2,
+   "Canonical update or manual preservation mismatch");
+ console.log("PASS: existing manual values preserved; differing Fit/ECLEAR CSV corrections updated canonical rows; exact replay skipped; updated audit preserved.");
  const inserted=one("SELECT "+
    "(SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner' AND source_id='csv:eclear' AND import_job_id='"+job("eclear",ecHash)+"') AS w,"+
    "(SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner' AND source_id='fit' AND import_job_id='"+job("fit",fitHash)+"') AS s,"+
-   "(SELECT COUNT(*) FROM import_row_audit WHERE import_job_id IN ('"+job("eclear",ecHash)+"','"+job("fit",fitHash)+"')) AS a");
- assert(inserted.w===1&&inserted.s===1&&inserted.a===2,"D1 provenance/audit mismatch");
+   "(SELECT COUNT(*) FROM import_row_audit WHERE import_job_id IN ("+jobSqlList+")) AS a");
+ assert(inserted.w===1&&inserted.s===1&&inserted.a===4,"D1 provenance/audit mismatch");
  console.log("PASS: existing UAT Owner authenticated original-source normalized preview/confirm/retry, ECLEAR weight and Fit steps persisted and source-audited.");
 }catch(e){failed=e;console.error("FAIL: "+e.message);}
 finally{
  try{
   // Each cleanup is strictly scoped to this one synthetic import job.
-  sql("DELETE FROM import_row_audit WHERE import_job_id IN ('"+job("eclear",ecHash)+"','"+job("fit",fitHash)+"');");
+  sql("DELETE FROM import_row_audit WHERE import_job_id IN ("+jobSqlList+");");
   sql("DELETE FROM body_measurements WHERE owner_id='owner' AND import_job_id='"+job("eclear",ecHash)+"';");
   sql("DELETE FROM activity_daily WHERE owner_id='owner' AND import_job_id='"+job("fit",fitHash)+"';");
-  sql("DELETE FROM import_jobs WHERE owner_id='owner' AND id IN ('"+job("eclear",ecHash)+"','"+job("fit",fitHash)+"');");
+  sql("DELETE FROM body_measurements WHERE owner_id='owner' AND id='"+manualId+"-w';");
+  sql("DELETE FROM activity_daily WHERE owner_id='owner' AND id='"+manualId+"-s';");
+  sql("DELETE FROM import_jobs WHERE owner_id='owner' AND id IN ("+jobSqlList+");");
   if(session)sql("DELETE FROM owner_sessions WHERE owner_id='owner' AND token_hash='"+tokenHash+"';");
   const after=snapshot();
   for(const key of Object.keys(pre))assert(pre[key]===after[key],"Cleanup mismatch: "+key);
