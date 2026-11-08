@@ -69,7 +69,7 @@
 .mvp-entry{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0}
 .mvp-entry span{flex:1 1 180px;overflow-wrap:anywhere}
 .mvp-periods section,.mvp-edit,.mvp-plan{min-width:0;border:1px solid #c9d7da;border-radius:.65rem;padding:.8rem;margin:.6rem 0}
-.mvp-periods dl{display:grid;grid-template-columns:minmax(0,1fr);minmax(0,1fr);gap:.35rem;font-size:.92rem}
+.mvp-periods dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:.35rem;font-size:.92rem}
 .mvp-periods dd{margin:0;overflow-wrap:anywhere;text-align:right}
 .mvp-plan p{overflow-wrap:anywhere}
 @media(max-width:430px){.mvp-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}.mvp-periods dl{grid-template-columns:1fr}.mvp-periods dd{text-align:left;padding-bottom:.45rem}}
