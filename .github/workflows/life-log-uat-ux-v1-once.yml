@@ -52,7 +52,10 @@ jobs:
             src/client/styles.css \
             src/worker/index.ts \
             src/worker/summary.ts \
-            tests/dashboard.test.ts
+            tests/dashboard.test.ts \
+            tests/manual-entry.test.ts \
+            tests/weight-trend-worker.test.ts \
+            tests/weight-trend.test.ts
             | sort > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
           test -n "$CLOUDFLARE_API_TOKEN"
