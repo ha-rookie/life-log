@@ -1,0 +1,111 @@
+name: Life-log one-shot UAT Owner login fix release
+
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-uat-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'fix(uat): initial Owner login (#74)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Confirm exact main, release scope and UAT config
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'fix(uat): initial Owner login (#74)'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' \
+            .github/workflows/life-log-ci.yml \
+            .github/workflows/life-log-uat-auth-fix-release-once.yml \
+            scripts/verify-password-uat-local.sh \
+            src/worker/node-crypto.d.ts \
+            src/worker/password-auth.ts \
+            tests/password-auth.test.ts | sort > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const lines=fs.readFileSync('wrangler.jsonc','utf8').split(/\r?\n/)
+            .filter(x=>!x.trimStart().startsWith('//'));
+          const cfg=JSON.parse(lines.join('\n')),u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=='life-log-uat'||u.workers_dev!==true||
+             u.d1_databases?.length!==1||d?.binding!=='DB'||
+             d.database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956'||
+             u.vars?.MANUAL_REMOTE_TARGET!=='uat'||
+             u.vars?.MANUAL_REMOTE_ORIGIN!=='https://life-log-uat.ha-rookie.workers.dev')
+              throw Error('Unexpected UAT target');
+          const auth=fs.readFileSync('src/worker/password-auth.ts','utf8');
+          if(!auth.includes('const ITERATIONS = 100000;')||
+             !auth.includes('pbkdf2Sync(')||
+             !auth.includes('UAT_TEMP_HASH'))throw Error('Fix not present');
+          JS
+      - name: Build approved Owner login fix
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Verify existing D1 identity (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Deploy to existing UAT Worker in password-only mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --env uat \
+            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
+                  MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+      - name: Verify UAT HTTP and login UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            root=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
+            login=$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)
+            if [[ "$root" == 403 && "$login" == 200 ]] &&
+               grep -Fq '認証サーバーが利用できません（503）' "$RUNNER_TEMP/login.html"; then
+              echo "PASS: deployed existing UAT; anonymous root 403; login 200."
+              exit 0
+            fi
+            if [[ "$root" == 200 ]]; then echo "Unsafe anonymous access" >&2; exit 1; fi
+            if [[ "$i" -lt 12 ]]; then sleep 5; fi
+          done
+          echo "UAT HTTP smoke failed: root=$root login=$login" >&2
+          exit 1
