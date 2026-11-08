@@ -37,10 +37,17 @@ rejects("INSERT INTO body_measurements(id,owner_id,measured_at,source_id,source_
 # Auth migrations remain additive and preserve the preexisting personal records.
 conn.executescript((ROOT / "migrations/0002_owner_auth.sql").read_text(encoding="utf-8"))
 conn.executescript((ROOT / "migrations/0003_owner_passkey.sql").read_text(encoding="utf-8"))
+# Regression: a legacy 1-cup drink must survive the additive migration exactly.
+conn.execute("""INSERT INTO drink_entries
+  (id,owner_id,observed_at,drink_kind,alcohol,cups,source_id,source_row_key)
+  VALUES('old-highball','owner','2026-01-02T19:00:00+09:00','highball',1,1,'manual:drink','legacy')""")
 conn.executescript((ROOT / "migrations/0004_drink_details.sql").read_text(encoding="utf-8"))
+old_drink=conn.execute("""SELECT drink_kind,cups,volume_ml,abv_pct,drink_variant,size_label
+  FROM drink_entries WHERE id='old-highball'""").fetchone()
+assert old_drink == ("highball",1,None,None,None,None), old_drink
 cols={row[1] for row in conn.execute("PRAGMA table_info(drink_entries)")}
 assert {"drink_variant","size_label","volume_ml","abv_pct","cups"} <= cols
-assert conn.execute("SELECT count(*) FROM drink_entries").fetchone()[0] == 0
+assert conn.execute("SELECT count(*) FROM drink_entries").fetchone()[0] == 1
 rejects("INSERT INTO drink_entries(id,owner_id,observed_at,drink_kind,alcohol,cups,source_id,source_row_key,drink_variant) VALUES ('bad-beer','owner','2026-01-02T07:00:00+09:00','other_alcohol',1,1,'manual:drink','bad','wine')")
 rejects("INSERT INTO drink_entries(id,owner_id,observed_at,drink_kind,alcohol,cups,source_id,source_row_key,size_label) VALUES ('bad-size','owner','2026-01-02T07:00:00+09:00','highball',1,1,'manual:drink','bad-size','impossible')")
 assert conn.execute("SELECT count(*) FROM body_measurements").fetchone()[0] == 2
