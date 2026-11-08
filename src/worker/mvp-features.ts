@@ -227,6 +227,122 @@ async function experiments(req:Request,db:MvpDb,owner:string){
   }
   return fail("METHOD",405);
 }
+
+type MealKind="home"|"restaurant"|"takeout"|null;
+type MealFields={day:string;lunchKind:MealKind;dinnerKind:MealKind;lateMeal:0|1|null};
+const isMealKind=(x:unknown):x is MealKind=>x===null||x==="home"||x==="restaurant"||x==="takeout";
+const isLate=(x:unknown):x is 0|1|null=>x===null||x===0||x===1;
+const fields=(p:unknown):p is MealFields=>{
+  if(!p||typeof p!=="object"||Array.isArray(p))return false;
+  const obj=p as Record<string,unknown>;
+  return validDay(obj.day)&&isMealKind(obj.lunchKind)&&
+    isMealKind(obj.dinnerKind)&&isLate(obj.lateMeal);
+};
+type MealRow=MealFields;
+async function meals(req:Request,db:MvpDb,owner:string){
+  if(req.method==="GET"){
+    const q=new URL(req.url).searchParams;
+    if([...q.keys()].some(x=>!["from","to"].includes(x)))return fail("RANGE",400);
+    const p=range(q.get("from")??new Date(Date.now()+9*3600000-29*dayMs).toISOString().slice(0,10),
+      q.get("to")??today(),31);
+    if(!p)return fail("RANGE",400);
+    const rows=await db.prepare("SELECT local_day AS day,lunch_kind AS lunchKind,dinner_kind AS dinnerKind,late_meal AS lateMeal "+
+      "FROM lifestyle_days WHERE owner_id=? AND source_id='manual:meals' AND local_day>=? AND local_day<=? ORDER BY local_day DESC LIMIT 32")
+      .bind(owner,p.from,p.to).all<MealRow>();
+    if(rows.results.length>31)return fail("TOO_MANY",422);
+    return json({entries:rows.results});
+  }
+  const p=await body(req);
+  if(!p||!validDay(p.day))return fail("DAY");
+  const day=p.day;
+  const current=await db.prepare("SELECT local_day AS day,lunch_kind AS lunchKind,dinner_kind AS dinnerKind,late_meal AS lateMeal "+
+    "FROM lifestyle_days WHERE owner_id=? AND source_id='manual:meals' AND local_day=?")
+    .bind(owner,day).first<MealRow>();
+  const expected=p.expected;
+  if(req.method==="DELETE"){
+    if(!current)return fail("NOT_FOUND",404);
+    if(!fields(expected)||expected.day!==day||expected.lunchKind!==current.lunchKind||
+      expected.dinnerKind!==current.dinnerKind||expected.lateMeal!==current.lateMeal)return fail("CONFLICT",409);
+    const change=await db.prepare("DELETE FROM lifestyle_days WHERE owner_id=? AND local_day=? AND source_id='manual:meals' "+
+      "AND lunch_kind IS ? AND dinner_kind IS ? AND late_meal IS ?")
+      .bind(owner,day,expected.lunchKind,expected.dinnerKind,expected.lateMeal).run();
+    return change.meta?.changes===1?json({status:"deleted",day}):fail("CONFLICT",409);
+  }
+  if(req.method!=="PUT")return fail("METHOD",405);
+  if(!fields(p))return fail("MEAL_FIELDS");
+  if(current){
+    if(!fields(expected)||expected.day!==day||expected.lunchKind!==current.lunchKind||
+      expected.dinnerKind!==current.dinnerKind||expected.lateMeal!==current.lateMeal)
+      return fail("CONFLICT",409);
+    const changed=await db.prepare("UPDATE lifestyle_days SET lunch_kind=?,dinner_kind=?,late_meal=? "+
+      "WHERE owner_id=? AND local_day=? AND source_id='manual:meals' "+
+      "AND lunch_kind IS ? AND dinner_kind IS ? AND late_meal IS ?")
+      .bind(p.lunchKind,p.dinnerKind,p.lateMeal,owner,day,
+        expected.lunchKind,expected.dinnerKind,expected.lateMeal).run();
+    return changed.meta?.changes===1?json({status:"updated",day}):fail("CONFLICT",409);
+  }
+  if(expected!==null)return fail("CONFLICT",409);
+  await db.prepare("INSERT OR IGNORE INTO lifestyle_days "+
+    "(owner_id,local_day,lunch_kind,dinner_kind,late_meal,source_id,source_row_key) "+
+    "VALUES (?,?,?,?,?,'manual:meals',?)")
+    .bind(owner,day,p.lunchKind,p.dinnerKind,p.lateMeal,day).run();
+  const row=await db.prepare("SELECT lunch_kind AS lunchKind,dinner_kind AS dinnerKind,late_meal AS lateMeal "+
+    "FROM lifestyle_days WHERE owner_id=? AND local_day=? AND source_id='manual:meals'")
+    .bind(owner,day).first<Omit<MealRow,"day">>();
+  return row?.lunchKind===p.lunchKind&&row.dinnerKind===p.dinnerKind&&row.lateMeal===p.lateMeal
+    ?json({status:"saved",day}):fail("CONFLICT",409);
+}
+
+type OutingRow={key:string;day:string;category:"work"|"bar"|"other"};
+const outingCategory=(x:unknown)=>x==="work"||x==="bar"||x==="other";
+async function outings(req:Request,db:MvpDb,owner:string){
+  if(req.method==="GET"){
+    const q=new URL(req.url).searchParams;
+    if([...q.keys()].some(x=>!["from","to"].includes(x)))return fail("RANGE",400);
+    const p=range(q.get("from")??new Date(Date.now()+9*3600000-29*dayMs).toISOString().slice(0,10),
+      q.get("to")??today(),31);
+    if(!p)return fail("RANGE",400);
+    const rows=await db.prepare("SELECT source_row_key AS key,local_day AS day,category "+
+      "FROM outings WHERE owner_id=? AND source_id='manual:outing' AND local_day>=? AND local_day<=? "+
+      "ORDER BY local_day DESC,id DESC LIMIT 501").bind(owner,p.from,p.to).all<OutingRow>();
+    if(rows.results.length>500)return fail("TOO_MANY",422);
+    return json({entries:rows.results});
+  }
+  const p=await body(req);
+  if(!p||typeof p.key!=="string"||!uuid.test(p.key))return fail("KEY");
+  const key=p.key.toLowerCase();
+  const old=await db.prepare("SELECT local_day AS day,category FROM outings "+
+    "WHERE owner_id=? AND source_id='manual:outing' AND source_row_key=?")
+    .bind(owner,key).first<{day:string;category:string}>();
+  if(req.method==="DELETE"){
+    if(!old)return fail("NOT_FOUND",404);
+    if(p.expectedDay!==old.day||p.expectedCategory!==old.category)return fail("CONFLICT",409);
+    const change=await db.prepare("DELETE FROM outings WHERE owner_id=? AND source_id='manual:outing' "+
+      "AND source_row_key=? AND local_day=? AND category=?")
+      .bind(owner,key,old.day,old.category).run();
+    return change.meta?.changes===1?json({status:"deleted",key}):fail("CONFLICT",409);
+  }
+  if(!validDay(p.day)||!outingCategory(p.category))return fail("OUTING");
+  if(req.method==="POST"){
+    await db.prepare("INSERT OR IGNORE INTO outings(id,owner_id,local_day,category,source_id,source_row_key) "+
+      "VALUES (?,?,?,?,'manual:outing',?)")
+      .bind("manual:outing:"+key,owner,p.day,p.category,key).run();
+    const row=await db.prepare("SELECT local_day AS day,category FROM outings "+
+      "WHERE owner_id=? AND source_id='manual:outing' AND source_row_key=?")
+      .bind(owner,key).first<{day:string;category:string}>();
+    return row?.day===p.day&&row.category===p.category?json({status:"saved",key}):fail("CONFLICT",409);
+  }
+  if(req.method==="PATCH"){
+    if(!old)return fail("NOT_FOUND",404);
+    if(p.expectedDay!==old.day||p.expectedCategory!==old.category)return fail("CONFLICT",409);
+    const change=await db.prepare("UPDATE outings SET local_day=?,category=? "+
+      "WHERE owner_id=? AND source_id='manual:outing' AND source_row_key=? AND local_day=? AND category=?")
+      .bind(p.day,p.category,owner,key,old.day,old.category).run();
+    return change.meta?.changes===1?json({status:"updated",key}):fail("CONFLICT",409);
+  }
+  return fail("METHOD",405);
+}
+
 const csvSafe=(x:unknown)=>{
   const value=x===null||x===undefined?"":String(x);
   // Prevent formula execution when opened in common spreadsheet programs.
@@ -272,7 +388,8 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
   const method=req.method;
   const pathMethods:Record<string,string[]>={
     "/api/mvp/compare":["GET"],"/api/mvp/drinks":["GET","POST","PATCH","DELETE"],
-    "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/export":["GET"]
+    "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/export":["GET"],
+    "/api/mvp/meals":["GET","PUT","DELETE"],"/api/mvp/outings":["GET","POST","PATCH","DELETE"]
   };
   if(!pathMethods[path])return fail("NOT_FOUND",404);
   if(!pathMethods[path].includes(method))return fail("METHOD",405);
@@ -283,6 +400,8 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
       ?await listDrinks(req,db,owner)
       :await writeDrink(req,db,owner,(await body(req))??{});
     if(path==="/api/mvp/experiments")return await experiments(req,db,owner);
+    if(path==="/api/mvp/meals")return await meals(req,db,owner);
+    if(path==="/api/mvp/outings")return await outings(req,db,owner);
     return await exportCsv(req,db,owner);
   }catch{return fail("DATA_UNAVAILABLE",503);}
 }
