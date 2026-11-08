@@ -43,7 +43,7 @@ type Summary = { inserted: number; updated: number; skipped: number; conflicted:
 function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const p = x as Record<string, unknown>;
-  if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "fit") return false;
+  if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "fit" && p.source !== "weight_day") return false;
   if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
   if (p.confirmed !== undefined && typeof p.confirmed !== "boolean") return false;
   if (p.hash !== undefined && typeof p.hash !== "string") return false;
@@ -140,6 +140,19 @@ function writeRows(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvR
       " WHERE activity_daily.steps IS NOT excluded.steps"
     ).bind("fit:"+owner+":"+row.day,owner,row.day,row.steps,row.day,job)];
   }
+  if(source==="weight_day"){
+    // Keep the original precision: measured_at is the YYYY-MM-DD string.
+    // One row only if the calendar date has NO recorded body weight of any source.
+    return [db.prepare(
+      "INSERT INTO body_measurements"+
+      "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"+
+      "source_id,source_row_key,source_kind,import_job_id)"+
+      " SELECT ?,?,?,'Asia/Tokyo',?,NULL,'csv:weight_day',?,'reported',?"+
+      " WHERE NOT EXISTS (SELECT 1 FROM body_measurements"+
+      " WHERE owner_id=? AND date(measured_at,'+9 hours')=? AND weight_kg IS NOT NULL)"
+    ).bind("weight_day:"+owner+":"+row.day,owner,row.day,row.weight,row.day,job,
+      owner,row.day)];
+  }
   if(source==="eclear"){
     // The original ECLEAR fingerprint includes the value. Match the physical
     // measurement by timestamp instead, so corrected values UPDATE rather
@@ -188,6 +201,17 @@ function auditRow(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvRo
       " AND steps IS NOT ?) THEN 'UPDATED' ELSE NULL END)"
     ).bind(job+":"+row.line,job,row.line,row.key,
       owner,row.day,row.steps,owner,row.day,row.steps);
+  }
+  if(source==="weight_day"){
+    // Classify BEFORE the guarded insert in the same D1 batch.
+    return db.prepare(
+      "INSERT INTO import_row_audit"+
+      "(id,import_job_id,source_row_number,source_row_key,result,error_code)"+
+      " VALUES (?,?,?,?,CASE WHEN EXISTS("+
+      " SELECT 1 FROM body_measurements WHERE owner_id=?"+
+      " AND date(measured_at,'+9 hours')=? AND weight_kg IS NOT NULL)"+
+      " THEN 'skipped' ELSE 'inserted' END,NULL)"
+    ).bind(job+":"+row.line,job,row.line,row.key,owner,row.day);
   }
   if(source==="eclear"){
     const exact="EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=? AND reliable_fingerprint=?)";
@@ -318,7 +342,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     ];
     for (const row of preview.rows) {
       // Canonical source updates must classify the pre-update row atomically.
-      if(payload.source==="eclear"||payload.source==="fit"){
+      if(payload.source==="eclear"||payload.source==="fit"||payload.source==="weight_day"){
         ops.push(auditRow(db,owner,payload.source,job,row));
         ops.push(...writeRows(db,owner,payload.source,job,row));
       }else{
