@@ -1,0 +1,194 @@
+name: Life-log one-shot UAT passkey-only release and password retirement
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: life-log-uat-deploy
+  cancel-in-progress: false
+jobs:
+  retire:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'fix(uat): retire temporary Owner password (#75)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify exact main, approved scope, UAT identity and password removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'fix(uat): retire temporary Owner password (#75)'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' \
+            .github/workflows/life-log-ci.yml \
+            .github/workflows/life-log-uat-passkey-only-release-once.yml \
+            scripts/verify-password-uat-local.sh \
+            src/worker/index.ts \
+            src/worker/login-screen.ts \
+            src/worker/node-crypto.d.ts \
+            src/worker/password-auth.ts \
+            src/worker/registration-screen.ts \
+            tests/password-auth.test.ts | sort > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/).filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.workers_dev!==true||
+             u.d1_databases?.length!==1||d?.binding!=="DB"||
+             d.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+             d.database_name!=="life-log-dev"||
+             u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false"||
+             u.vars?.MANUAL_REMOTE_TARGET!=="uat"||
+             u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
+              throw Error("Unexpected UAT target");
+          const auth=fs.readFileSync("src/worker/password-auth.ts","utf8");
+          const screen=fs.readFileSync("src/worker/login-screen.ts","utf8");
+          if(!auth.includes("PASSWORD_AUTH_RETIRED")||/pbkdf2|scrypt|UAT_TEMP_HASH/i.test(auth)||
+             screen.includes('id="password"')||screen.includes('id="username"'))
+              throw Error("Password code still active");
+          JS
+
+      - name: Build approved Worker
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Confirm only existing remote D1 metadata (GET)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+
+      - name: Read only passkey and session counts; stop if no active passkey
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkey_count,
+              (SELECT COUNT(*) FROM owner_sessions s JOIN owner_passkey_sessions p
+                 ON p.token_hash=s.token_hash
+                 WHERE s.owner_id='owner' AND s.expires_at>CAST(strftime('%s','now') AS INTEGER)) AS active_passkey_sessions,
+              (SELECT COUNT(*) FROM owner_credentials WHERE owner_id='owner') AS password_count,
+              (SELECT COUNT(*) FROM owner_sessions s WHERE s.owner_id='owner'
+                 AND s.token_hash NOT IN (SELECT token_hash FROM owner_passkey_sessions)) AS obsolete_sessions,
+              (SELECT COUNT(*) FROM body_measurements) AS weights,
+              (SELECT COUNT(*) FROM activity_daily) AS activities" > "$RUNNER_TEMP/before.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const raw=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/before.json","utf8"));
+          const rows=(Array.isArray(raw)?raw:[raw]).flatMap(x=>x.success===true?(x.results??[]):[]);
+          if(rows.length!==1||rows[0].passkey_count<1||rows[0].active_passkey_sessions<1)
+            throw Error("Enrolled passkey with active session not found; no mutation");
+          fs.writeFileSync(process.env.RUNNER_TEMP+"/before-counts.json",JSON.stringify(rows[0]));
+          console.log("PASS: at least one registered passkey and active session; no identifiers revealed");
+          JS
+
+      - name: Deploy only existing life-log-uat Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --env uat \
+            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
+                  MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+
+      - name: Verify UAT passkey-only login UI and retired password endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for i in $(seq 1 15); do
+            login=$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)
+            root=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
+            retired=$(curl -sS --max-time 15 -o "$RUNNER_TEMP/retired.json" -w '%{http_code}' -X POST \
+              "$UAT_URL/api/auth/login" -H "Origin: $UAT_URL" -H "Sec-Fetch-Site: same-origin" \
+              -H "Content-Type: application/json" -H "X-Life-Log-Intent: register-v1" \
+              --data '{"username":"owner","password":"invalid-synthetic-password"}' || true)
+            if [[ "$login" == 200 && "$root" == 403 && "$retired" == 410 ]] &&
+               grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html" &&
+               ! grep -Fq 'id="password"' "$RUNNER_TEMP/login.html"; then ready=1; break; fi
+            if [[ "$root" == 200 ]]; then echo "Unexpected anonymous access"; exit 1; fi
+            if [[ "$i" -lt 15 ]]; then sleep 4; fi
+          done
+          [[ "$ready" == 1 ]] || { echo "Passkey-only UAT HTTP smoke failed"; exit 1; }
+          echo "PASS: passkey-only UAT deployed, login 200 / retired password 410 / anonymous root 403"
+
+      - name: Delete only obsolete Owner credential and non-passkey sessions in UAT D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "DELETE FROM owner_credentials
+              WHERE owner_id='owner' AND EXISTS (SELECT 1 FROM owner_passkey_credentials);
+              DELETE FROM owner_sessions
+              WHERE owner_id='owner'
+                AND token_hash NOT IN (SELECT token_hash FROM owner_passkey_sessions)
+                AND EXISTS (SELECT 1 FROM owner_passkey_credentials);" \
+            > "$RUNNER_TEMP/cleanup.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const raw=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/cleanup.json","utf8"));
+          const out=Array.isArray(raw)?raw:[raw];
+          if(!out.length||out.some(x=>x.success!==true))
+            throw Error("D1 cleanup unsuccessful");
+          console.log("PASS: obsolete password credential and non-passkey sessions cleanup executed");
+          JS
+
+      - name: Verify passkey and application records unchanged; password and legacy sessions 0
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkey_count,
+              (SELECT COUNT(*) FROM owner_sessions s JOIN owner_passkey_sessions p
+                 ON p.token_hash=s.token_hash
+                 WHERE s.owner_id='owner' AND s.expires_at>CAST(strftime('%s','now') AS INTEGER)) AS active_passkey_sessions,
+              (SELECT COUNT(*) FROM owner_credentials WHERE owner_id='owner') AS password_count,
+              (SELECT COUNT(*) FROM owner_sessions s WHERE s.owner_id='owner'
+                 AND s.token_hash NOT IN (SELECT token_hash FROM owner_passkey_sessions)) AS obsolete_sessions,
+              (SELECT COUNT(*) FROM body_measurements) AS weights,
+              (SELECT COUNT(*) FROM activity_daily) AS activities" > "$RUNNER_TEMP/after.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const before=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/before-counts.json","utf8"));
+          const raw=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/after.json","utf8"));
+          const rows=(Array.isArray(raw)?raw:[raw]).flatMap(x=>x.success===true?(x.results??[]):[]);
+          if(rows.length!==1)throw Error("Invalid post-cleanup SQL result");
+          const after=rows[0];
+          if(after.password_count!==0||after.obsolete_sessions!==0||
+             after.passkey_count!==before.passkey_count||
+             after.active_passkey_sessions<1||
+             after.weights!==before.weights||after.activities!==before.activities)
+            throw Error("Post-cleanup invariant failed");
+          console.log("PASS: no password credential or non-passkey Owner session; passkey and data records preserved");
+          JS
