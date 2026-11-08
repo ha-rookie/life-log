@@ -17,6 +17,7 @@ describe("Actual ECLEAR CSV encoding decoding regression",()=>{
   const raw=Uint8Array.from(hex.match(/../g)!.map(s=>parseInt(s,16)));
   const decoded=decodeOfficialCsv(raw);
   expect(decoded.encoding).toBe("Shift_JIS");
+  expect(detectOfficialCsvSource(decoded.text)).toBe("eclear");
   const chunks=normalizeOfficialCsv("eclear",decoded.text);
   expect(chunks.total).toBe(1);
   const p=await previewCsv("eclear",chunks.parts[0]);
