@@ -130,8 +130,8 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
     } finally { setBusy(false); }
   }
   return <section className="panel manual-entry" aria-labelledby="manual-title">
-    <h2 id="manual-title">今日の記録（体重・歩数）</h2>
-    <p className="hint">実際に測定した日時を入力してください。時刻不明の体重は登録せず、推定時刻を作りません。入力・訂正はローカル開発環境、または本人認証と書込許可が設定された専用環境でのみ利用できます。許可のない環境では登録できません。</p>
+    <h2 id="manual-title">体重・歩数の入力</h2>
+    <p className="hint">体重には実際の測定日時を入力します。CSVの数値がある日はCSVを優先表示し、手入力も残ります。</p>
     <form onSubmit={e => void saveWeight(e)}>
       <h3>体重の実測</h3>
       <div className="manual-fields">
@@ -166,8 +166,9 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       </div>
     </form>
     {message && <p role="status" aria-live="polite">{message}</p>}
-    <div className="manual-records">
-      <h3>手入力の直近30日</h3>
+    <details className="manual-records sub-details">
+      <summary>手入力の履歴・訂正・取消</summary>
+      <h3>直近30日の履歴</h3>
       <button type="button" disabled={busy || loading} onClick={() => void load()}>履歴を更新</button>
       {loading && <p role="status">記録を読み込み中…</p>}
       {!loading && <div className="manual-history">
@@ -193,6 +194,6 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
           </li>)}</ul>
         </div>
       </div>}
-    </div>
+    </details>
   </section>;
 }
