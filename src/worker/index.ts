@@ -1,6 +1,5 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
-import { registrationScreen } from "./registration-screen";
 import { loginScreen } from "./login-screen";
 import { authRoute, sessionOwner } from "./password-auth";
 import { getSummary, type Database } from "./summary";
@@ -33,16 +32,17 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
     async fetch(request: Request, env: Env): Promise<Response> {
       // Isolated local-device preview: no D1 reads/writes, cookies, or authenticated API.
       if (new URL(request.url).pathname === "/preview" && request.method === "GET") return localPreview();
-      if (new URL(request.url).pathname === "/register" && request.method === "GET") return registrationScreen();
+      if (new URL(request.url).pathname === "/register" && request.method === "GET")
+        return new Response(null,{status:302,headers:{...privateHeaders,Location:"/login"}});
       if (new URL(request.url).pathname === "/login" && request.method === "GET") return loginScreen();
       if (new URL(request.url).pathname.startsWith("/api/auth/")) return authRoute(request, env as unknown as Parameters<typeof authRoute>[1]);
       // Every other pathname, including index.html and hashed assets, enters this gate.
       // No unauthenticated /health, static-asset exception, or dev bypass.
-      // Password-only UAT never accepts Access identity in place of a password session.
+      // Owner-only UAT never accepts Access identity in place of the WebAuthn session.
       let ownerId = env.PASSWORD_ONLY_UAT === "true" ? null : await authorize(request, env);
-      let passwordSession = false;
+      let ownerSession = false;
       if (!ownerId && env.PASSWORD_ONLY_UAT === "true") {
-        try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); passwordSession = ownerId === "owner"; }
+        try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); ownerSession = ownerId === "owner"; }
         catch { ownerId = null; }
       }
       if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
@@ -52,8 +52,8 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
         if (path === "/api/weight/trend") return handleWeightTrend(request, env.DB as unknown as TrendDb, ownerId);
         if (path === "/api/manual/records" || path === "/api/manual/weight" || path === "/api/manual/steps") return handleManualEntry(request, env.DB as unknown as ManualDb, ownerId,
           env.MANUAL_ENTRY_LOCAL_ONLY, {
-            // Remote writes without Access require an authenticated password session AND explicit UAT opt-in.
-            enabled: env.PASSWORD_ONLY_UAT === "true" && !passwordSession ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
+            // Remote writes without Access require an authenticated Owner session AND explicit UAT opt-in.
+            enabled: env.PASSWORD_ONLY_UAT === "true" && !ownerSession ? "false" : env.MANUAL_REMOTE_WRITE_ENABLED,
             target: env.MANUAL_REMOTE_TARGET,
             origin: env.MANUAL_REMOTE_ORIGIN,
           });
