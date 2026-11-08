@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^fix\(csv\): Android lifestyle CSV multi-part import \(#[0-9]+\)
+          git show -s --format=%s HEAD | grep -Eq '^fix\(csv\): Android lifestyle CSV multi-part import \(#[0-9]+\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
           printf '%s\n' \
             ".github/workflows/life-log-uat-ux-v1-once.yml" \
