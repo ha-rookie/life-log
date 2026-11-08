@@ -441,6 +441,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
               <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日）</dd>
               <dt>飲酒した日</dt><dd>{p.drinking.drinkingDays}日／観測 {p.drinking.observedDays}日（欠測 {p.drinking.missingDays}日）</dd>
               <dt>実際に記録したお酒</dt><dd>{p.drinking.recordedAlcoholCups}杯（ノンアル {p.drinking.recordedNonAlcoholCups}杯）</dd>
+              <dt>純アルコール（度数・容量が分かる分）</dt>
+              <dd>{p.drinking.knownAlcoholG}g
+                {p.drinking.unknownAlcoholCups>0?` ／ 未算出 ${p.drinking.unknownAlcoholCups}杯`:""}
+              </dd>
               <dt>外食（昼・夜）</dt><dd>{p.meals.restaurantLunchDays}昼／{p.meals.restaurantDinnerDays}夜（観測 {p.meals.observedLunchDays}昼・{p.meals.observedDinnerDays}夜）</dd>
               <dt>夜食</dt><dd>あり {p.meals.lateMealDays}日／観測 {p.meals.lateMealObservedDays}日</dd>
               <dt>飲みの場への参加</dt><dd>{p.outings.visits}回（会社 {p.outings.work}・居酒屋/バー {p.outings.bar}・その他 {p.outings.other}）</dd>
