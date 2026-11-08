@@ -80,7 +80,7 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
               origin: env.MANUAL_REMOTE_ORIGIN
             });
           if (!isSafeLocalImport(request, env.IMPORT_LOCAL_ONLY) && !remoteImport) {
-            return Response.json({ error: "IMPORT_WRITE_DISABLED" }, { status: 403, headers: privateHeaders });
+            return Response.json({ error: "LOCAL_IMPORT_DISABLED" }, { status: 403, headers: privateHeaders });
           }
           return handleImport(request,env.DB as unknown as ImportDb,ownerId);
         }
