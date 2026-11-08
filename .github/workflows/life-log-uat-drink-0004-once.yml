@@ -1,0 +1,195 @@
+name: Life-log UAT drink metadata migration 0004 (one-shot, premerge)
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/life-log-uat-drink-0004-once.yml
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+concurrency:
+  group: life-log-uat-drink-0004-migration
+  cancel-in-progress: false
+jobs:
+  migrate:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.ref == 'refs/heads/main' &&
+      startsWith(github.event.head_commit.message, 'ci(uat): premerge drink schema 0004 ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      EXPECTED_PR_SHA: 7c034f446c61799052f9202e7b8fbac23ed8f751
+      EXPECTED_BASE: 98925150cd2acdb153d0eea1a45a6e46f931e3eb
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Gate exact one-shot main commit, PR head, CI, and file scopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+          git show -s --format=%s HEAD | grep -Eq '^ci\(uat\): premerge drink schema 0004 \(#[0-9]+\)$'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' \
+            ".github/workflows/life-log-uat-drink-0004-once.yml" \
+            ".github/workflows/life-log-uat-ux-v1-once.yml" | sort > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/118" \
+            | jq -e --arg sha "$EXPECTED_PR_SHA" \
+              '.state=="open" and .draft==true and .merged==false and .head.sha==$sha and .base.ref=="main"' > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_PR_SHA/check-runs?per_page=100" \
+            | jq -e '[.check_runs[] | select(.name=="validate")] | length == 3 and all(.[]; .status=="completed" and .conclusion=="success")' > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/pulls/118/files?per_page=100" --jq '.[].filename' \
+            | sort > "$RUNNER_TEMP/pr-actual.txt"
+          printf '%s\n' \
+            "migrations/0004_drink_details.sql" \
+            "scripts/validate-schema.py" \
+            "src/client/MvpFeatures.tsx" \
+            "src/shared/drink-measures.ts" \
+            "src/worker/mvp-features.ts" \
+            "tests/drink-measures.test.ts" \
+            "tests/mvp-features.test.ts" | sort > "$RUNNER_TEMP/pr-expected.txt"
+          diff -u "$RUNNER_TEMP/pr-expected.txt" "$RUNNER_TEMP/pr-actual.txt"
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          echo "PASS: exact PR HEAD, all required CI success, 7-file scope, one-shot main gate"
+      - uses: actions/checkout@v6
+        with:
+          ref: 7c034f446c61799052f9202e7b8fbac23ed8f751
+          path: drink-pr
+          persist-credentials: false
+      - name: Validate new migration is additive and targets ONLY existing life-log UAT D1
+        working-directory: drink-pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_PR_SHA"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const config=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8")
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=config.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.workers_dev!==true||
+             u.d1_databases?.length!==1||d?.binding!=="DB"||
+             d?.database_name!=="life-log-dev"||
+             d?.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+             d?.migrations_dir!=="migrations")
+            throw Error("Refuse to alter any other D1 resource");
+          const files=fs.readdirSync("migrations").filter(x=>x.endsWith(".sql")).sort();
+          if(JSON.stringify(files)!==JSON.stringify([
+            "0001_initial.sql","0002_owner_auth.sql",
+            "0003_owner_passkey.sql","0004_drink_details.sql"
+          ]))throw Error("Unexpected migration inventory");
+          const sql=fs.readFileSync("migrations/0004_drink_details.sql","utf8")
+            .split(/\r?\n/).filter(x=>!x.trim().startsWith("--")).join("\n");
+          const stmts=sql.split(";").map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean);
+          const expected=[
+            "ALTER TABLE drink_entries ADD COLUMN drink_variant TEXT CHECK(drink_variant IS NULL OR drink_variant='beer')",
+            "ALTER TABLE drink_entries ADD COLUMN size_label TEXT CHECK(size_label IS NULL OR size_label IN ('regular','large','mega','custom'))"
+          ];
+          if(JSON.stringify(stmts)!==JSON.stringify(expected))
+            throw Error("Only two reviewed additive ALTER TABLE statements are allowed");
+          console.log("PASS: exactly two additive columns in pinned PR HEAD; no drops or data updates");
+          JS
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Install pinned Wrangler
+        working-directory: drink-pr
+        run: npm ci --no-audit --no-fund
+      - name: Read ONLY UAT data counts and confirm old schema (BEFORE migration)
+        working-directory: drink-pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners) AS owner_count,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys,
+              (SELECT COUNT(*) FROM body_measurements) AS weights,
+              (SELECT COUNT(*) FROM activity_daily) AS steps,
+              (SELECT COUNT(*) FROM lifestyle_days) AS lifestyle,
+              (SELECT COUNT(*) FROM drink_entries) AS drinks,
+              (SELECT COUNT(*) FROM outings) AS outings,
+              (SELECT COUNT(*) FROM import_jobs) AS imports" \
+            > "$RUNNER_TEMP/pre-drink-0004-counts.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" \
+            > "$RUNNER_TEMP/pre-drink-0004-columns.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const read=(name)=>{
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/"+name,"utf8"));
+            const packets=Array.isArray(d)?d:[d];
+            if(packets.length!==1||packets[0].success!==true||
+               !Array.isArray(packets[0].results))throw Error("D1 read failed "+name);
+            return packets[0].results;
+          };
+          const r=read("pre-drink-0004-counts.json");
+          if(r.length!==1||r[0].owner_count!==1||r[0].passkeys<1)
+            throw Error("Owner/passkey mismatch: do NOT migrate");
+          if(Object.values(r[0]).some(x=>!Number.isSafeInteger(x)||x<0))
+            throw Error("Invalid count data");
+          const cols=new Set(read("pre-drink-0004-columns.json").map(x=>x.name));
+          if(!["drink_kind","cups","volume_ml","abv_pct","source_id"].every(x=>cols.has(x))||
+             cols.has("drink_variant")||cols.has("size_label"))
+            throw Error("Unexpected pre-migration drink table; stop without writes");
+          console.log("PASS: user records retained as aggregate-only baseline and old schema confirmed");
+          JS
+      - name: Apply ONLY pinned additive 0004 to existing UAT D1 (remote schema write)
+        working-directory: drink-pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 migrations apply DB --env uat --remote
+      - name: Verify both columns, unchanged record counts and Owner passkeys (AFTER migration)
+        working-directory: drink-pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners) AS owner_count,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys,
+              (SELECT COUNT(*) FROM body_measurements) AS weights,
+              (SELECT COUNT(*) FROM activity_daily) AS steps,
+              (SELECT COUNT(*) FROM lifestyle_days) AS lifestyle,
+              (SELECT COUNT(*) FROM drink_entries) AS drinks,
+              (SELECT COUNT(*) FROM outings) AS outings,
+              (SELECT COUNT(*) FROM import_jobs) AS imports" \
+            > "$RUNNER_TEMP/post-drink-0004-counts.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" \
+            > "$RUNNER_TEMP/post-drink-0004-columns.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const rows=(name)=>{
+            const d=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/"+name,"utf8"));
+            const p=Array.isArray(d)?d:[d];
+            if(p.length!==1||p[0].success!==true||!Array.isArray(p[0].results))
+              throw Error("D1 post-verification failed: "+name);
+            return p[0].results;
+          };
+          const pre=rows("pre-drink-0004-counts.json");
+          const post=rows("post-drink-0004-counts.json");
+          if(pre.length!==1||post.length!==1||JSON.stringify(pre[0])!==JSON.stringify(post[0]))
+            throw Error("Owner or row counts changed; STOP all next steps");
+          const old=rows("pre-drink-0004-columns.json").map(x=>x.name);
+          const now=rows("post-drink-0004-columns.json").map(x=>x.name);
+          if(now.length!==old.length+2||
+             old.some((x,i)=>now[i]!==x)||
+             now.at(-2)!=="drink_variant"||now.at(-1)!=="size_label")
+            throw Error("Unexpected schema result; STOP all next steps");
+          console.log("PASS UAT DRINK_0004: two new nullable columns; all Owner and data record counts unchanged");
+          console.log("PASS: remote D1 data values not retrieved, no imports or Worker deployment");
+          JS
