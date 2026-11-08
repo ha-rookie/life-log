@@ -27,7 +27,7 @@ describe("Owner-only steps trend based on canonical Google Fit",()=>{
      " VALUES(?,?,?,?,?,?)"
    ).bind(owner+":"+day+":"+source,owner,day,steps,source,day).run();
  }
- async function get(suffix:string="",owner:string|null="owner",method="GET"){
+ async function get(suffix:string="",owner:"owner"|null="owner",method="GET"){
    const spy=vi.fn((sql:string)=>db.prepare(sql));
    const handler=createHandler(async()=>owner);
    const res=await handler.fetch(new Request(path+suffix,{method}),{
