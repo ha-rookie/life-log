@@ -17,8 +17,9 @@ type Kind=typeof kinds[number];
 const isKind=(s:unknown):s is Kind=>typeof s==="string"&&kinds.includes(s as Kind);
 const today=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,10);
 const millis=(date:string)=>Date.parse(date+"T00:00:00Z");
-const validDay=(d:unknown):d is string=>typeof d==="string"&&/^\d{4}-\d\d-\d\d$/.test(d)&&
-  Number.isFinite(millis(d))&&new Date(millis(d)).toISOString().slice(0,10)===d&&d<=today();
+const validCalendarDay=(d:unknown):d is string=>typeof d==="string"&&/^\d{4}-\d\d-\d\d$/.test(d)&&
+  Number.isFinite(millis(d))&&new Date(millis(d)).toISOString().slice(0,10)===d;
+const validDay=(d:unknown):d is string=>validCalendarDay(d)&&d<=today();
 const jstDate=(text:string)=>new Date(Date.parse(text)+9*3600000).toISOString().slice(0,10);
 const validObserved=(s:unknown):s is string=>typeof s==="string"&&
   /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(s)&&
@@ -186,7 +187,8 @@ async function experiments(req:Request,db:MvpDb,owner:string){
   const id=p.id.toLowerCase();
   if(req.method==="POST"){
     if(!validText(p.statement)||!validText(p.targetAction)||
-      !validDay(p.startsOn)||!validDay(p.endsOn)||p.startsOn>p.endsOn||
+      !validCalendarDay(p.startsOn)||!validCalendarDay(p.endsOn)||
+      p.startsOn>p.endsOn||p.endsOn>new Date(Date.now()+9*3600000+366*dayMs).toISOString().slice(0,10)||
       (millis(p.endsOn)-millis(p.startsOn))/dayMs>90)return fail("PLAN");
     // Only one live experiment at a time; no duplicate retry creates extra rows.
     const existing=await db.prepare("SELECT id,target_action AS action FROM behavior_experiments "+
