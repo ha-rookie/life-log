@@ -1,4 +1,5 @@
 import { isSafeLocalManual, isSafeRemoteManual, type RemoteWriteConfig } from "./manual-entry";
+import { isEclearWeightSource } from "../shared/weight-trend";
 
 type Stmt={bind(...args:unknown[]):{
   first<T>():Promise<T|null>;
@@ -51,6 +52,17 @@ type D={id:string;observed_at:string;drink_kind:Kind;alcohol:number;cups:number;
 const priority=(source:string)=>source.startsWith("manual:")?0:source.startsWith("eclear")?1:2;
 const prefer=<T extends {source_id:string}>(old:T|undefined,next:T):T=>
   !old||priority(next.source_id)<priority(old.source_id)?next:old;
+const isFitStepSource=(s:string):boolean=>
+  s==="fit"||s==="google_fit"||s==="google-fit"||
+  s.startsWith("fit:")||s.startsWith("google_fit:")||
+  s.startsWith("google-fit:")||s.startsWith("csv:fit")||
+  s.startsWith("csv:google_fit")||s.startsWith("csv:google-fit");
+const stepRank=(s:string):number=>
+  isFitStepSource(s)?0:s.startsWith("manual:")?1:2;
+const preferStep=(old:S|undefined,next:S):S=>
+  !old||stepRank(next.source_id)<stepRank(old.source_id)?next:old;
+const weightRank=(s:string):number=>
+  isEclearWeightSource(s)?0:s.startsWith("manual:")?1:2;
 async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days:number}){
   const [fromSec,toSec]=dateBounds(p);
   const weights=await db.prepare("SELECT id,measured_at,weight_kg,source_id,anomaly_flag FROM body_measurements "+
@@ -73,12 +85,26 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   const measures=new Map<string,W>();
   for(const w of weights.results){
     if(w.weight_kg===null||w.anomaly_flag!==0)continue;
-    measures.set(jstDate(w.measured_at),w);
+    // ECLEAR is authoritative. Old lifestyle/legacy/XLSX weight is not a
+    // historical fallback. Explicit manual observations remain separate.
+    if(!isEclearWeightSource(w.source_id)&&!w.source_id.startsWith("manual:")&&w.source_id!=="synthetic")continue;
+    const day=jstDate(w.measured_at),old=measures.get(day);
+    if(!old||weightRank(w.source_id)<weightRank(old.source_id)||
+      (weightRank(w.source_id)===weightRank(old.source_id)&&
+       (Date.parse(w.measured_at)>Date.parse(old.measured_at)||
+        (w.measured_at===old.measured_at&&w.id>old.id))))
+      measures.set(day,w);
   }
   const observed=[...measures.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
   const start=observed[0],end=observed.at(-1);
   const days=new Map<string,S>();
-  for(const s of steps.results)if(s.steps!==null)days.set(s.local_day,prefer(days.get(s.local_day),s));
+  for(const s of steps.results){
+    // Google Fit is the canonical step record, never sum duplicate sources.
+    // CSV lifestyle steps are reference-only; explicit manual inputs remain
+    // eligible if that day has no Fit observation.
+    if(s.steps===null||!(isFitStepSource(s.source_id)||s.source_id.startsWith("manual:")))continue;
+    days.set(s.local_day,preferStep(days.get(s.local_day),s));
+  }
   const ls=new Map<string,L>();
   // Preserve each observed field independently: a manual meal-only row must
   // never turn an existing CSV drinking observation into an unknown day.
