@@ -1,5 +1,5 @@
 import { passkeyRoute } from "./passkey-auth";
-import { pbkdf2Sync } from "node:crypto";
+import { scrypt as nodeScrypt } from "node:crypto";
 
 type Stmt = { bind(...args: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<{ meta?: { changes?: number } }> } };
 export type AuthDb = { prepare(sql: string): Stmt; batch?(statements:unknown[]):Promise<unknown[]> };
@@ -10,20 +10,19 @@ const encoder = new TextEncoder();
 const toHex = (bytes: Uint8Array) => Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
 const fromHex = (hex: string) => new Uint8Array(hex.match(/../g)!.map(x=>parseInt(x,16)));
 async function digest(text: string) { return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(text)))); }
-const ITERATIONS = 100000;
-// High-entropy temporary Owner credential; only its PBKDF2 verifier is committed.
-// Enabled exclusively for password-only UAT while no credential is provisioned.
-// First successful login persists it to D1. A registered passkey prevents re-bootstrap
-// after the temporary password is retired; no GitHub setup Secret is required.
-const UAT_TEMP_SALT = "b8a1ebd3d6144479ed597ede5d76fa65";
-const UAT_TEMP_HASH = "fdc3688d4855f30457c3a550d1c8580e2c4135212af668ed71727814a51762f3";
-async function passwordHash(password: string, salt: string, iterations = ITERATIONS) {
-  // Workers WebCrypto caps PBKDF2 at 100,000 iterations. The native
-  // node:crypto API is available for our 2026-11-04 compatibility date;
-  // accept previously stored 210,000-round verifiers while first-use UAT is 100,000.
-  if(!Number.isSafeInteger(iterations)||iterations<100000||iterations>1000000||
-     !/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_VERIFIER");
-  return toHex(pbkdf2Sync(password,fromHex(salt),iterations,32,"sha256"));
+const LEGACY_COLUMN_ITERATIONS = 100000;
+const SCRYPT_N = 32768, SCRYPT_R = 8, SCRYPT_P = 3, SCRYPT_MAXMEM = 64 * 1024 * 1024;
+// Reuse the WORKHUB scrypt N=32768, r=8, p=3 profile. The UAT password
+// verifier is temporary, and is never persisted to D1 or re-enabled after passkey setup.
+const UAT_TEMP_SALT = "01224a57fdb3e657d6bf74181e7cb403";
+const UAT_TEMP_HASH = "b230594443d6290f0507815bcc6471efa44d8373c3897da5771fad26c4a4c484";
+async function passwordHash(password: string, salt: string): Promise<string> {
+  if(!/^[a-f0-9]{32}$/.test(salt))throw Error("INVALID_SCRYPT_SALT");
+  return new Promise((resolve,reject)=>{
+    nodeScrypt(password.normalize("NFC"),fromHex(salt),32,
+      {N:SCRYPT_N,r:SCRYPT_R,p:SCRYPT_P,maxmem:SCRYPT_MAXMEM},
+      (error,bytes)=>error?reject(error):resolve(toHex(bytes)));
+  });
 }
 function equal(a: string,b: string) {
   if(a.length!==b.length)return false;
@@ -125,30 +124,32 @@ export async function authRoute(request:Request,env:PasswordAuthEnv):Promise<Res
       const hash=await passwordHash(data.password,salt);
       await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)").bind("owner",new Date().toISOString()).run();
       const result=await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
-        .bind("owner",salt,hash,ITERATIONS,new Date().toISOString()).run();
+        .bind("owner",salt,`scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${hash}`,LEGACY_COLUMN_ITERATIONS,new Date().toISOString()).run();
       if(result.meta?.changes!==1)return json({error:"ALREADY_REGISTERED"},409);
       return issue(env.DB);
     }
     if(path==="/api/auth/login"){
       if(data.username!==undefined&&data.username!=="owner")return json({error:"INVALID_CREDENTIALS"},401);
-      let cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
-        .bind("owner").first<{salt:string;hash:string;iterations:number}>();
-      if(!cred && env.PASSWORD_ONLY_UAT==="true"){
-        // Never recreate the temporary login once a passkey has been enrolled.
+      if(env.PASSWORD_ONLY_UAT==="true"){
+        // First-use personal UAT: no password DB enrollment, no legacy verifier path.
+        // Once any passkey exists, the temporary password is immediately unusable.
+        if(new URL(request.url).origin!=="https://life-log-uat.ha-rookie.workers.dev")
+          return json({error:"INVALID_CREDENTIALS"},401);
         const passkey=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
         if(passkey)return json({error:"INVALID_CREDENTIALS"},401);
         const candidate=await passwordHash(data.password,UAT_TEMP_SALT);
         if(!equal(candidate,UAT_TEMP_HASH))return json({error:"INVALID_CREDENTIALS"},401);
+        // Password session only: existing owners row may already exist from previous UAT.
         await env.DB.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES(?,?)")
           .bind("owner",new Date().toISOString()).run();
-        await env.DB.prepare("INSERT OR IGNORE INTO owner_credentials(owner_id,password_salt,password_hash,iterations,created_at) VALUES(?,?,?,?,?)")
-          .bind("owner",UAT_TEMP_SALT,UAT_TEMP_HASH,ITERATIONS,new Date().toISOString()).run();
-        cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash,iterations FROM owner_credentials WHERE owner_id=?")
-          .bind("owner").first<{salt:string;hash:string;iterations:number}>();
+        return issue(env.DB);
       }
-      if(!cred)return json({error:"INVALID_CREDENTIALS"},401);
-      const hash=await passwordHash(data.password,cred.salt,cred.iterations);
-      if(!equal(hash,cred.hash))return json({error:"INVALID_CREDENTIALS"},401);
+      const cred=await env.DB.prepare("SELECT password_salt AS salt,password_hash AS hash FROM owner_credentials WHERE owner_id=?")
+        .bind("owner").first<{salt:string;hash:string}>();
+      const match=cred?.hash.match(/^scrypt\\$32768\\$8\\$3\\$([a-f0-9]{64})$/);
+      if(!cred||!match)return json({error:"INVALID_CREDENTIALS"},401);
+      const candidate=await passwordHash(data.password,cred.salt);
+      if(!equal(candidate,match[1]))return json({error:"INVALID_CREDENTIALS"},401);
       return issue(env.DB);
     }
     return json({error:"NOT_FOUND"},404);
