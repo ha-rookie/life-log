@@ -393,14 +393,30 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
           .first<{n:number}>())?.n ?? 0;
       }
 
+      async function toTab(tab:"home"|"record"){
+        const label=tab==="home"?"ホーム":"記録";
+        const clicked=await evaluate('(()=>{const b=[...document.querySelectorAll(".app-nav-mobile button")]'
+          +'.find(x=>x.textContent.trim()==='+JSON.stringify(label)+');'
+          +'if(!b)return false;b.click();return true})()');
+        expect(clicked).toBe(true);
+        await until('location.hash==='+JSON.stringify("#"+tab),"tab navigation "+tab);
+        if(tab==="record"){
+          await until('!!document.querySelector(".manual-entry")'
+            +'&&!document.querySelector(".manual-records [role=status]")',"manual entry loaded");
+          expect(await evaluate('(()=>{document.querySelector(".manual-records").open=true;return true})()')).toBe(true);
+        }else{
+          await until('!!document.querySelector(".trend-table-scroll tbody")'
+            +'&&!!document.querySelector("#overview-weight")',"home trend loaded");
+        }
+      }
       await cdp("Page.enable");await cdp("Runtime.enable");
       await cdp("Emulation.setDeviceMetricsOverride",{
         width:390,height:844,deviceScaleFactor:1,mobile:true,
       });
-      await cdp("Page.navigate",{url:"http://127.0.0.1:"+server.address().port+"/"});
+      await cdp("Page.navigate",{url:"http://127.0.0.1:"+server.address().port+"/#record"});
       await until('!!document.querySelector(".manual-entry")'
-        +'&&!!document.querySelector(".trend-table-scroll tbody")'
-        +'&&!document.querySelector(".manual-entry [role=status]")',"app+manual history+trend load");
+        +'&&!document.querySelector(".manual-records [role=status]")',"record tab and manual history load");
+      expect(await evaluate('(()=>{document.querySelector(".manual-records").open=true;return true})()')).toBe(true);
       expect(await evaluate("window.__reactVersion")).toBe("19.3.1");
       expect(await evaluate("window.innerWidth")).toBe(390);
       expect(await evaluate("document.documentElement.scrollWidth")).toBeLessThanOrEqual(390);
@@ -423,10 +439,12 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await click("体重を記録");
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
         +'.some(x=>x.textContent.includes("75.1"))',"weight saved to history");
-      await until('document.querySelector(".trend-table-scroll tbody")?.innerText.includes("75.1")',
-        "weight visible in existing trend table");
-      await until('document.querySelector("#weight-title")?.parentElement?.innerText.includes("75.1")',
-        "top summary refreshed");
+      await toTab("home");
+      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.1")',
+        "weight visible in home trend");
+      await until('document.querySelector("#overview-weight")?.parentElement?.textContent.includes("75.1")',
+        "home weight metric refreshed");
+      await toTab("record");
       expect(refreshCount).toBeGreaterThan(beforeTrend);
       expect(await numberOf("body_measurements")).toBe(1);
 
@@ -436,8 +454,12 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
         +'.find(b=>b.textContent.trim()==="体重を訂正")',"weight edit mode");
       await setInput('.manual-entry form:first-of-type input[type="number"]',"75.6");
       await click("体重を訂正");
-      await until('document.querySelector(".trend-table-scroll tbody")?.innerText.includes("75.6")',
+      await until('[...document.querySelectorAll(".manual-history > div:first-child li")]'
+        +'.some(x=>x.textContent.includes("75.6"))',"edited weight history");
+      await toTab("home");
+      await until('document.querySelector(".trend-table-scroll tbody")?.textContent.includes("75.6")',
         "edited weight visible in chart");
+      await toTab("record");
       expect(await numberOf("body_measurements")).toBe(1);
 
       // Steps: save, correct, and preserve a deliberate zero (not missing).
@@ -484,8 +506,10 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       await clickFromRow(0,0,"取消");
       await until('[...document.querySelectorAll(".manual-history > div:first-child li")].length===0',
         "weight cancelled");
-      await until('document.querySelector("#weight-title")?.parentElement?.innerText.includes("記録なし")',
-        "summary after cancellation");
+      await toTab("home");
+      await until('document.querySelector("#overview-weight")?.parentElement?.textContent.includes("測定記録なし")',
+        "home missing weight after cancellation");
+      await toTab("record");
       expect(await numberOf("body_measurements")).toBe(0);
 
       // A failed response AFTER D1 committed is ambiguous, not a license to
@@ -639,7 +663,8 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     expect(html).toContain('type="number"');
     expect(html).toContain("体重を記録");
     expect(html).toContain("歩数を記録");
-    expect(html).toContain("ローカル開発環境");
-    expect(html).toContain("時刻不明の体重は登録せず");
+    expect(html).toContain("CSVの数値がある日はCSVを優先表示");
+    expect(html).toContain("手入力の履歴・訂正・取消");
+    expect(html).toContain("体重には実際の測定日時を入力します");
   });
 });

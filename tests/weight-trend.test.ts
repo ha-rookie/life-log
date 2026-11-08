@@ -210,7 +210,8 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
     // Issue #25: target date is editable alongside the goal range, UI-only.
     expect(html).toContain('aria-label="目標日"');
     expect(html).toContain('value="2026-12-22"');
-    expect(html).toContain("目標値と目標日の変更は画面内のみ");
+        expect(html).toContain("期間・目標の詳細設定");
+    expect(html).toContain("変更は保存されません");
     expect(html).toContain('aria-label="表示期間の移動"');
     for (const label of ["前の期間","次の期間","最新へ"]) expect(html).toContain(label);
     expect(css).toContain(".trend-period-nav{display:grid;");

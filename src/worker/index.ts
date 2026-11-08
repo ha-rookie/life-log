@@ -2,7 +2,7 @@ import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
 import { loginScreen } from "./login-screen";
 import { authRoute, sessionOwner } from "./password-auth";
-import { getSummary, type Database } from "./summary";
+import { getSummary, getDashboard, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
 import { isSafeRemoteManual } from "./manual-entry";
 import { handleAuditHistory } from "./audit-history";
@@ -85,6 +85,12 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
           return handleImport(request,env.DB as unknown as ImportDb,ownerId);
         }
         if (path === "/api/import/preview") return handleImport(request,env.DB as unknown as ImportDb,ownerId);
+        if (path === "/api/dashboard") {
+          if(request.method!=="GET")return Response.json({error:"METHOD"},{status:405,
+            headers:{...privateHeaders,Allow:"GET"}});
+          try {return Response.json(await getDashboard(env.DB,ownerId),{headers:privateHeaders});}
+          catch {return Response.json({error:"DATA_UNAVAILABLE"},{status:503,headers:privateHeaders});}
+        }
         if (path !== "/api/summary") return Response.json({ error: "Not found" }, { status: 404, headers: privateHeaders });
         if (request.method !== "GET") return Response.json({ error: "Method not allowed" }, { status: 405, headers: { ...privateHeaders, Allow: "GET" } });
         try {
