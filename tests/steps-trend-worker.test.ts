@@ -2,7 +2,6 @@ import { afterAll,beforeAll,beforeEach,describe,it,expect,vi } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import schemaSql from "../migrations/0001_initial.sql?raw";
 import { createHandler,type Env } from "../src/worker/index";
-import { buildStepsTrend } from "../src/worker/steps-trend";
 type Statement={bind(...values:unknown[]):{all<T>():Promise<{results:T[]}>;run():Promise<unknown>};run():Promise<unknown>};
 type Db={prepare(sql:string):Statement};
 const path="https://example.invalid/api/steps/trend";
