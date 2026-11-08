@@ -22,6 +22,10 @@ export function decodeOfficialCsv(bytes: Uint8Array):{text:string;encoding:"UTF-
 }
 
 const PART_ROWS=40;
+// Lifestyle D1 conflict guards bind multiple parameters per day.
+// Keep each job small, preserving the backend's existing strict 100-row limit
+// and the statement parameter budget even with overlapping manual entries.
+const LIFESTYLE_PART_ROWS=8;
 function cells(text:string):string[][] {
   if(new TextEncoder().encode(text).length>MAX_ORIGINAL_BYTES||text.includes("\0"))
     throw Error("FILE_SIZE_OR_ENCODING");
@@ -126,8 +130,9 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
   const chunks:string[]=[];
   const h=source==="eclear"?"measured_at,weight_kg,body_fat_pct":
     source==="fit"?"local_day,steps":"local_day,drinking_presence,drink_cups,steps";
-  for(let i=0;i<output.length;i+=PART_ROWS)
-    chunks.push(h+"\n"+output.slice(i,i+PART_ROWS)
+  const partSize=source==="lifestyle"?LIFESTYLE_PART_ROWS:PART_ROWS;
+  for(let i=0;i<output.length;i+=partSize)
+    chunks.push(h+"\n"+output.slice(i,i+partSize)
       .map(r=>r.map(quote).join(",")).join("\n")+"\n");
   return {parts:chunks,total:output.length,missingSteps};
 }
