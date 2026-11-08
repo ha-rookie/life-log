@@ -46,7 +46,7 @@ const allowWrite=(req:Request,config:MvpConfig)=>
   isSafeLocalManual(req,config.local)||isSafeRemoteManual(req,config.remote??{});
 type W={id:string;measured_at:string;weight_kg:number|null;source_id:string;anomaly_flag:number};
 type S={local_day:string;steps:number|null;source_id:string};
-type L={local_day:string;drinking_presence:number|null;drink_cups:number|null;lunch_kind:string|null;dinner_kind:string|null;source_id:string};
+type L={local_day:string;drinking_presence:number|null;drink_cups:number|null;lunch_kind:string|null;dinner_kind:string|null;late_meal:number|null;source_id:string};
 type D={id:string;observed_at:string;drink_kind:Kind;alcohol:number;cups:number;source_row_key:string};
 const priority=(source:string)=>source.startsWith("manual:")?0:source.startsWith("eclear")?1:2;
 const prefer=<T extends {source_id:string}>(old:T|undefined,next:T):T=>
@@ -60,13 +60,16 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   const steps=await db.prepare("SELECT local_day,steps,source_id FROM activity_daily "+
     "WHERE owner_id=? AND local_day>=? AND local_day<=? ORDER BY local_day,source_id LIMIT 10001")
     .bind(owner,p.from,p.to).all<S>();
-  const lifestyles=await db.prepare("SELECT local_day,drinking_presence,drink_cups,lunch_kind,dinner_kind,source_id FROM lifestyle_days "+
+  const lifestyles=await db.prepare("SELECT local_day,drinking_presence,drink_cups,lunch_kind,dinner_kind,late_meal,source_id FROM lifestyle_days "+
     "WHERE owner_id=? AND local_day>=? AND local_day<=? ORDER BY local_day,source_id LIMIT 10001")
     .bind(owner,p.from,p.to).all<L>();
   const drinks=await db.prepare("SELECT id,observed_at,drink_kind,alcohol,cups,source_row_key FROM drink_entries "+
     "WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? LIMIT 10001")
     .bind(owner,fromSec,toSec).all<D>();
-  if([weights,steps,lifestyles,drinks].some(x=>x.results.length>10000))throw Error("TOO_MANY");
+  const visitRows=await db.prepare("SELECT local_day,category FROM outings "+
+    "WHERE owner_id=? AND local_day>=? AND local_day<=? LIMIT 10001")
+    .bind(owner,p.from,p.to).all<{local_day:string;category:string}>();
+  if([weights,steps,lifestyles,drinks,visitRows].some(x=>x.results.length>10000))throw Error("TOO_MANY");
   const measures=new Map<string,W>();
   for(const w of weights.results){
     if(w.weight_kg===null||w.anomaly_flag!==0)continue;
@@ -77,7 +80,15 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   const days=new Map<string,S>();
   for(const s of steps.results)if(s.steps!==null)days.set(s.local_day,prefer(days.get(s.local_day),s));
   const ls=new Map<string,L>();
-  for(const l of lifestyles.results)ls.set(l.local_day,prefer(ls.get(l.local_day),l));
+  // Preserve each observed field independently: a manual meal-only row must
+  // never turn an existing CSV drinking observation into an unknown day.
+  for(const l of lifestyles.results.sort((a,b)=>priority(a.source_id)-priority(b.source_id))){
+    const current=ls.get(l.local_day);
+    if(!current){ls.set(l.local_day,{...l});continue;}
+    for(const key of ["drinking_presence","drink_cups","lunch_kind","dinner_kind","late_meal"] as const){
+      if(current[key]===null&&l[key]!==null)(current as Record<typeof key,unknown>)[key]=l[key];
+    }
+  }
   // Do not impute drinking=0 for unobserved days or convert past 'drank' to one cup.
   const known=[...ls.values()].filter(l=>l.drinking_presence!==null);
   const stepValues=[...days.values()].map(s=>s.steps!).filter(n=>Number.isFinite(n));
@@ -106,7 +117,13 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
       restaurantLunchDays:lunch.filter(x=>x.lunch_kind==="restaurant").length,
       restaurantDinnerDays:dinner.filter(x=>x.dinner_kind==="restaurant").length,
       takeoutLunchDays:lunch.filter(x=>x.lunch_kind==="takeout").length,
-      takeoutDinnerDays:dinner.filter(x=>x.dinner_kind==="takeout").length}
+      takeoutDinnerDays:dinner.filter(x=>x.dinner_kind==="takeout").length,
+      lateMealObservedDays:[...ls.values()].filter(x=>x.late_meal!==null).length,
+      lateMealDays:[...ls.values()].filter(x=>x.late_meal===1).length},
+    outings:{visits:visitRows.results.length,
+      work:visitRows.results.filter(x=>x.category==="work").length,
+      bar:visitRows.results.filter(x=>x.category==="bar").length,
+      other:visitRows.results.filter(x=>x.category==="other").length}
   };
 }
 async function compare(req:Request,db:MvpDb,owner:string){
