@@ -80,6 +80,77 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   })).status).toBe(200);
   expect((await db.prepare("SELECT COUNT(*) n FROM drink_entries").first<{n:number}>())?.n).toBe(0);
  });
+ it("saves mega beer separately from order count, retains source DB kind and exports grams",async()=>{
+  const stamp=new Date().toISOString();
+  const mega={key:one,kind:"beer",observedAt:stamp,cups:2,size:"mega",
+    volumeMl:700,abvPct:5};
+  expect((await call(db,"/api/mvp/drinks","POST",mega)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","POST",mega)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","POST",{...mega,cups:3})).status).toBe(409);
+  const stored=await db.prepare(
+    "SELECT drink_kind,drink_variant,size_label,cups,volume_ml,abv_pct FROM drink_entries WHERE owner_id='owner'"
+  ).first<{drink_kind:string;drink_variant:string;size_label:string;cups:number;volume_ml:number;abv_pct:number}>();
+  expect(stored).toMatchObject({
+    drink_kind:"other_alcohol",drink_variant:"beer",size_label:"mega",
+    cups:2,volume_ml:700,abv_pct:5
+  });
+  const listed=await call(db,"/api/mvp/drinks");
+  expect((await listed.json() as {entries:any[]}).entries[0]).toMatchObject({
+    kind:"beer",cups:2,size:"mega",volumeMl:700,abvPct:5
+  });
+  const period=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:day(0),bTo:day(0)}));
+  expect((await period.json() as {b:any}).b.drinking).toMatchObject({
+    recordedAlcoholCups:2,knownAlcoholG:56,unknownAlcoholCups:0
+  });
+  const exported=await call(db,"/api/mvp/export?from="+day(0)+"&to="+day(0));
+  expect(exported.status).toBe(200);
+  const csv=await exported.text();
+  expect(csv).toContain('"drink","'+stamp+'","2","ordered_cups","manual:drink","beer"');
+  expect(csv).toContain('"drink_volume_per_cup","'+stamp+'","700","ml","manual:drink","beer"');
+  expect(csv).toContain('"drink_pure_alcohol","'+stamp+'","56","g","manual:drink","beer"');
+ });
+ it("preserves legacy drinks as unknown size and ABV, validates updates and no-duplicate retries",async()=>{
+  const time=new Date().toISOString();
+  const legacy={key:one,kind:"highball",observedAt:time};
+  expect((await call(db,"/api/mvp/drinks","POST",legacy)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","POST",{key:two,kind:"non_alcohol",
+    observedAt:time,cups:1,size:"regular",volumeMl:350,abvPct:null})).status).toBe(200);
+  const entries=(await (await call(db,"/api/mvp/drinks")).json() as {entries:any[]}).entries;
+  expect(entries.find(x=>x.key===one)).toMatchObject({
+    kind:"highball",cups:1,size:null,volumeMl:null,abvPct:null
+  });
+  const period=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:day(0),bTo:day(0)}));
+  expect((await period.json() as {b:any}).b.drinking).toMatchObject({
+    recordedAlcoholCups:1,knownAlcoholG:0,unknownAlcoholCups:1,
+    recordedNonAlcoholCups:1
+  });
+  for(const payload of [
+    {...legacy,cups:0},
+    {...legacy,cups:51},
+    {...legacy,cups:1.5},
+    {...legacy,cups:1,size:"mega",volumeMl:700,abvPct:0},
+    {...legacy,cups:1,size:"wrong",volumeMl:700,abvPct:7},
+    {...legacy,cups:1,size:"mega",volumeMl:700,abvPct:101},
+    {...legacy,cups:1,size:"mega",volumeMl:-1,abvPct:7},
+    {...legacy,kind:"non_alcohol",cups:1,size:"regular",volumeMl:350,abvPct:5},
+  ]) {
+    expect((await call(db,"/api/mvp/drinks","POST",{...payload,key:crypto.randomUUID()})).status)
+      .toBe(422);
+  }
+  const edited={...legacy,kind:"beer",cups:3,size:"large",volumeMl:500,abvPct:5,
+    expectedKind:"highball",expectedObservedAt:time,
+    expectedCups:1,expectedSize:null,expectedVolumeMl:null,expectedAbvPct:null};
+  expect((await call(db,"/api/mvp/drinks","PATCH",edited)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","PATCH",edited)).status).toBe(409);
+  expect((await call(db,"/api/mvp/drinks","DELETE",{
+    key:one,expectedKind:"highball",expectedObservedAt:time})).status).toBe(409);
+  expect((await call(db,"/api/mvp/drinks","DELETE",{
+    key:one,expectedKind:"beer",expectedObservedAt:time})).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","DELETE",{
+    key:two,expectedKind:"non_alcohol",expectedObservedAt:time})).status).toBe(200);
+ });
  it("compares weight, steps, drinking presence and coverage without fabricating 0",async()=>{
   for(const [d,kg] of [[28,78],[27,77.5],[10,76],[9,75]] as const)
    await db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
