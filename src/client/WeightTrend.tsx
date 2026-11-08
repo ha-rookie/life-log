@@ -215,9 +215,10 @@ export function WeightTrendPanel() {
           {{ day: "日", week: "週", month: "月" }[value]}
         </button>)}
     </div>
-    <p className="hint">日：直近30日（実測＋7日平均） ／ 週：直近12週（月曜始まり） ／ 月：直近12か月。欠測を0kgにはしません。</p>
-    <p className="hint">日本時間（JST）の1日ごとに最後の正常な実測を採用します。欠測は0kgに置き換えません。</p>
-    <form className="trend-controls" onSubmit={e => {
+    <p className="hint">日・週・月を切り替えて体重の変化を確認できます。記録のない日は空欄です。</p>
+    <details className="sub-details trend-settings">
+      <summary>期間・目標の詳細設定</summary>
+      <form className="trend-controls" onSubmit={e => {
       e.preventDefault();
       if (validRange) setRange({ from, to });
     }}>
@@ -225,7 +226,19 @@ export function WeightTrendPanel() {
       <label>終了日<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
       <button type="submit" disabled={!validRange}>期間を表示</button>
       {!validRange && <p role="alert">期間を確認してください（日は30日以内、週は12週以内、月は12か月以内。未来日は指定できません）。</p>}
-    </form>
+      </form>
+      <div className="trend-controls">
+        <label>目標下限（kg）<input type="number" min="1" max="499" step="0.1"
+          value={goalLow} onChange={e => setGoalLow(e.target.value)} /></label>
+        <label>目標上限（kg）<input type="number" min="1" max="499" step="0.1"
+          value={goalHigh} onChange={e => setGoalHigh(e.target.value)} /></label>
+        <label>目標日<input aria-label="目標日" type="date"
+          value={goalDate} onChange={e => setGoalDate(e.target.value)} /></label>
+      </div>
+      {!validGoal && <p role="alert">目標は0kg超、500kg未満、下限が上限以下で指定してください。</p>}
+      {!validGoalDate && <p role="alert">目標日を正しい日付で指定してください。</p>}
+      <p className="hint">目標日は{validGoalDate ? goalDate.replaceAll("-", "/") : "未設定"}（画面内の暫定設定）。変更は保存されません。</p>
+    </details>
     <nav className="trend-period-nav" aria-label="表示期間の移動">
       <button type="button" disabled={!before} onClick={() => {
         if (!before) return;
@@ -239,22 +252,10 @@ export function WeightTrendPanel() {
       <button type="button" disabled={range.from === newest.from && range.to === newest.to}
         onClick={() => { setFrom(newest.from); setTo(newest.to); setRange(newest); }}>最新へ</button>
     </nav>
-    <div className="trend-controls">
-      <label>目標下限（kg）<input type="number" min="1" max="499" step="0.1"
-        value={goalLow} onChange={e => setGoalLow(e.target.value)} /></label>
-      <label>目標上限（kg）<input type="number" min="1" max="499" step="0.1"
-        value={goalHigh} onChange={e => setGoalHigh(e.target.value)} /></label>
-      <label>目標日<input aria-label="目標日" type="date"
-        value={goalDate} onChange={e => setGoalDate(e.target.value)} /></label>
-    </div>
-    {!validGoal && <p role="alert">目標は0kg超、500kg未満、下限が上限以下で指定してください。</p>}
-    {!validGoalDate && <p role="alert">目標日を正しい日付で指定してください。</p>}
-    <p className="hint">目標日：{validGoalDate ? goalDate.replaceAll("-", "/") : "未設定"}（暫定）。目標値と目標日の変更は画面内のみで、保存されません。</p>
     {(state.kind === "loading" || (state.kind === "ok" && !trend)) && <p role="status">体重推移を読み込み中…</p>}
     {state.kind === "error" && <p role="alert">{state.message}</p>}
     {trend && <>
-      <p aria-live="polite">実測日 {trend.measuredDays} / {trend.days.length}日 · 欠測 {trend.missingDays}日
-        · 異常/無効除外 {trend.excludedAnomaly}件 · 非実測除外 {trend.excludedNonMeasured}件</p>
+      <p className="hint" aria-live="polite">この期間：記録 {trend.measuredDays}日・記録なし {trend.missingDays}日</p>
       {difference && <p className="trend-difference">期間内の最新実測（{latest!.day}） {fmt(latest!.weightKg!)}kg · {difference}</p>}
       {validGoal && (granularity === "day"
         ? <TrendPlot days={trend.days} goalLow={low} goalHigh={high}
@@ -262,7 +263,7 @@ export function WeightTrendPanel() {
         : <PeriodPlot periods={periods ?? []} granularity={granularity}
             goalLow={low} goalHigh={high} scrollRef={chartRef.current} />)}
       {!validGoal && <p>目標値を修正するとグラフを表示します。</p>}
-      {granularity !== "day" && periods && <div className="trend-period-table">
+      {granularity !== "day" && periods && <details className="sub-details trend-period-table"><summary>期間別の数値一覧を見る</summary>
         <table className="trend-table">
           <caption>{granularity === "month" ? "月別" : "週別"}の平均体重と測定日数</caption>
           <thead><tr><th scope="col">期間</th><th scope="col">平均kg</th>
@@ -274,8 +275,8 @@ export function WeightTrendPanel() {
           </tr>)}</tbody>
         </table>
         <p className="hint">週・月の平均は1日につき1実測を用います。測定が1日だけの期間は参考値です。</p>
-      </div>}
-      {granularity === "day" && <div className="trend-table-scroll" role="region" tabIndex={0}
+      </details>}
+      {granularity === "day" && <details className="sub-details trend-table-details"><summary>日別の数値一覧を見る</summary><div className="trend-table-scroll" role="region" tabIndex={0}
         aria-label="日別体重一覧。左右にスクロールできます。">
         <table className="trend-table">
           <caption>日次体重と7日平均（古い日付から順に表示）</caption>
@@ -288,7 +289,7 @@ export function WeightTrendPanel() {
             <td>{d.measuredAt ? `実測 · ${d.measuredAt}` : "記録なし"}</td>
           </tr>)}</tbody>
         </table>
-      </div>}
+      </div></details>}
     </>}
   </section>;
 }
