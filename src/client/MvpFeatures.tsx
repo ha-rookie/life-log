@@ -41,7 +41,7 @@ async function mutate(path:string,method:"POST"|"PUT"|"PATCH"|"DELETE",value:Rec
     "処理できませんでした（"+(data.error??res.status)+"）");
   return data;
 }
-export function MvpFeatures({onSaved}:{onSaved:()=>void}){
+export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"quick"|"record"|"analysis"|"data"}){
   const [drinks,setDrinks]=useState<Drink[]>([]);
   const [drinksError,setDrinksError]=useState("");
   const [drinksBusy,setDrinksBusy]=useState(false);
@@ -98,7 +98,7 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
       setExperimentList(r.experiments);setExperimentError("");
     }catch(e){setExperimentError(e instanceof Error?e.message:"行動計画を取得できません。");}
   },[]);
-  useEffect(()=>{void loadDrinks();void loadExperiments();},[loadDrinks,loadExperiments]);
+  useEffect(()=>{if(mode==="quick"||mode==="record")void loadDrinks();if(mode==="analysis")void loadExperiments();},[loadDrinks,loadExperiments,mode]);
   const loadMeals=useCallback(async()=>{
     try{
       const res=await jsonGet<{entries:Meal[]}>("/api/mvp/meals");
@@ -111,7 +111,7 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
       setOutings(res.entries);setOutingError("");
     }catch(err){setOutingError(err instanceof Error?err.message:"飲みの場を取得できません。");}
   },[]);
-  useEffect(()=>{void loadMeals();void loadOutings();},[loadMeals,loadOutings]);
+  useEffect(()=>{if(mode==="record"){void loadMeals();void loadOutings();}},[loadMeals,loadOutings,mode]);
   useEffect(()=>{
     const row=meals.find(x=>x.day===mealDay);
     setMealLunch(row?.lunchKind??"");
@@ -247,7 +247,7 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
   }
 
   return <>
-    <section className="panel" aria-labelledby="drink-title">
+    {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">飲酒を1杯ずつ記録</h2>
       <p className="hint">記録した杯数だけを表示します。過去の「飲酒あり・杯数不明」は勝手に1杯へ変換しません。</p>
       <p className="metric" aria-live="polite">今日：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
@@ -255,8 +255,9 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
         {(Object.keys(names) as Kind[]).map(k=><button type="button" key={k}
           disabled={drinksBusy} onClick={()=>void addDrink(k)}>{names[k]} ＋1</button>)}
       </div>
-      <button type="button" disabled={drinksBusy} onClick={()=>void loadDrinks()}>飲酒履歴を更新</button>
+      {mode==="record"&&<button type="button" disabled={drinksBusy} onClick={()=>void loadDrinks()}>飲酒履歴を更新</button>}
       {drinksError&&<p role="alert">{drinksError}</p>}
+      {mode==="record"&&<details className="sub-details"><summary>過去30日の飲酒記録を確認・訂正する</summary>
       <h3>直近30日の記録</h3>
       {drinks.length===0&&<p className="hint">まだ1杯ずつの記録はありません。</p>}
       <ul>{drinks.map(d=><li key={d.key} className="mvp-entry">
@@ -278,7 +279,7 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
       </div>}
     </section>
 
-    <section className="panel" aria-labelledby="meals-title">
+    {mode==="record"&&<section className="panel" aria-labelledby="meals-title">
       <h2 id="meals-title">食事区分・夜食</h2>
       <p className="hint">選んでいない項目は「不明」として保存します。実際の記録がない日を外食なし・夜食なしとはみなしません。</p>
       <div className="mvp-grid">
@@ -301,8 +302,8 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
         onClick={()=>void cancelMeal()}>この日の手入力を取消</button>
       {mealsError&&<p role="alert">{mealsError}</p>}
       <p className="hint">直近の本人手入力：{meals.length}日。CSV由来の食事記録は上書きしません。</p>
-    </section>
-    <section className="panel" aria-labelledby="outings-title">
+    </section>}
+    {mode==="record"&&<section className="panel" aria-labelledby="outings-title">
       <h2 id="outings-title">飲みの場・会食の参加</h2>
       <p className="hint">参加回数は飲酒杯数とは別に記録します。飲酒していない会食も参加として残せます。</p>
       <div className="mvp-grid">
@@ -325,8 +326,8 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
         }}>訂正</button>
         <button type="button" disabled={outingBusy} onClick={()=>void cancelOuting(row)}>取消</button>
       </li>)}</ul>
-    </section>
-    <section className="panel" aria-labelledby="compare-title">
+    </section>}
+    {mode==="analysis"&&<section className="panel" aria-labelledby="compare-title">
       <h2 id="compare-title">2期間の体重・生活比較</h2>
       <p className="hint">両期間は重ならないよう指定してください。測定数が少ない場合、変化や原因を断定しません。</p>
       <div className="mvp-grid">
@@ -358,8 +359,8 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
           </section>)}
         </div>
       </>}
-    </section>
-    <section className="panel" aria-labelledby="experiment-title">
+    </section>}
+    {mode==="analysis"&&<section className="panel" aria-labelledby="experiment-title">
       <h2 id="experiment-title">行動実験・本人による判定</h2>
       <p className="hint">仮説を1つ登録し、終了時に根拠と反証を確認して継続・修正・終了・不明を選びます。</p>
       <form onSubmit={e=>void createPlan(e)}>
@@ -394,8 +395,8 @@ export function MvpFeatures({onSaved}:{onSaved:()=>void}){
           <button type="button" disabled={planBusy} onClick={()=>void decide(x.id)}>判定を保存</button>
         </div>}
       </article>)}
-    </section>
-    <section className="panel" aria-labelledby="export-title">
+    </section>}
+    {mode==="data"&&<section className="panel" aria-labelledby="export-title">
       <h2 id="export-title">本人データのCSV再出力</h2>
       <p className="hint">体重、歩数、飲酒、食事、飲みの場を元の出典とともにCSVへ出力します。欠測は空欄です。</p>
       <div className="mvp-grid">
