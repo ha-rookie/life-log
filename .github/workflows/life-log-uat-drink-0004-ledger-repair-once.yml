@@ -190,6 +190,14 @@ jobs:
             > "$RUNNER_TEMP/d1-bookmark-before-write.json"
           jq -e '.success==true and (.result.bookmark | type=="string" and test("^[0-9a-fA-F-]{24,100}$"))' \
             "$RUNNER_TEMP/d1-bookmark-before-write.json" > /dev/null
+          bookmark=$(jq -r '.result.bookmark' "$RUNNER_TEMP/d1-bookmark-before-write.json")
+          {
+            echo "### UAT 0004 ledger repair: pre-write recovery checkpoint"
+            echo "- Existing UAT D1 UUID: $EXPECTED_D1_ID"
+            echo "- Time Travel bookmark obtained with GET before permitted INSERT: \`$bookmark\`"
+            echo "- No restore executed; preserve this bookmark for separate recovery approval if needed"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "UAT_D1_PREWRITE_RECOVERY_BOOKMARK=$bookmark"
           echo "PASS: recovery bookmark captured immediately before one allowed ledger INSERT"
 
       - name: Insert only one conditionally authorized ledger entry, never run ALTER or migration replay
