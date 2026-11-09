@@ -20,7 +20,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'audit(uat): Migration 0004 readonly status (#')
+      startsWith(github.event.workflow_run.head_commit.message, 'audit(uat): Migration 0004 history status (#')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^audit\(uat\): Migration 0004 readonly status \(#[0-9]+\)$'
+          git show -s --format=%s HEAD | grep -Eq '^audit\(uat\): Migration 0004 history status \(#[0-9]+\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
           printf '%s\n' '.github/workflows/life-log-uat-drink-0004-readonly-audit-once.yml' > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
@@ -80,12 +80,18 @@ jobs:
       - name: Install pinned Wrangler without any remote change
         run: npm ci --no-audit --no-fund
 
-      - name: Read ONLY drink schema names via PRAGMA and five aggregate counts via SELECT
+      - name: Read ONLY Migration history, drink schema and five aggregate counts
         shell: bash
         run: |
           set -euo pipefail
           npx --no-install wrangler d1 execute DB --env uat --remote --json \
             --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/drink-schema.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations'" \
+            > "$RUNNER_TEMP/migrations-table.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT name FROM d1_migrations ORDER BY name" \
+            > "$RUNNER_TEMP/migrations-history.json"
           npx --no-install wrangler d1 execute DB --env uat --remote --json \
             --command "SELECT
               (SELECT COUNT(*) FROM owners WHERE id='owner') AS owner_count,
@@ -103,6 +109,15 @@ jobs:
               throw Error("Read-only UAT D1 query unsuccessful: " + filename);
             return results.flatMap(x => x.results ?? []);
           };
+          const migrationTable = rows("migrations-table.json");
+          if (migrationTable.length !== 1 || migrationTable[0].name !== "d1_migrations")
+            throw Error("d1_migrations metadata table missing");
+          const history = rows("migrations-history.json");
+          if (history.some(x => typeof x.name !== "string" || !/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(x.name)))
+            throw Error("Unexpected migration record");
+          const migrationNames = history.map(x => x.name);
+          const tracked0004 = migrationNames.filter(x => x === "0004_drink_details.sql").length;
+          if (tracked0004 > 1) throw Error("Duplicate 0004 migration rows");
           const schema = rows("drink-schema.json");
           const names = schema.map(x => x.name);
           if (names.length < 5 || !names.includes("drink_kind") || !names.includes("cups"))
@@ -123,6 +138,9 @@ jobs:
           const report = {
             database_id: "421d0116-5c33-4782-a2b6-28f9684d3956",
             migration_0004_status: status,
+            migration_0004_history: tracked0004 === 1 ? "TRACKED" : "NOT_TRACKED",
+            history_record_count: migrationNames.length,
+            history_migrations: migrationNames,
             drink_variant_present: variant === 1,
             size_label_present: size === 1,
             owner_count: c.owner_count,
@@ -136,6 +154,8 @@ jobs:
             "### Existing UAT D1 read-only Migration 0004 audit\n" +
             "- Target: life-log-uat / life-log-dev / fixed UUID\n" +
             "- Status: " + status + "\n" +
+            "- Migration 0004 history: " + (tracked0004 === 1 ? "TRACKED" : "NOT_TRACKED") +
+            "; recorded history: " + migrationNames.join(", ") + "\n" +
             "- drink_variant: " + (variant === 1 ? "present" : "absent") + "\n" +
             "- size_label: " + (size === 1 ? "present" : "absent") + "\n" +
             "- Owner: " + c.owner_count + "; weights: " + c.weight_count +
