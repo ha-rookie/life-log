@@ -83,7 +83,7 @@ jobs:
           JS
           gh api "repos/$GITHUB_REPOSITORY/contents/migrations/0004_drink_details.sql?ref=$FEATURE_SHA" \
             --jq '.content' | base64 -d > "$RUNNER_TEMP/vetted-0004.sql"
-          echo "f58e073a411595fdc281bed29d2f814803c90c1c7e64d8c0a7a1e37598b528a9  $RUNNER_TEMP/vetted-0004.sql" | sha256sum --check -s
+          echo "f58e073a411595fdc281bed29d2f814803c90c1c7e64d8c0a7a1e37598b528a9  $RUNNER_TEMP/vetted-0004.sql" | sha256sum --check
           echo "PASS: SHA256-matched two-column additive SQL"
       - name: Install locked Wrangler
         run: npm ci --no-audit --no-fund
