@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource } from "../src/shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, inspectOfficialEclearComposition } from "../src/shared/source-adapter";
 import { previewCsv } from "../src/shared/csv-import";
 
 const eclearHeader="年月日,時刻,体重,体脂肪率,骨格筋率,BMI,内蔵脂肪レベル,骨量,基礎代謝量,メモ";
@@ -148,4 +148,88 @@ describe("CSV picker automatic source recognition",()=>{
   expect(detectOfficialCsvSource("local_day,weight\n2026-01-01,80\n")).toBeNull();
   expect(detectOfficialCsvSource("other,steps\n2026-01-01,120\n")).toBeNull();
  });
+});
+
+
+describe("ECLEAR seven body-composition fields (Stage 1, browser-only, synthetic)",()=>{
+  const csv=(rows:string[],header=eclearHeader)=>header+"\n"+rows.join("\n")+"\n";
+  it("parses measured JST times and all seven numbers without returning personal memo",async()=>{
+    const data=csv([
+      '2025/02/01,07:42,75.3,20.5,36.1,23.8,7.5,2.9,1570,"quoted, memo"',
+      "2025/02/01,21:30:12,75.1,,,,,,,",
+    ]);
+    const records=inspectOfficialEclearComposition(data);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toEqual({
+      measuredAt:"2025-02-01T07:42:00+09:00",
+      weightKg:75.3,bodyFatPct:20.5,skeletalMusclePct:36.1,
+      bmi:23.8,visceralFatLevel:7.5,boneMassKg:2.9,basalMetabolismKcal:1570
+    });
+    expect(records[1]).toEqual({
+      measuredAt:"2025-02-01T21:30:12+09:00",
+      weightKg:75.1,bodyFatPct:null,skeletalMusclePct:null,
+      bmi:null,visceralFatLevel:null,boneMassKg:null,basalMetabolismKcal:null
+    });
+    expect(JSON.stringify(records)).not.toContain("quoted");
+    // Existing approved CSV API/fingerprint is still the original 3-column v1 format.
+    const normalized=normalizeOfficialCsv("eclear",data);
+    expect(normalized.parts[0].split("\n")[0]).toBe("measured_at,weight_kg,body_fat_pct");
+    const preview=await previewCsv("eclear",normalized.parts[0]);
+    expect(preview.errors).toEqual([]);
+    expect(preview.rows.map(r=>[r.timestamp,r.weight,r.fat])).toEqual([
+      ["2025-02-01T07:42:00+09:00",75.3,20.5],
+      ["2025-02-01T21:30:12+09:00",75.1,null],
+    ]);
+  });
+
+  it("preserves explicit zero separately from missing values and accepts alternate viscera kanji",()=>{
+    const alternate=eclearHeader.replace("内蔵脂肪レベル","内臓脂肪レベル");
+    const values=inspectOfficialEclearComposition(csv([
+      "2026/01/02,06:10,80,0,0,0,0,0,0,",
+      "2026/01/03,06:10,80,,,,,,,",
+    ],alternate));
+    expect(values[0]).toMatchObject({
+      bodyFatPct:0,skeletalMusclePct:0,bmi:0,
+      visceralFatLevel:0,boneMassKg:0,basalMetabolismKcal:0
+    });
+    expect(values[1]).toMatchObject({
+      bodyFatPct:null,skeletalMusclePct:null,bmi:null,
+      visceralFatLevel:null,boneMassKg:null,basalMetabolismKcal:null
+    });
+  });
+
+  it("uses existing Shift_JIS decoder, rejects forged header and duplicate exact timestamp",()=>{
+    const raw=new TextEncoder().encode(csv([
+      "2025/01/31,07:42,75.3,22.5,30,23,6,3,1600,"
+    ]));
+    expect(inspectOfficialEclearComposition(new TextDecoder("utf-8").decode(raw))).toHaveLength(1);
+    expect(()=>inspectOfficialEclearComposition(csv([
+      "2025/01/31,07:42,75,20,30,23,6,3,1600,"
+    ],eclearHeader.replace("骨格筋率","筋肉量")))).toThrow("CSV_HEADER_MISMATCH");
+    expect(()=>inspectOfficialEclearComposition(csv([
+      "2025/01/31,07:42,75,20,30,23,6,3,1600,",
+      "2025/01/31,07:42:00,74,20,30,23,6,3,1600,"
+    ]))).toThrow("DUPLICATE_DATE_OR_TIMESTAMP_IN_SOURCE");
+  });
+
+  it.each([
+    ["invalid day","2026/02/30,08:01,75,20,30,23,6,3,1600,"],
+    ["invalid time","2026/03/01,25:01,75,20,30,23,6,3,1600,"],
+    ["zero weight","2026/03/01,08:01,0,20,30,23,6,3,1600,"],
+    ["negative BMI","2026/03/01,08:01,75,20,30,-23,6,3,1600,"],
+    ["over 100% muscle","2026/03/01,08:01,75,20,101,23,6,3,1600,"],
+    ["invalid fat","2026/03/01,08:01,75,101,30,23,6,3,1600,"],
+    ["scientific notation","2026/03/01,08:01,75,20,30,23,6,3,1e3,"],
+    ["wrong columns","2026/03/01,08:01,75,20,30,23,6,3,1600"],
+    ["unclosed quote",'2026/03/01,08:01,75,20,30,23,6,3,1600,"unclosed'],
+  ])("rejects %s without silently coercing measurements",(_label,row)=>{
+    expect(()=>inspectOfficialEclearComposition(csv([row]))).toThrow();
+  });
+
+  it("retains source CSV size and NUL rejection, without saving or calling DB",()=>{
+    expect(()=>inspectOfficialEclearComposition(eclearHeader+"\n"+"x".repeat(2_000_001))).toThrow();
+    expect(()=>inspectOfficialEclearComposition(csv([
+      "2026/03/01,08:01,75,20,30,23,6,3,1600,\0"
+    ]))).toThrow("FILE_SIZE_OR_ENCODING");
+  });
 });

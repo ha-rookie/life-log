@@ -139,3 +139,72 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
       .map(r=>r.map(quote).join(",")).join("\n")+"\n");
   return {parts:chunks,total:output.length,missingSteps};
 }
+
+/**
+ * Stage 1 of #124: inspect the original 10-column ECLEAR CSV without changing
+ * the existing 3-column import contract or writing any personal data to D1.
+ * Caller must first use decodeOfficialCsv(rawBytes) for CP932 support.
+ *
+ * The source's memo column is deliberately not returned: the DB has no
+ * approved destination and this function must never claim it was saved.
+ */
+export type EclearCompositionMeasurement = Readonly<{
+  measuredAt:string;
+  weightKg:number;
+  bodyFatPct:number|null;
+  skeletalMusclePct:number|null;
+  bmi:number|null;
+  visceralFatLevel:number|null;
+  boneMassKg:number|null;
+  basalMetabolismKcal:number|null;
+}>;
+
+const ECLEAR_COMPOSITION_HEADER=[
+  "年月日","時刻","体重","体脂肪率","骨格筋率","BMI",
+  "内蔵脂肪レベル","骨量","基礎代謝量","メモ"
+] as const;
+
+const optionalEclearNumber=(raw:string,field:string,max?:number):number|null=>{
+  const text=raw.trim();
+  if(text==="")return null;
+  if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text))throw Error("BAD_ECLEAR_"+field);
+  const number=Number(text);
+  if(!Number.isFinite(number) || (max!==undefined && number>max))
+    throw Error("BAD_ECLEAR_"+field);
+  return number;
+};
+
+export function inspectOfficialEclearComposition(raw:string):EclearCompositionMeasurement[]{
+  const text=raw.startsWith("\uFEFF")?raw.slice(1):raw;
+  const rows=cells(text);
+  if(rows.length<2)throw Error("CSV_EMPTY");
+  const headers=rows.shift()!;
+  const expected=ECLEAR_COMPOSITION_HEADER;
+  const valid=headers.length===expected.length&&headers.every((h,i)=>
+    i===6?(h==="内蔵脂肪レベル"||h==="内臓脂肪レベル"):h===expected[i]);
+  if(!valid)throw Error("CSV_HEADER_MISMATCH");
+  const seen=new Set<string>();
+  const measurements:EclearCompositionMeasurement[]=[];
+  for(const [index,row] of rows.entries()){
+    if(row.length!==expected.length)throw Error("CSV_COLUMNS_AT_LINE_"+(index+2));
+    const day=isoDay(row[0]),time=row[1].trim();
+    if(!/^\d{1,2}:\d{2}(?::\d{2})?$/.test(time))
+      throw Error("BAD_ECLEAR_TIME_AT_LINE_"+(index+2));
+    const [hh,mm,ss="00"]=time.split(":");
+    if(Number(hh)>23||Number(mm)>59||Number(ss)>59)throw Error("BAD_ECLEAR_TIME");
+    const measuredAt=day+"T"+hh.padStart(2,"0")+":"+mm+":"+ss+"+09:00";
+    if(seen.has(measuredAt))throw Error("DUPLICATE_DATE_OR_TIMESTAMP_IN_SOURCE");
+    seen.add(measuredAt);
+    const weightText=numeric(row[2],"weight"),fatText=numeric(row[3],"fat");
+    measurements.push({
+      measuredAt,weightKg:Number(weightText),
+      bodyFatPct:fatText===""?null:Number(fatText),
+      skeletalMusclePct:optionalEclearNumber(row[4],"SKELETAL_MUSCLE",100),
+      bmi:optionalEclearNumber(row[5],"BMI"),
+      visceralFatLevel:optionalEclearNumber(row[6],"VISCERAL_FAT"),
+      boneMassKg:optionalEclearNumber(row[7],"BONE_MASS"),
+      basalMetabolismKcal:optionalEclearNumber(row[8],"BASAL_METABOLISM")
+    });
+  }
+  return measurements;
+}
