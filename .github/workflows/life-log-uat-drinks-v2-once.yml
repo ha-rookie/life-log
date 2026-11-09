@@ -190,7 +190,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'fix(uat): resume drinks release (#')
+      startsWith(github.event.workflow_run.head_commit.message, 'fix(uat): validate drinks fixed merge (#')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -214,9 +214,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$MAIN_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^fix\(uat\): resume drinks release \(#[0-9]+\)$'
-          test "$(git rev-parse HEAD^)" = 'c22a1d700f213697116a78403c12bde08f9188af'
-          test "$(git show -s --format=%s HEAD^)" = 'feat(drinks): beer and mega-size tracking (#118)'
+          git show -s --format=%s HEAD | grep -Eq '^fix\(uat\): validate drinks fixed merge \(#[0-9]+\)$'
+          test "$(git rev-parse HEAD^)" = '758e6551be26b2d55e95bdbf3b4d47af3daaad6f'
+          test "$(git show -s --format=%s HEAD^)" = 'fix(uat): resume drinks release (#134)'
           gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/merged-pr.json"
           node --input-type=module <<'JS'
           import fs from "node:fs";
@@ -227,9 +227,29 @@ jobs:
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/gate-actual"
           printf '%s\n' '.github/workflows/life-log-uat-drinks-v2-once.yml' > "$RUNNER_TEMP/gate-expected"
           diff -u "$RUNNER_TEMP/gate-expected" "$RUNNER_TEMP/gate-actual"
-          git diff-tree --no-commit-id --name-only -r HEAD^ | sort > "$RUNNER_TEMP/feature-actual"
-          printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts src/worker/mvp-features.ts tests/drink-measures.test.ts tests/mvp-features.test.ts | sort > "$RUNNER_TEMP/feature-expected"
-          diff -u "$RUNNER_TEMP/feature-expected" "$RUNNER_TEMP/feature-actual"
+          # Use GitHub's immutable, pinned full commit metadata. With checkout depth 2,
+          # HEAD^ is a shallow boundary: diff-tree -r HEAD^ can silently list zero files.
+          gh api "repos/$GITHUB_REPOSITORY/commits/c22a1d700f213697116a78403c12bde08f9188af" > "$RUNNER_TEMP/pinned-feature-commit.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/pinned-feature-commit.json","utf8"));
+          const expected=[
+            "migrations/0004_drink_details.sql",
+            "scripts/uat-drinks-v2-e2e.mjs",
+            "scripts/validate-schema.py",
+            "src/client/MvpFeatures.tsx",
+            "src/shared/drink-measures.ts",
+            "src/worker/mvp-features.ts",
+            "tests/drink-measures.test.ts",
+            "tests/mvp-features.test.ts"].sort();
+          if(x.sha!=="c22a1d700f213697116a78403c12bde08f9188af" ||
+             x.parents?.length!==1 || x.parents[0].sha!=="1e441a02f0c880554810f2c249167c0c073d3595" ||
+             x.commit?.message?.split("\n")[0]!=="feat(drinks): beer and mega-size tracking (#118)" ||
+             !Array.isArray(x.files) || x.files.length!==8 ||
+             JSON.stringify(x.files.map(z=>z.filename).sort())!==JSON.stringify(expected))
+            throw Error("Pinned feature merge SHA, parent or approved 8-file scope mismatch");
+          console.log("PASS: pinned PR #118 Squash commit contains exactly 8 reviewed files");
+          JS
           node --input-type=module <<'JS'
           import fs from "node:fs";
           const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
