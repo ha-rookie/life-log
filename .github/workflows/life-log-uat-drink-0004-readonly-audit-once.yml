@@ -20,7 +20,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'audit(uat): Migration 0004 history status (#')
+      startsWith(github.event.workflow_run.head_commit.message, 'audit(uat): Migration 0004 ledger structure (#')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^audit\(uat\): Migration 0004 history status \(#[0-9]+\)$'
+          git show -s --format=%s HEAD | grep -Eq '^audit\(uat\): Migration 0004 ledger structure \(#[0-9]+\)$'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
           printf '%s\n' '.github/workflows/life-log-uat-drink-0004-readonly-audit-once.yml' > "$RUNNER_TEMP/expected.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
@@ -80,7 +80,7 @@ jobs:
       - name: Install pinned Wrangler without any remote change
         run: npm ci --no-audit --no-fund
 
-      - name: Read ONLY Migration history, drink schema and five aggregate counts
+      - name: Read ONLY ledger structure, three migration records, drink schema, Owner counts
         shell: bash
         run: |
           set -euo pipefail
@@ -90,7 +90,13 @@ jobs:
             --command "SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations'" \
             > "$RUNNER_TEMP/migrations-table.json"
           npx --no-install wrangler d1 execute DB --env uat --remote --json \
-            --command "SELECT name FROM d1_migrations ORDER BY name" \
+            --command "PRAGMA table_info(d1_migrations)" \
+            > "$RUNNER_TEMP/migrations-columns.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='d1_migrations'" \
+            > "$RUNNER_TEMP/migrations-create-sql.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id" \
             > "$RUNNER_TEMP/migrations-history.json"
           npx --no-install wrangler d1 execute DB --env uat --remote --json \
             --command "SELECT
@@ -112,10 +118,30 @@ jobs:
           const migrationTable = rows("migrations-table.json");
           if (migrationTable.length !== 1 || migrationTable[0].name !== "d1_migrations")
             throw Error("d1_migrations metadata table missing");
+          const ledgerColumns = rows("migrations-columns.json");
+          const ledgerCols = Object.fromEntries(ledgerColumns.map(c => [c.name,c]));
+          const required = ["id","name","applied_at"];
+          if(ledgerColumns.length !== 3 || required.some(k => !ledgerCols[k]) ||
+             !/INTEGER/i.test(ledgerCols.id.type) || ledgerCols.id.pk !== 1 ||
+             !/TEXT/i.test(ledgerCols.name.type) ||
+             !/TIMESTAMP/i.test(ledgerCols.applied_at.type) || ledgerCols.applied_at.notnull !== 1)
+            throw Error("Unexpected d1_migrations table structure");
+          const createRows = rows("migrations-create-sql.json");
+          if (createRows.length !== 1 ||
+              !/name\\s+TEXT\\s+UNIQUE/i.test(createRows[0].sql) ||
+              !/applied_at\\s+TIMESTAMP\\s+DEFAULT\\s+CURRENT_TIMESTAMP\\s+NOT\\s+NULL/i.test(createRows[0].sql))
+            throw Error("Unexpected Wrangler migration ledger DDL");
           const history = rows("migrations-history.json");
-          if (history.some(x => typeof x.name !== "string" || !/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(x.name)))
+          if (history.some(x => !Number.isSafeInteger(x.id) || x.id < 1 ||
+            typeof x.name !== "string" || !/^[0-9]{4}_[a-z0-9_]+\\.sql$/.test(x.name) ||
+            typeof x.applied_at !== "string" || x.applied_at.length < 10))
             throw Error("Unexpected migration record");
           const migrationNames = history.map(x => x.name);
+          const uniqueNames = new Set(migrationNames);
+          if(uniqueNames.size !== migrationNames.length ||
+             !["0001_initial.sql","0002_owner_auth.sql","0003_owner_passkey.sql"]
+                .every(x => uniqueNames.has(x)))
+            throw Error("Required 0001-0003 migration history missing or duplicated");
           const tracked0004 = migrationNames.filter(x => x === "0004_drink_details.sql").length;
           if (tracked0004 > 1) throw Error("Duplicate 0004 migration rows");
           const schema = rows("drink-schema.json");
@@ -140,7 +166,8 @@ jobs:
             migration_0004_status: status,
             migration_0004_history: tracked0004 === 1 ? "TRACKED" : "NOT_TRACKED",
             history_record_count: migrationNames.length,
-            history_migrations: migrationNames,
+            history_migrations: history.map(x => ({id:x.id,name:x.name,applied_at:x.applied_at})),
+            ledger_columns: ledgerColumns.map(x => ({name:x.name,type:x.type,notnull:x.notnull,pk:x.pk,default:x.dflt_value})),
             drink_variant_present: variant === 1,
             size_label_present: size === 1,
             owner_count: c.owner_count,
@@ -155,7 +182,8 @@ jobs:
             "- Target: life-log-uat / life-log-dev / fixed UUID\n" +
             "- Status: " + status + "\n" +
             "- Migration 0004 history: " + (tracked0004 === 1 ? "TRACKED" : "NOT_TRACKED") +
-            "; recorded history: " + migrationNames.join(", ") + "\n" +
+            "; recorded history: " + history.map(x => x.name + " [id=" + x.id + ", at=" + x.applied_at + "]").join(", ") + "\n" +
+            "- Ledger columns: " + ledgerColumns.map(x => x.name + " " + x.type).join(", ") + "\n" +
             "- drink_variant: " + (variant === 1 ? "present" : "absent") + "\n" +
             "- size_label: " + (size === 1 ? "present" : "absent") + "\n" +
             "- Owner: " + c.owner_count + "; weights: " + c.weight_count +
