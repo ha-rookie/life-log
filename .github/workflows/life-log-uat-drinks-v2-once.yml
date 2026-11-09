@@ -214,7 +214,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$MAIN_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^fix\(uat\): resume drinks release \(#[0-9]+\)
+          git show -s --format=%s HEAD | grep -Eq '^fix\(uat\): resume drinks release \(#[0-9]+\)$'
+          test "$(git rev-parse HEAD^)" = 'c22a1d700f213697116a78403c12bde08f9188af'
+          test "$(git show -s --format=%s HEAD^)" = 'feat(drinks): beer and mega-size tracking (#118)'
           gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/merged-pr.json"
           node --input-type=module <<'JS'
           import fs from "node:fs";
@@ -293,87 +295,6 @@ jobs:
             throw Error("Previous Owner/weight/steps/passkey counts not preserved");
           console.log("PRE_RELEASE_OWNER_COUNTS="+JSON.stringify(c));
           console.log("PASS: existing UAT UUID, 0004 ledger and column constraints, Owner record counts");
-          JS
-      - name: Deploy only existing UAT Worker without Secrets or migrations
-        shell: bash
-        run: |
-          set -euo pipefail
-          npx --no-install wrangler deploy --env uat \
-            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
-                  MANUAL_REMOTE_TARGET:uat \
-                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
-      - name: Verify passkey-only UI, disabled password and anonymous API boundaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          ok=0
-          for i in $(seq 1 12); do
-            login=$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)
-            root=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
-            retired=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$UAT_URL/api/auth/login" \
-              -H "Content-Type: application/json" --data '{}' || true)
-            drinks=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/drinks" || true)
-            if [[ "$login" == 200 && "$root" == 403 && "$retired" == 410 && "$drinks" == 403 ]] &&
-               grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then ok=1;break;fi
-            if [[ "$root" == 200 || "$drinks" == 200 ]]; then echo "Anonymous access violation";exit 1;fi
-            sleep 3
-          done
-          test "$ok" = 1 || { echo "UAT authentication HTTP checks failed";exit 1; }
-          echo "PASS: passkey UI, password retired, protected anonymous root and drink API"
-      - name: Owner API beer/mega synthetic end-to-end and cleanup
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/uat-drinks-v2-e2e.mjs
-
-          test "$(git rev-parse HEAD^)" = 'c22a1d700f213697116a78403c12bde08f9188af'
-          test "$(git show -s --format=%s HEAD^)" = 'feat(drinks): beer and mega-size tracking (#118)'
-          gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/merged-pr.json"
-          node --input-type=module <<'JS'
-          import fs from "node:fs";
-          const p=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/merged-pr.json","utf8"));
-          if(!p.merged_at||p.head.sha!=="89e41f492eb5174c4de1bdd32911fbc0bb7f00b9"||
-             p.base.ref!=="main")throw Error("Approved PR 118 head not merged; no deployment");
-          JS
-          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
-          printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs \
-            scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts \
-            src/worker/mvp-features.ts tests/drink-measures.test.ts tests/mvp-features.test.ts | sort > "$RUNNER_TEMP/expected"
-          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
-          node --input-type=module <<'JS'
-          import fs from "node:fs";
-          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
-            .filter(x=>!x.trimStart().startsWith("//")).join("\n"));
-          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
-          if(u?.name!=="life-log-uat"||u?.d1_databases?.length!==1||d?.binding!=="DB"||
-             d?.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
-             d?.database_name!=="life-log-dev"||
-             u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false"||
-             u.vars?.MANUAL_REMOTE_TARGET!=="uat"||
-             u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
-            throw Error("Unexpected UAT target");
-          JS
-      - name: Build Worker and verify existing D1 has both Migration 0004 columns
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          npm run build
-          node --check scripts/uat-drinks-v2-e2e.mjs
-          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
-          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
-            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
-          npx --no-install wrangler d1 execute DB --env uat --remote --json \
-            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns.json"
-          node --input-type=module <<'JS'
-          import fs from "node:fs";
-          const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/columns.json","utf8"));
-          const rows=(Array.isArray(x)?x:[x]).filter(a=>a.success===true).flatMap(a=>a.results??[]);
-          const names=rows.map(x=>x.name);
-          if(!names.includes("drink_variant")||!names.includes("size_label"))
-            throw Error("Migration 0004 not present; no deployment");
-          console.log("PASS: remote UAT D1 ready; no remote schema changes during release");
           JS
       - name: Deploy only existing UAT Worker without Secrets or migrations
         shell: bash
