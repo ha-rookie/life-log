@@ -1,0 +1,287 @@
+name: Life-log one-shot guarded drinks v2 UAT migration and release
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+concurrency:
+  group: life-log-drinks-v2-uat-release
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'chore(uat): authorize drinks migration and release gate (#')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MAIN_SHA: ${{ github.event.workflow_run.head_sha }}
+      FEATURE_SHA: 89e41f492eb5174c4de1bdd32911fbc0bb7f00b9
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Guard current main SHA, exact single-file scope, and existing UAT D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
+          git show -s --format=%s HEAD | grep -Eq '^chore\(uat\): authorize drinks migration and release gate \(#[0-9]+\)$'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
+          printf '%s\n' ".github/workflows/life-log-uat-drinks-v2-once.yml" > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
+            .filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.d1_databases?.length!==1||
+             d?.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+             d?.database_name!=="life-log-dev"||d?.binding!=="DB"||
+             u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false"||
+             u.vars?.MANUAL_REMOTE_TARGET!=="uat"||
+             u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
+            throw Error("UAT target or safety configuration changed");
+          JS
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+      - name: Verify immutable PR 118 HEAD, successful checks and exact reviewed migration SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/pr.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$FEATURE_SHA/check-runs?per_page=100" > "$RUNNER_TEMP/checks.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const pr=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/pr.json","utf8"));
+          const runs=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/checks.json","utf8")).check_runs??[];
+          const checks=runs.filter(x=>x.name==="validate");
+          if(pr.state!=="open"||!pr.draft||pr.head.sha!==process.env.FEATURE_SHA||
+             pr.base.ref!=="main"||pr.changed_files!==8||
+             checks.length<3||checks.some(x=>x.conclusion!=="success"||x.status!=="completed"))
+            throw Error("PR 118 HEAD, scope or required CI changed; no D1 mutation");
+          console.log("PASS: PR 118 pinned HEAD and all three validate checks");
+          JS
+          gh api "repos/$GITHUB_REPOSITORY/contents/migrations/0004_drink_details.sql?ref=$FEATURE_SHA" \
+            --jq '.content' | base64 -d > "$RUNNER_TEMP/vetted-0004.sql"
+          echo "f58e073a411595fdc281bed29d2f814803c90c1c7e64d8c0a7a1e37598b528a9  $RUNNER_TEMP/vetted-0004.sql" | sha256sum --check -s
+          echo "PASS: SHA256-matched two-column additive SQL"
+      - name: Install locked Wrangler
+        run: npm ci --no-audit --no-fund
+      - name: Read-only schema preflight and Owner aggregate snapshot
+        id: pre
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns-before.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners) AS owners,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys,
+              (SELECT COUNT(*) FROM owner_sessions) AS sessions,
+              (SELECT COUNT(*) FROM body_measurements) AS weight_count,
+              (SELECT COUNT(*) FROM activity_daily) AS step_count,
+              (SELECT COUNT(*) FROM lifestyle_days) AS lifestyle_count,
+              (SELECT COUNT(*) FROM drink_entries) AS drink_count,
+              (SELECT COALESCE(SUM(cups),0) FROM drink_entries) AS total_cups,
+              (SELECT COALESCE(SUM(alcohol),0) FROM drink_entries) AS total_alcohol_flags,
+              (SELECT COALESCE(SUM(volume_ml),0) FROM drink_entries) AS total_drink_ml,
+              (SELECT COALESCE(SUM(abv_pct),0) FROM drink_entries) AS total_abv,
+              (SELECT COUNT(*) FROM outings) AS outing_count,
+              (SELECT COUNT(*) FROM import_jobs) AS import_count,
+              (SELECT COUNT(*) FROM import_row_audit) AS audit_count" > "$RUNNER_TEMP/before.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const read=name=>{
+            const o=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/"+name,"utf8"));
+            const xs=Array.isArray(o)?o:[o];
+            if(!xs.length||xs.some(x=>x.success!==true))throw Error("D1 query failed");
+            return xs.flatMap(x=>x.results??[]);
+          };
+          const names=read("columns-before.json").map(x=>x.name);
+          if(!names.includes("drink_kind")||!names.includes("cups"))throw Error("Wrong D1 schema");
+          const a=names.includes("drink_variant"),b=names.includes("size_label");
+          if(a!==b)throw Error("Partial migration; fail closed");
+          const counts=read("before.json");
+          if(counts.length!==1||counts[0].owners!==1||counts[0].passkeys<1||
+             Object.values(counts[0]).some(x=>typeof x!=="number"||!Number.isFinite(x)))
+            throw Error("D1 Owner snapshot not reliable");
+          fs.writeFileSync(process.env.RUNNER_TEMP+"/baseline.json",JSON.stringify(counts[0]));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,"apply="+(!a?"true":"false")+"\n");
+          console.log("PASS: Owner, passkey, existing records and additive schema gate");
+          JS
+      - name: Apply ONLY exact additive migration 0004 (no other D1 writes)
+        if: steps.pre.outputs.apply == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --file "$RUNNER_TEMP/vetted-0004.sql" > "$RUNNER_TEMP/applied.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/applied.json","utf8"));
+          const arr=Array.isArray(x)?x:[x];
+          if(!arr.length||arr.some(y=>y.success!==true))throw Error("D1 migration failed");
+          console.log("PASS: additive Migration 0004 executed");
+          JS
+      - name: Assert both columns and all original data aggregates preserved
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns-after.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners) AS owners,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys,
+              (SELECT COUNT(*) FROM owner_sessions) AS sessions,
+              (SELECT COUNT(*) FROM body_measurements) AS weight_count,
+              (SELECT COUNT(*) FROM activity_daily) AS step_count,
+              (SELECT COUNT(*) FROM lifestyle_days) AS lifestyle_count,
+              (SELECT COUNT(*) FROM drink_entries) AS drink_count,
+              (SELECT COALESCE(SUM(cups),0) FROM drink_entries) AS total_cups,
+              (SELECT COALESCE(SUM(alcohol),0) FROM drink_entries) AS total_alcohol_flags,
+              (SELECT COALESCE(SUM(volume_ml),0) FROM drink_entries) AS total_drink_ml,
+              (SELECT COALESCE(SUM(abv_pct),0) FROM drink_entries) AS total_abv,
+              (SELECT COUNT(*) FROM outings) AS outing_count,
+              (SELECT COUNT(*) FROM import_jobs) AS import_count,
+              (SELECT COUNT(*) FROM import_row_audit) AS audit_count" > "$RUNNER_TEMP/after.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const read=name=>{
+            const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/"+name,"utf8"));
+            const arr=Array.isArray(x)?x:[x];
+            if(!arr.length||arr.some(r=>r.success!==true))throw Error("D1 validation failed");
+            return arr.flatMap(r=>r.results??[]);
+          };
+          const cols=read("columns-after.json").map(x=>x.name);
+          if(cols.filter(x=>x==="drink_variant").length!==1||
+             cols.filter(x=>x==="size_label").length!==1)throw Error("Schema incomplete");
+          const before=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/baseline.json","utf8"));
+          const after=read("after.json");
+          if(after.length!==1||Object.keys(before).some(k=>before[k]!==after[0][k]))
+            throw Error("Owner record preservation invariant failed; STOP");
+          console.log("PASS: migrated columns present and all original record aggregates preserved");
+          JS
+
+  release:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_commit.message == 'feat(drinks): beer and mega-size tracking (#118)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MAIN_SHA: ${{ github.event.workflow_run.head_sha }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify exact approved release and UAT identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'feat(drinks): beer and mega-size tracking (#118)'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
+          printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs \
+            scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts \
+            src/worker/mvp-features.ts tests/drink-measures.test.ts tests/mvp-features.test.ts | sort > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
+            .filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat"||u?.d1_databases?.length!==1||d?.binding!=="DB"||
+             d?.database_id!=="421d0116-5c33-4782-a2b6-28f9684d3956"||
+             d?.database_name!=="life-log-dev"||
+             u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false"||
+             u.vars?.MANUAL_REMOTE_TARGET!=="uat"||
+             u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
+            throw Error("Unexpected UAT target");
+          JS
+      - name: Build Worker and verify existing D1 has both Migration 0004 columns
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/columns.json","utf8"));
+          const rows=(Array.isArray(x)?x:[x]).filter(a=>a.success===true).flatMap(a=>a.results??[]);
+          const names=rows.map(x=>x.name);
+          if(!names.includes("drink_variant")||!names.includes("size_label"))
+            throw Error("Migration 0004 not present; no deployment");
+          console.log("PASS: remote UAT D1 ready; no remote schema changes during release");
+          JS
+      - name: Deploy only existing UAT Worker without Secrets or migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler deploy --env uat \
+            --var PASSWORD_ONLY_UAT:true MANUAL_REMOTE_WRITE_ENABLED:true \
+                  MANUAL_REMOTE_TARGET:uat \
+                  MANUAL_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev
+      - name: Verify passkey-only UI, disabled password and anonymous API boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 12); do
+            login=$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)
+            root=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)
+            retired=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$UAT_URL/api/auth/login" \
+              -H "Content-Type: application/json" --data '{}' || true)
+            drinks=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/drinks" || true)
+            if [[ "$login" == 200 && "$root" == 403 && "$retired" == 410 && "$drinks" == 403 ]] &&
+               grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then ok=1;break;fi
+            if [[ "$root" == 200 || "$drinks" == 200 ]]; then echo "Anonymous access violation";exit 1;fi
+            sleep 3
+          done
+          test "$ok" = 1 || { echo "UAT authentication HTTP checks failed";exit 1; }
+          echo "PASS: passkey UI, password retired, protected anonymous root and drink API"
+      - name: Owner API beer/mega synthetic end-to-end and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/uat-drinks-v2-e2e.mjs
