@@ -1,0 +1,147 @@
+name: Life-log UAT 0004 schema and Owner counts (read only, one shot)
+
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-uat-0004-readonly-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'audit(uat): Migration 0004 readonly status (#')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Pin exact main, single approved audit workflow and UAT D1 binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git show -s --format=%s HEAD | grep -Eq '^audit\(uat\): Migration 0004 readonly status \(#[0-9]+\)$'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' '.github/workflows/life-log-uat-drink-0004-readonly-audit-once.yml' > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const config = JSON.parse(fs.readFileSync("wrangler.jsonc","utf8")
+            .split(/\r?\n/).filter(line => !line.trimStart().startsWith("//")).join("\n"));
+          const u = config.env?.uat;
+          const d = u?.d1_databases?.[0];
+          const id = "421d0116-5c33-4782-a2b6-28f9684d3956";
+          if(u?.name !== "life-log-uat" || u?.workers_dev !== true ||
+             u?.d1_databases?.length !== 1 || d?.binding !== "DB" ||
+             d?.database_name !== "life-log-dev" || d?.database_id !== id ||
+             u.vars?.MANUAL_REMOTE_WRITE_ENABLED !== "false" ||
+             u.vars?.MANUAL_REMOTE_TARGET !== "uat" ||
+             u.vars?.MANUAL_REMOTE_ORIGIN !== "https://life-log-uat.ha-rookie.workers.dev")
+            throw Error("Expected UAT D1 binding or fail-closed config changed");
+          console.log("PASS: exact main SHA, one audit file, UAT D1 ID");
+          JS
+
+      - name: Verify existing D1 UUID and name (Cloudflare GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" && test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          curl --fail --silent --show-error --max-time 20 \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
+            | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' > /dev/null
+          echo "PASS: Cloudflare GET verified only existing life-log UAT D1"
+
+      - name: Install pinned Wrangler without any remote change
+        run: npm ci --no-audit --no-fund
+
+      - name: Read ONLY drink schema names via PRAGMA and five aggregate counts via SELECT
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/drink-schema.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners WHERE id='owner') AS owner_count,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weight_count,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps_count,
+              (SELECT COUNT(*) FROM drink_entries WHERE owner_id='owner') AS drinks_count,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkey_count" \
+            > "$RUNNER_TEMP/owner-counts.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const rows = (filename) => {
+            const raw = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/" + filename, "utf8"));
+            const results = Array.isArray(raw) ? raw : [raw];
+            if (results.length === 0 || results.some(x => x.success !== true))
+              throw Error("Read-only UAT D1 query unsuccessful: " + filename);
+            return results.flatMap(x => x.results ?? []);
+          };
+          const schema = rows("drink-schema.json");
+          const names = schema.map(x => x.name);
+          if (names.length < 5 || !names.includes("drink_kind") || !names.includes("cups"))
+            throw Error("Unexpected base drink_entries schema");
+          const variant = names.filter(x => x === "drink_variant").length;
+          const size = names.filter(x => x === "size_label").length;
+          if (variant > 1 || size > 1) throw Error("Unexpected duplicate column in schema");
+          const status = variant === 1 && size === 1 ? "COMPLETE"
+            : variant === 0 && size === 0 ? "NOT_APPLIED" : "PARTIAL";
+          const counts = rows("owner-counts.json");
+          if (counts.length !== 1) throw Error("Expected single Owner aggregate row");
+          const c = counts[0];
+          const keys = ["owner_count","weight_count","steps_count","drinks_count","passkey_count"];
+          if (keys.some(k => !Number.isSafeInteger(c[k]) || c[k] < 0))
+            throw Error("Invalid aggregate count");
+          if (c.owner_count !== 1 || c.passkey_count < 1)
+            throw Error("Expected Owner and registered passkey missing");
+          const report = {
+            database_id: "421d0116-5c33-4782-a2b6-28f9684d3956",
+            migration_0004_status: status,
+            drink_variant_present: variant === 1,
+            size_label_present: size === 1,
+            owner_count: c.owner_count,
+            weight_count: c.weight_count,
+            steps_count: c.steps_count,
+            drinks_count: c.drinks_count,
+            passkey_count: c.passkey_count
+          };
+          console.log("LIFE_LOG_UAT_0004_READONLY_AUDIT=" + JSON.stringify(report));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            "### Existing UAT D1 read-only Migration 0004 audit\n" +
+            "- Target: life-log-uat / life-log-dev / fixed UUID\n" +
+            "- Status: " + status + "\n" +
+            "- drink_variant: " + (variant === 1 ? "present" : "absent") + "\n" +
+            "- size_label: " + (size === 1 ? "present" : "absent") + "\n" +
+            "- Owner: " + c.owner_count + "; weights: " + c.weight_count +
+            "; steps: " + c.steps_count + "; drinks: " + c.drinks_count +
+            "; passkeys: " + c.passkey_count + "\n" +
+            "- Commands: Cloudflare metadata GET; D1 PRAGMA; D1 SELECT only\n" +
+            "- No INSERT/UPDATE/DELETE/ALTER/migration/deployment/Secrets changes\n");
+          console.log("PASS: remote read-only audit completed; no writes or deployment");
+          JS
