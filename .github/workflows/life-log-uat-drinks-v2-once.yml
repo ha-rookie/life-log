@@ -215,6 +215,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$MAIN_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
           test "$(git show -s --format=%s HEAD)" = 'feat(drinks): beer and mega-size tracking (#118)'
+          gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/merged-pr.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const p=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/merged-pr.json","utf8"));
+          if(!p.merged_at||p.head.sha!=="89e41f492eb5174c4de1bdd32911fbc0bb7f00b9"||
+             p.base.ref!=="main")throw Error("Approved PR 118 head not merged; no deployment");
+          JS
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
           printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs \
             scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts \
@@ -239,6 +246,7 @@ jobs:
           set -euo pipefail
           npm ci --no-audit --no-fund
           npm run build
+          node --check scripts/uat-drinks-v2-e2e.mjs
           test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
           curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
