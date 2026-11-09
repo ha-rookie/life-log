@@ -1,0 +1,285 @@
+name: Life-log UAT 0004 ledger-only guarded repair
+
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+concurrency:
+  group: life-log-uat-0004-ledger-repair-one-shot
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'repair(uat): register 0004 ledger only (#')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MAIN_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      EXPECTED_D1_ID: '421d0116-5c33-4782-a2b6-28f9684d3956'
+      FROZEN_FEATURE_SHA: '89e41f492eb5174c4de1bdd32911fbc0bb7f00b9'
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Freeze exact main, review-scope, PR 118 and original Migration SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
+          git show -s --format=%s HEAD | grep -Eq '^repair\(uat\): register 0004 ledger only \(#[0-9]+\)$'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
+          printf '%s\n' '.github/workflows/life-log-uat-drink-0004-ledger-repair-once.yml' > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/feature.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const p=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/feature.json","utf8"));
+          if(p.state!=="open" || p.draft!==true || p.merged_at ||
+             p.head.sha!==process.env.FROZEN_FEATURE_SHA ||
+             p.base.ref!=="main" || p.changed_files!==8)
+            throw Error("PR 118 or frozen Migration SQL context drifted");
+          const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8")
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith("//")).join("\n"));
+          const u=cfg.env?.uat,db=u?.d1_databases?.[0];
+          if(u?.name!=="life-log-uat" || u?.workers_dev!==true ||
+             u?.d1_databases?.length!==1 || db?.binding!=="DB" ||
+             db?.database_id!==process.env.EXPECTED_D1_ID ||
+             db?.database_name!=="life-log-dev" ||
+             u.vars?.MANUAL_REMOTE_WRITE_ENABLED!=="false" ||
+             u.vars?.MANUAL_REMOTE_TARGET!=="uat" ||
+             u.vars?.MANUAL_REMOTE_ORIGIN!=="https://life-log-uat.ha-rookie.workers.dev")
+            throw Error("Unexpected UAT binding or safety configuration");
+          console.log("PASS: exact main, approved single-file gate, frozen PR 118 and UAT D1");
+          JS
+          gh api "repos/$GITHUB_REPOSITORY/contents/migrations/0004_drink_details.sql?ref=$FROZEN_FEATURE_SHA" \
+            --jq '.content' | base64 -d > "$RUNNER_TEMP/original-0004.sql"
+          echo "f58e073a411595fdc281bed29d2f814803c90c1c7e64d8c0a7a1e37598b528a9  $RUNNER_TEMP/original-0004.sql" \
+            | sha256sum --check
+          echo "PASS: original Migration 0004 checksum verified; WILL NOT APPLY SQL"
+
+      - name: Confirm database UUID and Time Travel recovery bookmark via GET only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-fA-F0-9]{32}$ ]]
+          endpoint="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$EXPECTED_D1_ID"
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$endpoint" > "$RUNNER_TEMP/d1-info.json"
+          jq -e --arg uuid "$EXPECTED_D1_ID" \
+            '.success==true and .result.uuid==$uuid and .result.name=="life-log-dev" and .result.version=="production"' \
+            "$RUNNER_TEMP/d1-info.json" > /dev/null
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$endpoint/time_travel/bookmark" > "$RUNNER_TEMP/d1-bookmark-precheck.json"
+          jq -e '.success==true and (.result.bookmark | type=="string" and test("^[0-9a-fA-F-]{24,100}$"))' \
+            "$RUNNER_TEMP/d1-bookmark-precheck.json" > /dev/null
+          echo "PASS: production D1 storage supports Time Travel; current recovery bookmark obtained (GET only)"
+
+      - name: Install locked Wrangler
+        run: npm ci --no-audit --no-fund
+
+      - name: Read-only preflight of migration ledger, precise CHECK constraints, and Owner counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(d1_migrations)" > "$RUNNER_TEMP/ledger-cols.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='d1_migrations'" > "$RUNNER_TEMP/ledger-ddl.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id" > "$RUNNER_TEMP/ledger-before.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/drink-cols.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='drink_entries'" > "$RUNNER_TEMP/drink-ddl.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners WHERE id='owner') AS owners,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weights,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps,
+              (SELECT COUNT(*) FROM drink_entries WHERE owner_id='owner') AS drinks,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys" > "$RUNNER_TEMP/counts-before.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const dir=process.env.RUNNER_TEMP+"/";
+          const rows=file=>{
+            const raw=JSON.parse(fs.readFileSync(dir+file,"utf8"));
+            const r=Array.isArray(raw)?raw:[raw];
+            if(r.length===0 || r.some(x=>x.success!==true))throw Error("Remote D1 read-only preflight failed: "+file);
+            return r.flatMap(x=>x.results??[]);
+          };
+          const schema=rows("ledger-cols.json");
+          const col=Object.fromEntries(schema.map(x=>[x.name,x]));
+          if(schema.length!==3 || !col.id || !col.name || !col.applied_at ||
+             col.id.type!=="INTEGER" || col.id.pk!==1 ||
+             col.name.type!=="TEXT" || col.applied_at.type!=="TIMESTAMP" ||
+             col.applied_at.notnull!==1 || col.applied_at.dflt_value!=="CURRENT_TIMESTAMP")
+            throw Error("Ledger schema changed");
+          const ddl=rows("ledger-ddl.json");
+          if(ddl.length!==1 || !/name\s+TEXT\s+UNIQUE/i.test(ddl[0].sql) ||
+             !/AUTOINCREMENT/i.test(ddl[0].sql))
+            throw Error("Ledger UNIQUE or AUTOINCREMENT constraint changed");
+          const history=rows("ledger-before.json");
+          const expected=[
+            {id:1,name:"0001_initial.sql",applied_at:"2026-11-07 08:52:21"},
+            {id:2,name:"0002_owner_auth.sql",applied_at:"2026-11-07 11:17:08"},
+            {id:3,name:"0003_owner_passkey.sql",applied_at:"2026-11-08 00:42:05"}
+          ];
+          if(JSON.stringify(history)!==JSON.stringify(expected))
+            throw Error("Original 0001-0003 ledger history has drifted or 0004 is already tracked");
+          const cols=rows("drink-cols.json");
+          const one=name=>cols.filter(x=>x.name===name);
+          for(const n of ["drink_variant","size_label"]){
+            const matches=one(n);
+            if(matches.length!==1 || matches[0].type!=="TEXT" || matches[0].notnull!==0 ||
+               matches[0].dflt_value!==null || matches[0].pk!==0)
+              throw Error("Applied drink column type or default differs: "+n);
+          }
+          const definition=rows("drink-ddl.json");
+          if(definition.length!==1 || typeof definition[0].sql!=="string")
+            throw Error("Drink CREATE TABLE schema unreadable");
+          const normalized=definition[0].sql.toLowerCase().replace(/\s+/g,"");
+          if(!normalized.includes("drink_varianttextcheck(drink_variantisnullordrink_variant='beer')") ||
+             !normalized.includes("size_labeltextcheck(size_labelisnullorsize_labelin('regular','large','mega','custom'))"))
+            throw Error("Drink CHECK constraints do not exactly match reviewed 0004");
+          const countRows=rows("counts-before.json");
+          if(countRows.length!==1)throw Error("Unexpected Owner count response");
+          const c=countRows[0];
+          if(Object.entries(c).some(([,v])=>!Number.isSafeInteger(v) || v<0) ||
+             c.owners!==1 || c.passkeys!==1 || c.weights<750 || c.steps<2715)
+            throw Error("Owner, passkey or previously audited record count mismatch");
+          fs.writeFileSync(dir+"verified-baseline.json",JSON.stringify({
+            history,ledgerDDL:ddl[0].sql,ledgerCols:schema,
+            drinkDDL:definition[0].sql,drinkCols:cols,counts:c
+          }));
+          console.log("PASS: 0001-0003 unchanged, 0004 untracked, both drink columns & CHECK constraints match");
+          console.log("BASELINE_OWNER_COUNTS="+JSON.stringify(c));
+          JS
+
+      - name: Last-chance main and target check; capture current restorable Time Travel bookmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/pulls/118" --jq '.head.sha')" = "$FROZEN_FEATURE_SHA"
+          curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$EXPECTED_D1_ID/time_travel/bookmark" \
+            > "$RUNNER_TEMP/d1-bookmark-before-write.json"
+          jq -e '.success==true and (.result.bookmark | type=="string" and test("^[0-9a-fA-F-]{24,100}$"))' \
+            "$RUNNER_TEMP/d1-bookmark-before-write.json" > /dev/null
+          echo "PASS: recovery bookmark captured immediately before one allowed ledger INSERT"
+
+      - name: Insert only one conditionally authorized ledger entry, never run ALTER or migration replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          sql="INSERT INTO d1_migrations(name)
+          SELECT '0004_drink_details.sql'
+          WHERE (SELECT COUNT(*) FROM d1_migrations)=3
+            AND (SELECT COUNT(*) FROM d1_migrations WHERE
+              (id=1 AND name='0001_initial.sql' AND applied_at='2026-11-07 08:52:21') OR
+              (id=2 AND name='0002_owner_auth.sql' AND applied_at='2026-11-07 11:17:08') OR
+              (id=3 AND name='0003_owner_passkey.sql' AND applied_at='2026-11-08 00:42:05'))=3
+            AND NOT EXISTS (SELECT 1 FROM d1_migrations WHERE name='0004_drink_details.sql')
+            AND (SELECT COUNT(*) FROM pragma_table_info('drink_entries')
+                 WHERE (name='drink_variant' AND type='TEXT' AND \`notnull\`=0 AND dflt_value IS NULL) OR
+                       (name='size_label' AND type='TEXT' AND \`notnull\`=0 AND dflt_value IS NULL))=2
+          RETURNING id,name,applied_at"
+          # A single INSERT ... SELECT ... RETURNING statement; never --file, never migration apply.
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "$sql" > "$RUNNER_TEMP/insert-response.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const raw=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/insert-response.json","utf8"));
+          const arr=Array.isArray(raw)?raw:[raw];
+          if(arr.length!==1 || arr[0].success!==true || arr[0].results?.length!==1)
+            throw Error("INSERT did not confirm exactly one new ledger record; stop");
+          if(arr[0].meta?.changes!==undefined && arr[0].meta.changes!==1)
+            throw Error("INSERT change count differs from one; stop");
+          const x=arr[0].results[0];
+          if(!Number.isSafeInteger(x.id) || x.id<=3 ||
+             x.name!=="0004_drink_details.sql" || typeof x.applied_at!=="string")
+            throw Error("INSERT RETURNING record invalid");
+          console.log("PASS: only one ledger INSERT RETURNING 0004 (no ALTER)");
+          JS
+
+      - name: Independently verify 4 ledger rows, original 3 unchanged, schema and all Owner counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id" > "$RUNNER_TEMP/ledger-after.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/drink-after-cols.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='drink_entries'" > "$RUNNER_TEMP/drink-after-ddl.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json \
+            --command "SELECT
+              (SELECT COUNT(*) FROM owners WHERE id='owner') AS owners,
+              (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weights,
+              (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps,
+              (SELECT COUNT(*) FROM drink_entries WHERE owner_id='owner') AS drinks,
+              (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys" > "$RUNNER_TEMP/counts-after.json"
+          node --input-type=module <<'JS'
+          import fs from "node:fs";
+          const dir=process.env.RUNNER_TEMP+"/";
+          const baseline=JSON.parse(fs.readFileSync(dir+"verified-baseline.json","utf8"));
+          const read=file=>{
+            const raw=JSON.parse(fs.readFileSync(dir+file,"utf8"));
+            const arr=Array.isArray(raw)?raw:[raw];
+            if(arr.length===0 || arr.some(x=>x.success!==true))throw Error("Remote postcheck failed: "+file);
+            return arr.flatMap(x=>x.results??[]);
+          };
+          const history=read("ledger-after.json");
+          if(history.length!==4 || JSON.stringify(history.slice(0,3))!==JSON.stringify(baseline.history) ||
+             history[3].name!=="0004_drink_details.sql" ||
+             !Number.isSafeInteger(history[3].id) || history[3].id<=3 ||
+             typeof history[3].applied_at!=="string")
+            throw Error("Ledger count, original records or 0004 row changed");
+          const cols=read("drink-after-cols.json"),ddl=read("drink-after-ddl.json");
+          if(JSON.stringify(cols)!==JSON.stringify(baseline.drinkCols) ||
+             ddl.length!==1 || ddl[0].sql!==baseline.drinkDDL)
+            throw Error("Drink schema changed during ledger repair");
+          const counts=read("counts-after.json");
+          if(counts.length!==1 || JSON.stringify(counts[0])!==JSON.stringify(baseline.counts))
+            throw Error("Original Owner/weight/steps/drinks/passkey record counts changed");
+          const b=JSON.parse(fs.readFileSync(dir+"d1-bookmark-before-write.json","utf8")).result.bookmark;
+          console.log("PASS: ledger rows=4, 0001-0003 unchanged, 0004 one row, drink DDL unchanged");
+          console.log("PASS: Owner, weights, steps, drinks and passkey counts identical before/after");
+          console.log("LEDGER_REPAIR_RESULT="+JSON.stringify({
+            result:"SUCCESS",database_id:process.env.EXPECTED_D1_ID,inserted:1,
+            migration:"0004_drink_details.sql",current_counts:counts[0],
+            recovery_bookmark_before_write:b
+          }));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            "### UAT D1 Migration 0004 ledger-only repair\n" +
+            "- Result: **SUCCESS**; exactly one history row inserted, no ALTER or migration replay\n" +
+            "- UAT D1 UUID: "+process.env.EXPECTED_D1_ID+"\n" +
+            "- Original migration records 0001-0003 unchanged, 0004 now tracked\n" +
+            "- Owner aggregate counts identical before and after: "+JSON.stringify(counts[0])+"\n" +
+            "- Time Travel bookmark immediately before write: "+b+"\n" +
+            "- No Worker deploy, Secrets or other database changes\n");
+          JS
