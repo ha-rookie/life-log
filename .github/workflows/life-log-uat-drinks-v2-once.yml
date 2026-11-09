@@ -190,7 +190,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_commit.message == 'feat(drinks): beer and mega-size tracking (#118)'
+      startsWith(github.event.workflow_run.head_commit.message, 'fix(uat): resume drinks release (#')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -214,7 +214,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$MAIN_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$MAIN_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'feat(drinks): beer and mega-size tracking (#118)'
+          git show -s --format=%s HEAD | grep -Eq '^fix\(uat\): resume drinks release \(#[0-9]+\)$'
+          test "$(git rev-parse HEAD^)" = 'c22a1d700f213697116a78403c12bde08f9188af'
+          test "$(git show -s --format=%s HEAD^)" = 'feat(drinks): beer and mega-size tracking (#118)'
           gh api "repos/$GITHUB_REPOSITORY/pulls/118" > "$RUNNER_TEMP/merged-pr.json"
           node --input-type=module <<'JS'
           import fs from "node:fs";
@@ -222,11 +224,12 @@ jobs:
           if(!p.merged_at||p.head.sha!=="89e41f492eb5174c4de1bdd32911fbc0bb7f00b9"||
              p.base.ref!=="main")throw Error("Approved PR 118 head not merged; no deployment");
           JS
-          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual"
-          printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs \
-            scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts \
-            src/worker/mvp-features.ts tests/drink-measures.test.ts tests/mvp-features.test.ts | sort > "$RUNNER_TEMP/expected"
-          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/gate-actual"
+          printf '%s\n' '.github/workflows/life-log-uat-drinks-v2-once.yml' > "$RUNNER_TEMP/gate-expected"
+          diff -u "$RUNNER_TEMP/gate-expected" "$RUNNER_TEMP/gate-actual"
+          git diff-tree --no-commit-id --name-only -r HEAD^ | sort > "$RUNNER_TEMP/feature-actual"
+          printf '%s\n' migrations/0004_drink_details.sql scripts/uat-drinks-v2-e2e.mjs scripts/validate-schema.py src/client/MvpFeatures.tsx src/shared/drink-measures.ts src/worker/mvp-features.ts tests/drink-measures.test.ts tests/mvp-features.test.ts | sort > "$RUNNER_TEMP/feature-expected"
+          diff -u "$RUNNER_TEMP/feature-expected" "$RUNNER_TEMP/feature-actual"
           node --input-type=module <<'JS'
           import fs from "node:fs";
           const cfg=JSON.parse(fs.readFileSync("wrangler.jsonc","utf8").split(/\r?\n/)
@@ -251,16 +254,47 @@ jobs:
           curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/421d0116-5c33-4782-a2b6-28f9684d3956" \
             | jq -e '.success == true and .result.uuid == "421d0116-5c33-4782-a2b6-28f9684d3956" and .result.name == "life-log-dev"' >/dev/null
-          npx --no-install wrangler d1 execute DB --env uat --remote --json \
-            --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json --command "PRAGMA table_info(drink_entries)" > "$RUNNER_TEMP/columns.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json --command "SELECT sql FROM sqlite_master WHERE type='table' AND name='drink_entries'" > "$RUNNER_TEMP/drink-ddl.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id" > "$RUNNER_TEMP/migrations.json"
+          npx --no-install wrangler d1 execute DB --env uat --remote --json --command "SELECT (SELECT COUNT(*) FROM owners WHERE id='owner') AS owners, (SELECT COUNT(*) FROM body_measurements WHERE owner_id='owner') AS weights, (SELECT COUNT(*) FROM activity_daily WHERE owner_id='owner') AS steps, (SELECT COUNT(*) FROM drink_entries WHERE owner_id='owner') AS drinks, (SELECT COUNT(*) FROM owner_passkey_credentials) AS passkeys" > "$RUNNER_TEMP/counts.json"
           node --input-type=module <<'JS'
           import fs from "node:fs";
-          const x=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/columns.json","utf8"));
-          const rows=(Array.isArray(x)?x:[x]).filter(a=>a.success===true).flatMap(a=>a.results??[]);
-          const names=rows.map(x=>x.name);
-          if(!names.includes("drink_variant")||!names.includes("size_label"))
-            throw Error("Migration 0004 not present; no deployment");
-          console.log("PASS: remote UAT D1 ready; no remote schema changes during release");
+          const rows=file=>{
+            const raw=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/"+file,"utf8"));
+            const items=Array.isArray(raw)?raw:[raw];
+            if(!items.length || items.some(x=>x.success!==true))
+              throw Error("UAT D1 read-only query failed: "+file);
+            return items.flatMap(x=>x.results??[]);
+          };
+          for(const name of ["drink_variant","size_label"]){
+            const c=rows("columns.json").filter(x=>x.name===name);
+            if(c.length!==1 || c[0].type!=="TEXT" || c[0].notnull!==0 ||
+               c[0].dflt_value!==null || c[0].pk!==0)
+              throw Error("Migration 0004 column absent or altered: "+name);
+          }
+          const ddl=rows("drink-ddl.json");
+          if(ddl.length!==1 || typeof ddl[0].sql!=="string")throw Error("Drink DDL unreadable");
+          const clean=ddl[0].sql.toLowerCase().replace(/\s+/g,"");
+          if(!clean.includes("drink_varianttextcheck(drink_variantisnullordrink_variant='beer')") ||
+             !clean.includes("size_labeltextcheck(size_labelisnullorsize_labelin('regular','large','mega','custom'))"))
+            throw Error("Migration 0004 CHECK constraints mismatch");
+          const m=rows("migrations.json");
+          if(m.length!==4 ||
+             m[0].id!==1 || m[0].name!=="0001_initial.sql" || m[0].applied_at!=="2026-11-07 08:52:21" ||
+             m[1].id!==2 || m[1].name!=="0002_owner_auth.sql" || m[1].applied_at!=="2026-11-07 11:17:08" ||
+             m[2].id!==3 || m[2].name!=="0003_owner_passkey.sql" || m[2].applied_at!=="2026-11-08 00:42:05" ||
+             !Number.isSafeInteger(m[3].id) || m[3].id<=3 ||
+             m[3].name!=="0004_drink_details.sql" || typeof m[3].applied_at!=="string")
+            throw Error("Migration 0004 ledger not fully tracked");
+          const data=rows("counts.json");
+          if(data.length!==1)throw Error("Invalid Owner count result");
+          const c=data[0];
+          if(Object.values(c).some(v=>!Number.isSafeInteger(v)||v<0) ||
+             c.owners!==1 || c.weights<750 || c.steps<2715 || c.passkeys!==1)
+            throw Error("Previous Owner/weight/steps/passkey counts not preserved");
+          console.log("PRE_RELEASE_OWNER_COUNTS="+JSON.stringify(c));
+          console.log("PASS: existing UAT UUID, 0004 ledger and column constraints, Owner record counts");
           JS
       - name: Deploy only existing UAT Worker without Secrets or migrations
         shell: bash
