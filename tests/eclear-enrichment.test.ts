@@ -162,6 +162,25 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     await expect(previewEclearEnrichment(fake,"", [m])).rejects.toThrow();
     expect(spy).not.toHaveBeenCalled();
   });
+  it("uses only owner-scoped SELECT on a successful preview and leaves local D1 untouched",async()=>{
+    const m=base();
+    await put(m);
+    const sqls:string[]=[];
+    const readOnly={
+      prepare:(query:string)=>{
+        sqls.push(query);
+        if(!/^\s*SELECT\b/i.test(query))throw Error("UNAUTHORIZED_WRITE");
+        return db.prepare(query);
+      }
+    } as Pick<ImportDb,"prepare">;
+    const before=await stored();
+    const preview=await previewEclearEnrichment(readOnly,"owner",[m]);
+    expect(preview).toMatchObject({enrichMeasurements:1,enrichCells:5,conflictMeasurements:0});
+    expect(sqls).toHaveLength(1);
+    expect(sqls[0]).toContain("WHERE owner_id=? AND measured_at=?");
+    expect(sqls[0]).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\b/i);
+    expect(await stored()).toEqual(before);
+  },100_000);
   it("fails closed on unavailable local D1 and never creates write statements",async()=>{
     const sql:string[]=[];
     const fake={
