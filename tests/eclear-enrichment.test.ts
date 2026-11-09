@@ -22,8 +22,6 @@ const base=(time="07:40"):EclearCompositionMeasurement=>({
   weightKg:75,bodyFatPct:25,skeletalMusclePct:36,
   bmi:23.5,visceralFatLevel:7,boneMassKg:3,basalMetabolismKcal:1700
 });
-const d1Sql=(m:EclearCompositionMeasurement,owner:string,id:string,source:string)=>
-  [id,owner,m.measuredAt,m.weightKg,m.bodyFatPct,source,id] as const;
 describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic local D1",()=>{
   let platform:Awaited<ReturnType<typeof getPlatformProxy<{DB:LocalDb}>>>;
   let db:LocalDb;
