@@ -123,6 +123,15 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     expect(x.classifications[0]).toMatchObject({status:"conflict",reason:"non_eclear_source"});
     expect((await stored())?.source_id).toBe("manual:weight");
   },100_000);
+  it("holds a new timestamp when a date-only weight of another source already exists that day",async()=>{
+    const incoming=base("21:40");
+    await put({...incoming,measuredAt:"2026-01-02"},{id:"weight-day",source:"csv:weight_day"});
+    const original=await stored("weight-day");
+    const preview=await previewEclearEnrichment(db,"owner",[incoming]);
+    expect(preview).toMatchObject({newMeasurements:0,enrichMeasurements:0,conflictMeasurements:1});
+    expect(preview.classifications[0]).toMatchObject({status:"conflict",reason:"non_eclear_source"});
+    expect(await stored("weight-day")).toEqual(original);
+  },100_000);
   it("uses a single canonical ECLEAR measurement without overwriting manual records at the same instant",async()=>{
     const m=base();await put(m,{id:"manual",source:"manual:weight"});await put(m,{id:"eclear",source:"csv:eclear"});
     const x=await previewEclearEnrichment(db,"owner",[m]);
@@ -179,7 +188,7 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     const preview=await previewEclearEnrichment(readOnly,"owner",[m]);
     expect(preview).toMatchObject({enrichMeasurements:1,enrichCells:5,conflictMeasurements:0});
     expect(sqls).toHaveLength(1);
-    expect(sqls[0]).toContain("WHERE owner_id=? AND measured_at=?");
+    expect(sqls[0]).toContain("WHERE owner_id=? AND (measured_at=? OR measured_at=?)");
     expect(sqls[0]).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\b/i);
     expect(await stored()).toEqual(before);
   },100_000);
