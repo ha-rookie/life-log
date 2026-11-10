@@ -26,6 +26,7 @@ type StoredMeasurement={
 export type EclearEnrichmentClassification={
   line:number; status:"new"|"enrich"|"unchanged"|"conflict";
   enrichFields:Field[]; conflictFields:Field[];
+  reason?:"ambiguous_eclear"|"non_eclear_source"|"existing_value_conflict";
 };
 export type EclearEnrichmentPreview={
   total:number; newMeasurements:number; enrichMeasurements:number;
@@ -91,7 +92,10 @@ export async function previewEclearEnrichment(
     // Never join to manual/date-only/unknown-source rows.
     if(matches.length!==1){
       result.conflictMeasurements++;
-      result.classifications.push({line:index+2,status:"conflict",enrichFields:[],conflictFields:[]});
+      result.classifications.push({
+        line:index+2,status:"conflict",enrichFields:[],conflictFields:[],
+        reason:matches.length>1?"ambiguous_eclear":"non_eclear_source"
+      });
       continue;
     }
     const stored=matches[0];
@@ -107,7 +111,10 @@ export async function previewEclearEnrichment(
     result.sameCells+=sameFields;
     if(conflictFields.length){
       result.conflictMeasurements++;
-      result.classifications.push({line:index+2,status:"conflict",enrichFields,conflictFields});
+      result.classifications.push({
+        line:index+2,status:"conflict",enrichFields,conflictFields,
+        reason:"existing_value_conflict"
+      });
     }else if(enrichFields.length){
       result.enrichMeasurements++;
       result.enrichCells+=enrichFields.length;
