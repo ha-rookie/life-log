@@ -1,7 +1,8 @@
 import {describe,expect,it} from "vitest";
 import {createElement} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
-import styles from "../src/client/styles.css?raw";
+import {readFileSync} from "node:fs";
+const styles=readFileSync(new URL("../src/client/styles.css",import.meta.url),"utf8");
 import {
   EclearEnrichment,eclearErrorMessage,summarizeEclearPreviews,
   type CompositionPreview
