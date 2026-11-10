@@ -77,9 +77,11 @@ export async function previewEclearEnrichment(
     const found=await db.prepare(
       "SELECT id,source_id,measured_at,weight_kg,body_fat_pct,"+
       "skeletal_muscle_pct,bmi,visceral_fat_level,bone_mass_kg,basal_metabolism_kcal"+
-      " FROM body_measurements WHERE owner_id=? AND measured_at=?"+
-      " ORDER BY CASE WHEN source_id='csv:eclear' THEN 0 ELSE 1 END,id LIMIT 3"
-    ).bind(owner,incoming.measuredAt).all<StoredMeasurement>();
+      // A date-only source may denote the same physical observation. Do not
+      // silently create a second measurement before its origin is reviewed.
+      " FROM body_measurements WHERE owner_id=? AND (measured_at=? OR measured_at=?)"+
+      " ORDER BY CASE WHEN source_id='csv:eclear' AND measured_at=? THEN 0 ELSE 1 END,id LIMIT 3"
+    ).bind(owner,incoming.measuredAt,incoming.measuredAt.slice(0,10),incoming.measuredAt).all<StoredMeasurement>();
     if(!Array.isArray(found.results))throw Error("ECLEAR_ENRICHMENT_DB_UNAVAILABLE");
     const matches=found.results.filter(r=>r.source_id==="csv:eclear");
     const nullCells=FIELDS.filter(([name])=>incoming[name]===null).length;
