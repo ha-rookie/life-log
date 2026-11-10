@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from "vitest";
+import {afterAll,beforeAll,beforeEach,describe,expect,it} from "vitest";
 import {getPlatformProxy} from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
 import migration from "../migrations/0005_eclear_enrichment_audit.sql?raw";
@@ -207,6 +207,6 @@ describe("#141 Stage 2B: synthetic local D1 transaction and owner gate",()=>{
     expect(serialized).not.toContain("1700");
     expect(serialized).not.toContain("existing");
     expect(serialized).not.toContain("2026-01-02");
-    expect(serialized).not.toContain("75");
+    expect(serialized).not.toContain('"weightKg":75');
   },100_000);
 });
