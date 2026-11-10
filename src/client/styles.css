@@ -295,3 +295,42 @@ footer{color:#7a8c8f;font-size:.74rem;margin:36px 0 0}
     transition:background-color .13s ease,color .13s ease,box-shadow .13s ease
   }
 }
+
+
+/* Stage 2C: ECLEAR enhancement stays inside the existing CSV panel. */
+.eclear-mode{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;
+  border-radius:14px;background:#edf5f2;padding:5px;margin:14px 0}
+.panel .eclear-mode button{font-size:.82rem;min-width:0;white-space:normal;overflow-wrap:anywhere;
+  min-height:52px;padding:9px 8px;background:transparent;border-color:transparent}
+.panel .eclear-mode button[aria-pressed=true]{background:#fff;color:#0d655c;border-color:#b9d9d0;
+  box-shadow:0 2px 8px rgba(18,56,47,.08)}
+.eclear-enrichment{min-width:0;border:1px solid #d7e6e1;border-radius:16px;
+  padding:17px 16px;background:#fbfdfc;margin:14px 0}
+.eclear-enrichment h3{font-size:1.11rem;margin:0 0 12px}
+.eclear-file-summary{display:grid;gap:6px;padding:12px 0;font-size:.84rem;color:#42615c;
+  overflow-wrap:anywhere}
+.eclear-file-summary span{min-width:0;overflow-wrap:anywhere}
+.eclear-preview{border-top:1px solid #e0ece8;margin-top:16px;padding-top:14px;min-width:0}
+.eclear-preview h4{margin:3px 0 12px;font-size:1rem}
+.eclear-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;margin:8px 0 15px;min-width:0}
+.eclear-summary-grid>div{min-width:0;display:grid;gap:6px;background:#eef6f3;
+  border:1px solid #deebe6;border-radius:12px;padding:11px 9px}
+.eclear-summary-grid dt{font-size:.75rem;color:#4e7069;overflow-wrap:anywhere}
+.eclear-summary-grid dd{font-weight:780;font-size:1.05rem;margin:0;
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.eclear-conflicts{border-top:1px solid #dfebe6;padding:10px 0}
+.eclear-conflicts ul{padding-left:20px;overflow-wrap:anywhere}
+.eclear-ack{display:flex;align-items:flex-start;gap:10px;background:#f1f8f5;
+  border-radius:12px;padding:13px;margin:14px 0;cursor:pointer;overflow-wrap:anywhere}
+.eclear-ack input[type=checkbox]{width:21px;height:21px;flex:0 0 21px;accent-color:#11746b}
+.eclear-actions{display:flex;align-items:stretch;flex-wrap:wrap;gap:9px}
+.eclear-actions button{min-width:0;flex:1 1 175px;white-space:normal}
+@media(max-width:480px){
+  .eclear-mode{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .eclear-enrichment{padding:15px 12px}
+  .eclear-mode button{font-size:.78rem}
+  .eclear-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .eclear-actions{flex-direction:column}
+  .eclear-actions button{width:100%;flex:auto;min-height:48px}
+}
