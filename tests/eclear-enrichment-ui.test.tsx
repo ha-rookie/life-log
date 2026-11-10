@@ -1,6 +1,7 @@
 import {describe,expect,it} from "vitest";
 import {createElement} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
+// @ts-ignore -- Node type declarations are deliberately absent from the browser TS project.
 import {readFileSync} from "node:fs";
 const styles=readFileSync(new URL("../src/client/styles.css",import.meta.url),"utf8");
 import {
