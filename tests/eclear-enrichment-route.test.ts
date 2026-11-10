@@ -136,6 +136,55 @@ describe("#141 Stage 2B: synthetic local D1 transaction and owner gate",()=>{
     expect(await confirm(csv,replay.reviewToken)).toMatchObject({status:200,body:{status:"unchanged"}});
     expect(await n("body_measurements")).toBe(3);
   },100_000);
+  it("preserves legacy v1 job, row audit, fingerprint and original association",async()=>{
+    await put();
+    const originalHash="a".repeat(64),fingerprint="b".repeat(64);
+    await db.prepare(
+      "INSERT INTO import_jobs(id,owner_id,source_type,source_id,file_sha256,status,started_at,completed_at)"+
+      " VALUES('legacy-job','owner','eclear','csv:eclear',?,'confirmed','2026-01-01','2026-01-01')"
+    ).bind(originalHash).run();
+    await db.prepare(
+      "UPDATE body_measurements SET import_job_id='legacy-job',reliable_fingerprint=? WHERE id='existing'"
+    ).bind(fingerprint).run();
+    await db.prepare(
+      "INSERT INTO import_row_audit(id,import_job_id,source_row_number,source_row_key,result)"+
+      " VALUES('legacy-row','legacy-job',2,'legacy:2','inserted')"
+    ).run();
+    const beforeJob=await db.prepare("SELECT * FROM import_jobs WHERE id='legacy-job'").first();
+    const beforeAudit=await db.prepare("SELECT * FROM import_row_audit WHERE id='legacy-row'").first();
+    const review=await preview();
+    expect(await confirm(input(),review.reviewToken)).toMatchObject({status:200,body:{cells:5}});
+    expect(await get()).toMatchObject({id:"existing",import_job_id:"legacy-job",reliable_fingerprint:fingerprint});
+    expect(await db.prepare("SELECT * FROM import_jobs WHERE id='legacy-job'").first()).toEqual(beforeJob);
+    expect(await db.prepare("SELECT * FROM import_row_audit WHERE id='legacy-row'").first()).toEqual(beforeAudit);
+    expect(await n("import_jobs")).toBe(1);
+    expect(await n("import_row_audit")).toBe(1);
+    const rerun=await preview();
+    expect(await confirm(input(),rerun.reviewToken)).toMatchObject({status:200,body:{status:"unchanged"}});
+    expect(await n("eclear_enrichment_jobs")).toBe(1);
+  },100_000);
+  it("keeps other owners isolated even for the same physical timestamp",async()=>{
+    await put({owner:"other",id:"foreign"});
+    const previous=await get("foreign");
+    const review=await preview();
+    expect(review.newMeasurements).toBe(1);
+    expect(await confirm(input(),review.reviewToken)).toMatchObject({status:200,body:{inserted:1}});
+    expect(await get("foreign")).toEqual(previous);
+    expect(await n("body_measurements")).toBe(2);
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM body_measurements WHERE owner_id='owner'").first<{n:number}>())?.n).toBe(1);
+  },100_000);
+  it("allows at most one successful commit for concurrent identical reviewed requests",async()=>{
+    await put();
+    const csv=input(),review=await preview(csv);
+    const outcomes=await Promise.all([
+      confirm(csv,review.reviewToken),
+      confirm(csv,review.reviewToken)
+    ]);
+    expect(outcomes.map(x=>x.status).sort()).toEqual([200,409]);
+    expect(await n("body_measurements")).toBe(1);
+    expect(await n("eclear_enrichment_jobs")).toBe(1);
+    expect(await n("eclear_enrichment_cell_audit")).toBe(5);
+  },100_000);
   it("never rewrites conflicting non-NULL values, and does not apply partial file",async()=>{
     await put({fat:27});
     const csv=input([row(),row("21:40")]);
@@ -167,7 +216,8 @@ describe("#141 Stage 2B: synthetic local D1 transaction and owner gate",()=>{
   it("rejects stale reviewed snapshot and unsigned or tampered confirmation",async()=>{
     await put();
     const csv=input(),rev=await preview(csv);
-    expect((await confirm(csv,rev.reviewToken.replace(/.$/,"0"))).status).toBe(409);
+    const forged=rev.reviewToken.slice(0,-1)+(rev.reviewToken.endsWith("0")?"1":"0");
+    expect((await confirm(csv,forged)).status).toBe(409);
     await db.prepare("UPDATE body_measurements SET bmi=27 WHERE id='existing'").run();
     expect(await confirm(csv,rev.reviewToken)).toMatchObject({status:409,body:{error:"REVIEW_STALE"}});
     expect(await n("eclear_enrichment_jobs")).toBe(0);
