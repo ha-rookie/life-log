@@ -72,10 +72,12 @@ async function requestV2(
 function isPreview(value:CompositionPreview|ApiResult):value is CompositionPreview{
   return value.status==="preview"&&typeof (value as CompositionPreview).reviewToken==="string";
 }
-export function EclearEnrichment({parts,filename,encoding,onSaved}:{
+export function EclearEnrichment({parts,filename,encoding,onSaved,onBusyChange}:{
   parts:readonly string[];filename:string;encoding:string|null;onSaved:()=>void;
+  onBusyChange:(busy:boolean)=>void;
 }){
   const [busy,setBusy]=useState(false);
+  function updateBusy(next:boolean){setBusy(next);onBusyChange(next);}
   const [previews,setPreviews]=useState<CompositionPreview[]>([]);
   const [acknowledged,setAcknowledged]=useState(false);
   const [message,setMessage]=useState("");
@@ -89,7 +91,7 @@ export function EclearEnrichment({parts,filename,encoding,onSaved}:{
     totals.conflictMeasurements===0&&acknowledged&&outcome!=="success"&&completed===0;
   async function previewAll(){
     if(busy||!parts.length)return;
-    setBusy(true);setPreviews([]);setAcknowledged(false);setMessage("");
+    updateBusy(true);setPreviews([]);setAcknowledged(false);setMessage("");
     setCompleted(0);setOutcome("none");
     try{
       const next:CompositionPreview[]=[];
@@ -106,13 +108,13 @@ export function EclearEnrichment({parts,filename,encoding,onSaved}:{
     }catch(e){
       const x=e as ApiError;
       setMessage(eclearErrorMessage(x.status,x.code));
-    }finally{setBusy(false);}
+    }finally{updateBusy(false);}
   }
   async function apply(){
     if(!canApply)return;
     // A confirmed user action is required, and the exact preview tokens are
     // passed unchanged. Never auto-retry a failed/timed-out mutation.
-    setBusy(true);setMessage("保存・再照合中…");setOutcome("none");
+    updateBusy(true);setMessage("保存・再照合中…");setOutcome("none");
     let changed=0,done=0;
     try{
       for(let index=0;index<parts.length;index++){
@@ -133,7 +135,7 @@ export function EclearEnrichment({parts,filename,encoding,onSaved}:{
       setMessage(eclearErrorMessage(x.status,x.code,true)+
         (done>0?" 確認済み "+done+"/"+parts.length+" 分割。":"")+
         " 状態を確認するには「再プレビュー」を押してください。");
-    }finally{setBusy(false);}
+    }finally{updateBusy(false);}
   }
   return <section className="eclear-enrichment" aria-labelledby="eclear-v2-heading">
     <h3 id="eclear-v2-heading">体組成の不足項目を補完</h3>
