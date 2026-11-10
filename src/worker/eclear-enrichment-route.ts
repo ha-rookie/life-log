@@ -3,7 +3,7 @@ import {inspectOfficialEclearComposition} from "../shared/source-adapter";
 import {isSafeLocalImport, type ImportDb, type Statement} from "./import";
 import {
   readEclearEnrichmentPlan, ECLEAR_FIELDS,
-  type EclearEnrichmentSnapshot, type EclearEnrichmentPreview,
+  type EclearEnrichmentSnapshot,
   type Field
 } from "./eclear-enrichment";
 
