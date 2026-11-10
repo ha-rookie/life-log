@@ -26,7 +26,7 @@ type StoredMeasurement={
 export type EclearEnrichmentClassification={
   line:number; status:"new"|"enrich"|"unchanged"|"conflict";
   enrichFields:Field[]; conflictFields:Field[];
-  reason?:"ambiguous_eclear"|"non_eclear_source"|"existing_value_conflict";
+  reason?:"ambiguous_eclear"|"non_eclear_source"|"date_only_source"|"existing_value_conflict";
 };
 export type EclearEnrichmentPreview={
   total:number; newMeasurements:number; enrichMeasurements:number;
@@ -83,7 +83,8 @@ export async function previewEclearEnrichment(
       " ORDER BY CASE WHEN source_id='csv:eclear' AND measured_at=? THEN 0 ELSE 1 END,id LIMIT 3"
     ).bind(owner,incoming.measuredAt,incoming.measuredAt.slice(0,10),incoming.measuredAt).all<StoredMeasurement>();
     if(!Array.isArray(found.results))throw Error("ECLEAR_ENRICHMENT_DB_UNAVAILABLE");
-    const matches=found.results.filter(r=>r.source_id==="csv:eclear");
+    // Only the identical physical timestamp qualifies as the canonical row.
+    const matches=found.results.filter(r=>r.source_id==="csv:eclear" && r.measured_at===incoming.measuredAt);
     const nullCells=FIELDS.filter(([name])=>incoming[name]===null).length;
     result.missingCells+=nullCells;
     if(found.results.length===0){
@@ -96,7 +97,9 @@ export async function previewEclearEnrichment(
       result.conflictMeasurements++;
       result.classifications.push({
         line:index+2,status:"conflict",enrichFields:[],conflictFields:[],
-        reason:matches.length>1?"ambiguous_eclear":"non_eclear_source"
+        reason:matches.length>1?"ambiguous_eclear":
+          found.results.some(r=>r.measured_at===incoming.measuredAt.slice(0,10))
+            ?"date_only_source":"non_eclear_source"
       });
       continue;
     }
