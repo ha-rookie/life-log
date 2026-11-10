@@ -6,7 +6,7 @@ import type { ImportDb } from "./import";
  * No API routing, D1 mutation, import_job replay or audit rewriting is permitted
  * in this stage. Stage 2B must recheck every snapshot atomically before writing.
  */
-const FIELDS=[
+export const ECLEAR_FIELDS=[
   ["weightKg","weight_kg"],
   ["bodyFatPct","body_fat_pct"],
   ["skeletalMusclePct","skeletal_muscle_pct"],
@@ -16,8 +16,8 @@ const FIELDS=[
   ["basalMetabolismKcal","basal_metabolism_kcal"]
 ] as const;
 
-type Field=typeof FIELDS[number][0];
-type StoredMeasurement={
+export type Field=typeof ECLEAR_FIELDS[number][0];
+export type StoredMeasurement={
   id:string;source_id:string;measured_at:string;
   weight_kg:number|null;body_fat_pct:number|null;skeletal_muscle_pct:number|null;
   bmi:number|null;visceral_fat_level:number|null;bone_mass_kg:number|null;
@@ -45,7 +45,7 @@ function validTime(value:string):boolean{
 function validRow(row:EclearCompositionMeasurement):boolean{
   if(!row||!validTime(row.measuredAt)||!Number.isFinite(row.weightKg) ||
      row.weightKg<=0||row.weightKg>=500)return false;
-  return FIELDS.slice(1).every(([key])=>{
+  return ECLEAR_FIELDS.slice(1).every(([key])=>{
     const v=row[key];
     if(v===null)return true;
     if(typeof v!=="number"||!Number.isFinite(v)||v<0)return false;
@@ -58,9 +58,10 @@ function validRow(row:EclearCompositionMeasurement):boolean{
  * A single csv:eclear row is eligible even if a manual row exists at the same
  * timestamp; a manual-only row is not eligible for inference/auto-merge.
  */
-export async function previewEclearEnrichment(
+export type EclearEnrichmentSnapshot={incoming:EclearCompositionMeasurement;existing:StoredMeasurement[]};
+export async function readEclearEnrichmentPlan(
   db:Pick<ImportDb,"prepare">,owner:string,measurements:readonly EclearCompositionMeasurement[]
-):Promise<EclearEnrichmentPreview>{
+):Promise<{preview:EclearEnrichmentPreview;snapshots:EclearEnrichmentSnapshot[]}>{
   if(!owner||measurements.length<1||measurements.length>40)
     throw Error("ECLEAR_ENRICHMENT_INPUT_INVALID");
   const seen=new Set<string>();
@@ -73,6 +74,7 @@ export async function previewEclearEnrichment(
     sameCells:0,conflictMeasurements:0,missingCells:0,unchangedMeasurements:0,
     classifications:[]
   };
+  const snapshots:EclearEnrichmentSnapshot[]=[];
   for(const [index,incoming] of measurements.entries()){
     const found=await db.prepare(
       "SELECT id,source_id,measured_at,weight_kg,body_fat_pct,"+
@@ -83,9 +85,10 @@ export async function previewEclearEnrichment(
       " ORDER BY CASE WHEN source_id='csv:eclear' AND measured_at=? THEN 0 ELSE 1 END,id LIMIT 3"
     ).bind(owner,incoming.measuredAt,incoming.measuredAt.slice(0,10),incoming.measuredAt).all<StoredMeasurement>();
     if(!Array.isArray(found.results))throw Error("ECLEAR_ENRICHMENT_DB_UNAVAILABLE");
+    snapshots.push({incoming,existing:found.results});
     // Only the identical physical timestamp qualifies as the canonical row.
     const matches=found.results.filter(r=>r.source_id==="csv:eclear" && r.measured_at===incoming.measuredAt);
-    const nullCells=FIELDS.filter(([name])=>incoming[name]===null).length;
+    const nullCells=ECLEAR_FIELDS.filter(([name])=>incoming[name]===null).length;
     result.missingCells+=nullCells;
     if(found.results.length===0){
       result.newMeasurements++;
@@ -106,7 +109,7 @@ export async function previewEclearEnrichment(
     const stored=matches[0];
     const enrichFields:Field[]=[],conflictFields:Field[]=[];
     let sameFields=0;
-    for(const [input,dbField] of FIELDS){
+    for(const [input,dbField] of ECLEAR_FIELDS){
       const next=incoming[input],previous=stored[dbField];
       if(next===null)continue; // A CSV blank never erases a saved value.
       if(previous===null)enrichFields.push(input);
@@ -129,5 +132,12 @@ export async function previewEclearEnrichment(
       result.classifications.push({line:index+2,status:"unchanged",enrichFields,conflictFields});
     }
   }
-  return result;
+  return {preview:result,snapshots};
+}
+
+/** Stage 2A public summary intentionally contains no D1 measurements. */
+export async function previewEclearEnrichment(
+  db:Pick<ImportDb,"prepare">,owner:string,measurements:readonly EclearCompositionMeasurement[]
+):Promise<EclearEnrichmentPreview>{
+  return (await readEclearEnrichmentPlan(db,owner,measurements)).preview;
 }
