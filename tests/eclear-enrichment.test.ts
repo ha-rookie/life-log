@@ -102,7 +102,8 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     expect(x).toMatchObject({
       enrichMeasurements:0,enrichCells:0,conflictMeasurements:1,
       classifications:[{line:2,status:"conflict",conflictFields:["bodyFatPct","skeletalMusclePct"],
-        enrichFields:["bmi","visceralFatLevel","boneMassKg","basalMetabolismKcal"]}]
+        enrichFields:["bmi","visceralFatLevel","boneMassKg","basalMetabolismKcal"],
+        reason:"existing_value_conflict"}]
     });
     expect(await stored()).toEqual(previous);
   },100_000);
@@ -119,7 +120,7 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     const m=base();await put(m,{source:"manual:weight"});
     const x=await previewEclearEnrichment(db,"owner",[m]);
     expect(x).toMatchObject({conflictMeasurements:1,newMeasurements:0,enrichCells:0});
-    expect(x.classifications[0].status).toBe("conflict");
+    expect(x.classifications[0]).toMatchObject({status:"conflict",reason:"non_eclear_source"});
     expect((await stored())?.source_id).toBe("manual:weight");
   },100_000);
   it("uses a single canonical ECLEAR measurement without overwriting manual records at the same instant",async()=>{
@@ -132,6 +133,7 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     const m=base();await put(m,{id:"eclear-a"});await put(m,{id:"eclear-b"});
     const x=await previewEclearEnrichment(db,"owner",[m]);
     expect(x).toMatchObject({conflictMeasurements:1,enrichCells:0});
+    expect(x.classifications[0]).toMatchObject({status:"conflict",reason:"ambiguous_eclear"});
   },100_000);
   it("keeps same-calendar-day morning/night as separate records and respects owner isolation",async()=>{
     const a=base(),b=base("21:40");
