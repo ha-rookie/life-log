@@ -60,13 +60,13 @@ async function requestV2(
       headers:{"Content-Type":"application/json","X-Life-Log-Intent":"eclear-enrichment-v2"},
       body:JSON.stringify(reviewToken===undefined?{csv}:{csv,token:reviewToken})
     });
-    const data=await response.json().catch(()=>({})) as CompositionPreview&ApiResult;
+    const data=await response.json().catch(()=>({})) as Record<string,unknown>;
     if(!response.ok){
       const e=new Error("ECLEAR_API_FAILURE") as ApiError;
-      e.status=response.status;e.code=data.error;
+      e.status=response.status;e.code=typeof data.error==="string"?data.error:undefined;
       throw e;
     }
-    return data;
+    return data as CompositionPreview|ApiResult;
   }finally{clearTimeout(timer);}
 }
 function isPreview(value:CompositionPreview|ApiResult):value is CompositionPreview{
