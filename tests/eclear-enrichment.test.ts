@@ -129,8 +129,17 @@ describe("#124 Stage 2A: read-only ECLEAR enrichment classification on synthetic
     const original=await stored("weight-day");
     const preview=await previewEclearEnrichment(db,"owner",[incoming]);
     expect(preview).toMatchObject({newMeasurements:0,enrichMeasurements:0,conflictMeasurements:1});
-    expect(preview.classifications[0]).toMatchObject({status:"conflict",reason:"non_eclear_source"});
+    expect(preview.classifications[0]).toMatchObject({status:"conflict",reason:"date_only_source"});
     expect(await stored("weight-day")).toEqual(original);
+  },100_000);
+  it("never treats a date-only csv:eclear record as an exact-timestamp match",async()=>{
+    const incoming=base("21:40");
+    await put({...incoming,measuredAt:"2026-01-02"},{id:"old-date-only",source:"csv:eclear"});
+    const before=await stored("old-date-only");
+    const preview=await previewEclearEnrichment(db,"owner",[incoming]);
+    expect(preview).toMatchObject({newMeasurements:0,enrichMeasurements:0,conflictMeasurements:1});
+    expect(preview.classifications[0]).toMatchObject({status:"conflict",reason:"date_only_source"});
+    expect(await stored("old-date-only")).toEqual(before);
   },100_000);
   it("uses a single canonical ECLEAR measurement without overwriting manual records at the same instant",async()=>{
     const m=base();await put(m,{id:"manual",source:"manual:weight"});await put(m,{id:"eclear",source:"csv:eclear"});
