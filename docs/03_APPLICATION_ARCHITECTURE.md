@@ -144,3 +144,41 @@ Both list and detail now reconcile owner-scoped destination row count with recor
 - Remote writes additionally require the browser's exact Origin equal to the configured HTTPS origin and request origin, `Sec-Fetch-Site: same-origin`, JSON content type, and `X-Life-Log-Intent: manual-write-v1` custom header. The value is an **intent marker, not a shared secret or substitute for JWT**. Rejected cross-site/missing-header requests are denied before preparing any D1 query; do not add permissive CORS. Requests without Fetch Metadata fail closed in UAT.
 - Weight PATCH/DELETE now use an atomic SQL compare-and-swap on source/owner/key **and the last observed measured_at + weight_kg**, with D1 affected-row verification. Step PUT/DELETE likewise reject 0-change stale edits. The client sends expected values derived only from the selected manual-history row. A lost response is not interpreted as a success: the UI reloads the authoritative history so the user can assess whether to retry. UUID-based weight POST and same-day steps POST remain replay-safe; no automatic second mutation.
 - Release gate remains separate: provision an **isolated** UAT D1, approved exact HTTPS host, Access protection of **all** assets/API routes, configured secrets/bindings and audited backup/rollback before any remote write test. Verify actual Android Chrome and deployed Worker independently. A passing signed synthetic JWT + local D1/Chromium test is **not** proof of real Cloudflare Access policy or a deployed host. Production write enablement requires a future explicit design/approval.
+
+
+## ECLEAR seven-field enrichment (Stage 2B; synthetic local D1 only)
+
+The authenticated Worker exposes separate `POST /api/eclear/enrichment/preview` and
+`POST /api/eclear/enrichment/confirm`. Neither endpoint is connected to the
+existing v1 CSV import contract. Both are **disabled** unless the trusted
+loopback-local Worker has `ECLEAR_ENRICHMENT_LOCAL_ONLY=true` and a distinct,
+high-entropy `ECLEAR_ENRICHMENT_REVIEW_KEY` (minimum 32 UTF-8 bytes).
+These settings **must not** be configured in UAT or Production. A matching
+same-origin `Origin`, `Sec-Fetch-Site`, JSON content type and custom
+`X-Life-Log-Intent: eclear-enrichment-v2` are required after signed Owner auth.
+A remote Worker intentionally returns 403. No remote D1 migration is approved.
+
+The client decodes official ECLEAR CP932/Shift_JIS bytes before submission; the
+Worker re-parses the official ten columns. Each request is limited to 40 rows
+and 64 KiB of UTF-8 CSV. Read-only preview uses the owner-scoped Stage 2A
+classifier and computes a private snapshot digest of the complete incoming
+seven values and the bounded owner measurement records. A five-minute HMAC
+review token binds owner, CSV hash, snapshot and expiry. The token contains no
+raw measurement values. Confirm independently re-reads and revalidates the
+current snapshot, then executes all guarded checks, NULL-only UPDATE/new
+INSERT, row/cell audit and final count assertions in a single D1 `batch()`
+transaction. Failed assertions cause CHECK constraint failures and rollback.
+
+The local-only migration `0005_eclear_enrichment_audit.sql` introduces separate
+`eclear_enrichment_jobs`, `eclear_enrichment_row_audit` and
+`eclear_enrichment_cell_audit`. The old `import_jobs` and `import_row_audit`
+remain immutable. Existing measurement IDs, timestamps, provenance,
+fingerprints, body weight, fat percentage and original job associations are
+preserved when filling missing cells. New exact timestamps use the historical
+ECLEAR v1 fingerprint; date-only ambiguities are treated as conflicts.
+Duplicate file submissions with no new cells return unchanged without new
+audit jobs. Conflict rows block the entire submitted chunk until re-reviewed.
+
+No Android UI or real-UAT data operation is part of Stage 2B; Stage 2C is
+tracked separately in Issue #142. Do not claim remote applicability from
+local unit tests or a successful Draft PR CI.

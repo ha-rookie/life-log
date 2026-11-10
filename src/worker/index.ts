@@ -4,6 +4,7 @@ import { loginScreen } from "./login-screen";
 import { authRoute, sessionOwner } from "./password-auth";
 import { getSummary, getDashboard, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
+import { handleEclearEnrichment } from "./eclear-enrichment-route";
 import { isSafeRemoteManual } from "./manual-entry";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
@@ -18,6 +19,9 @@ export interface Env extends AccessEnv {
   AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> };
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
+  // v2 enrichment is an independent local-only feature; never set on UAT/Production.
+  ECLEAR_ENRICHMENT_LOCAL_ONLY?: string;
+  ECLEAR_ENRICHMENT_REVIEW_KEY?: string;
   // Separate opt-in for manual writes. Must never be set in a remote Worker.
   MANUAL_ENTRY_LOCAL_ONLY?: string;
   // UAT-only: independently provisioned, deliberately absent from all deploy configs.
@@ -68,6 +72,12 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
             target: env.MANUAL_REMOTE_TARGET,
             origin: env.MANUAL_REMOTE_ORIGIN,
           });
+        if (path === "/api/eclear/enrichment/preview" || path === "/api/eclear/enrichment/confirm") {
+          return handleEclearEnrichment(request,env.DB as unknown as ImportDb,ownerId,{
+            enabled:env.ECLEAR_ENRICHMENT_LOCAL_ONLY,
+            reviewKey:env.ECLEAR_ENRICHMENT_REVIEW_KEY
+          });
+        }
         if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
         if (path === "/api/import/confirm") {
           if (request.method !== "POST") {
