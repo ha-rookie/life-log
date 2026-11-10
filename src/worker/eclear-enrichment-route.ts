@@ -85,7 +85,7 @@ function updatedSnapshotGuard(
     ")=1 THEN 1 ELSE 0 END)").bind(owner,id,...expected);
 }
 function insertRow(
-  db:ImportDb,owner:string,measurementId:string,jobId:string,fileHash:string,
+  db:ImportDb,owner:string,measurementId:string,fileHash:string,
   rowNumber:number,s:EclearEnrichmentSnapshot,fingerprint:string
 ):Statement{
   const columns=ECLEAR_FIELDS.map(([,col])=>col);
@@ -160,7 +160,7 @@ async function commitPlan(
       const fingerprint=await hash(JSON.stringify([
         "eclear-v1",s.incoming.measuredAt,s.incoming.weightKg,s.incoming.bodyFatPct
       ]));
-      ops.push(insertRow(db,owner,id,jobId,fileHash,cls.line,s,fingerprint));
+      ops.push(insertRow(db,owner,id,fileHash,cls.line,s,fingerprint));
     }else{
       ops.push(updateRow(db,owner,id,s,keys));
       ops.push(updatedSnapshotGuard(db,owner,id,s));
