@@ -187,3 +187,14 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
   zero imported weight/step/lifestyle records, one registered passkey. This
   authority rule is application code and test guidance; it **does not**
   claim the private Box/Sheets originals have been imported.
+
+
+## 2026-11-11 ECLEAR Stage 2C Android preview and confirmation (#142)
+
+- **Scope**: Stage 1 (#138), read-only matching Stage 2A (#140), and local-only atomic write Stage 2B (#143) are merged. This Stage 2C is UI-only; it neither changes the v2 Worker endpoints nor enables remote health-data writes.
+- **Files**: `src/client/App.tsx` separates the existing "体重・体脂肪率を通常取込" operation from "体組成の不足項目だけ補完". `src/client/EclearEnrichment.tsx` handles separate preview → explicit owner confirmation → independent v2 confirm → read-only preview recheck. `src/shared/source-adapter.ts` validates the original ECLEAR 10-column source, partitions 40 records per request and omits memo before network submission, including quoted multiline memos.
+- **Reported counters**: new measurements, existing eligible records, missing cells to fill, same-value skipped cells, conflicts (categorized), and blank source fields. Blank ≠ observed numeric zero. Conflicts cannot be silently overwritten or batch-partially committed.
+- **Write safety**: timeout / 401 / 403 / 409 / checksum mismatch / readback mismatch must not display success. No automatic resend after an uncertain mutation. The file picker is disabled while a request is pending. Once a confirmed chunk is applied, a fresh owner-scoped v2 read-only preview must return no new or missing cells. Parts are verified individually; a later failure leaves earlier results explicitly identified as already confirmed.
+- **Mobile**: 390px CSS has responsive two-column counters, wrapped file names and full-width ≥48px action controls; no internal build metadata on the main page.
+- **Evidence**: `tests/source-adapter.test.ts` and `tests/eclear-enrichment-ui.test.tsx` cover synthetic source sanitization, 40-row boundaries, rendering, counters, failure messages and responsive CSS contract. These are **not a substitute** for a real Chromium 390px E2E or an actual Android acceptance. Do not mark physical device acceptance complete without a browser/device run.
+- **Release boundary**: Backend v2 requires `ECLEAR_ENRICHMENT_LOCAL_ONLY=true` and a separate HMAC key on trusted loopback; UAT/Production remain disabled. No Remote D1 migration, real-user data modification, Secrets or UAT deployment in this PR. Parent #124 remains open until authorized real-device and real-data acceptance.

@@ -3,7 +3,8 @@ import { WeightTrendPanel } from "./WeightTrend";
 import { ProgressCharts } from "./ProgressCharts";
 
 import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
-import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource } from "../shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, partitionOfficialEclearComposition } from "../shared/source-adapter";
+import { EclearEnrichment } from "./EclearEnrichment";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
 import { MvpFeatures } from "./MvpFeatures";
@@ -55,6 +56,9 @@ export function App() {
   const [selectedCsvName,setSelectedCsvName] = useState<string|null>(null);
   const [canonicalParts,setCanonicalParts] = useState<string[]>([]);
   const [canonicalTotal,setCanonicalTotal] = useState(0);
+  const [compositionParts,setCompositionParts] = useState<string[]>([]);
+  const [eclearMode,setEclearMode] = useState<"usual"|"enrich">("usual");
+  const [compositionBusy,setCompositionBusy] = useState(false);
   const [missingFitSteps,setMissingFitSteps] = useState(0);
   const [csvEncoding,setCsvEncoding] = useState<"UTF-8"|"Shift_JIS"|null>(null);
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
@@ -117,6 +121,7 @@ export function App() {
     completedParts.current.clear();
     setReviewPartIndex(null);setReview(null);
     setCanonicalParts([]);setCanonicalTotal(0);
+    setCompositionParts([]);setEclearMode("usual");
     setMissingFitSteps(0);setCsvEncoding(null);setCsvPreview(null);
     setImportStatus("ファイルを読み込み、形式を確認しています…");
     if(file.size>2_000_000){
@@ -128,6 +133,7 @@ export function App() {
       const actualSource=detectOfficialCsvSource(decoded.text);
       if(!actualSource)throw Error("UNKNOWN_SOURCE");
       const normalized=normalizeOfficialCsv(actualSource,decoded.text);
+      const composition=actualSource==="eclear"?partitionOfficialEclearComposition(decoded.text):null;
       // Validate every chunk BEFORE exposing the confirm button. Lifestyle
       // remains bounded by the server limit and D1 conflict guard parameters.
       const checked=await Promise.all(normalized.parts.map(part=>previewCsv(actualSource,part)));
@@ -136,11 +142,14 @@ export function App() {
       if(epoch!==selectionEpoch.current)return;
       setCsvSource(actualSource);
       setCanonicalParts(normalized.parts);
+      setCompositionParts(composition?.parts??[]);
       setCanonicalTotal(normalized.total);
       setMissingFitSteps(normalized.missingSteps);
       setCsvEncoding(decoded.encoding);
       setCsvPreview(checked[0]);
-      setImportStatus("読み取り完了。まだ登録していません。件数を確認し、「確認して登録する」を押してください。");
+      setImportStatus(actualSource==="eclear"
+        ?"ECLEARの読み込みが完了しました。取込方法を選択してください。まだ登録していません。"
+        :"読み取り完了。まだ登録していません。件数を確認し、「確認して登録する」を押してください。");
     }catch{
       if(epoch===selectionEpoch.current)setImportStatus(
         "CSVの形式・日時・数値・重複を確認できませんでした。データは登録していません。"
@@ -315,16 +324,16 @@ export function App() {
         {page==="data"&&<>
                 <section className="panel" aria-labelledby="csv-title">
         <h2 id="csv-title">CSVを取り込む</h2>
-        <p className="hint">Google Fitの歩数・ECLEARの体重を優先します。同じ値はスキップ、違う値は更新します。</p>
+        <p className="hint">Google Fitの歩数・ECLEARの体重を優先します。通常取込は同じ値をスキップし、異なる体重・体脂肪率を訂正します。体組成の不足項目補完とは別の操作です。</p>
         <p className="hint">ファイルを選ぶとECLEAR・Google Fit・生活記録を自動判別します。</p>
         <p>
           <input ref={fileInputRef} type="file" accept=".csv,text/csv" hidden
-            disabled={busy} aria-label="CSVファイルを選ぶ" onChange={e=>{
+            disabled={busy||compositionBusy} aria-label="CSVファイルを選ぶ" onChange={e=>{
               const file=e.target.files?.[0];
               e.currentTarget.value="";
               if(file)void selectCsv(file);
             }} />
-          <button type="button" disabled={busy} onClick={()=>fileInputRef.current?.click()}>
+          <button type="button" disabled={busy||compositionBusy} onClick={()=>fileInputRef.current?.click()}>
             ファイルを選択
           </button>
         </p>
@@ -332,7 +341,17 @@ export function App() {
         {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":
           csvSource==="fit"?"Google Fit（歩数）":
           csvSource==="weight_day"?"体重（日付のみ・既存日付はスキップ）":"生活記録"}</p>}
-        {csvPreview && <div aria-live="polite">
+        {csvPreview&&csvSource==="eclear"&&<div className="eclear-mode" role="group" aria-label="ECLEARの取込方法">
+          <button type="button" aria-pressed={eclearMode==="usual"} disabled={busy||compositionBusy}
+            onClick={()=>{setEclearMode("usual");setReview(null);setImportStatus("");}}>
+            体重・体脂肪率を通常取込
+          </button>
+          <button type="button" aria-pressed={eclearMode==="enrich"} disabled={busy||compositionBusy}
+            onClick={()=>{setEclearMode("enrich");setReview(null);setImportStatus("");}}>
+            体組成の不足項目だけ補完
+          </button>
+        </div>}
+        {csvPreview&&(csvSource!=="eclear"||eclearMode==="usual") && <div aria-live="polite">
           <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
           <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /
             有効 {canonicalParts.length?canonicalTotal:csvPreview.rows.length} 行 /
@@ -345,7 +364,11 @@ export function App() {
             確認して登録する
           </button>
         </div>}
-        {review && review.conflicts.length > 0 && <div role="group"
+        {csvPreview&&csvSource==="eclear"&&eclearMode==="enrich"&&compositionParts.length>0&&
+          <EclearEnrichment parts={compositionParts} filename={selectedCsvName??""}
+            encoding={csvEncoding} onBusyChange={setCompositionBusy}
+            onSaved={()=>setRefreshEpoch(n=>n+1)}/>}
+        {review && (csvSource!=="eclear"||eclearMode==="usual") && review.conflicts.length > 0 && <div role="group"
           aria-label="生活記録の競合解決">
           <h3>既存の記録と競合しています</h3>
           <p>既存データは変更しません。以下の競合行を除いて、
@@ -361,7 +384,7 @@ export function App() {
               completedParts.current.size+" 分割は保持されています。");
           }}>取込を中止する</button>
         </div>}
-        {importStatus && <p role="alert">{importStatus}</p>}
+        {importStatus && <p role="status">{importStatus}</p>}
       </section>
 
           <details className="advanced-group">

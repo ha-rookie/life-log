@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, inspectOfficialEclearComposition } from "../src/shared/source-adapter";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, inspectOfficialEclearComposition, partitionOfficialEclearComposition } from "../src/shared/source-adapter";
 import { previewCsv } from "../src/shared/csv-import";
 
 const eclearHeader="年月日,時刻,体重,体脂肪率,骨格筋率,BMI,内蔵脂肪レベル,骨量,基礎代謝量,メモ";
@@ -231,5 +231,44 @@ describe("ECLEAR seven body-composition fields (Stage 1, browser-only, synthetic
     expect(()=>inspectOfficialEclearComposition(csv([
       "2026/03/01,08:01,75,20,30,23,6,3,1600,\0"
     ]))).toThrow("FILE_SIZE_OR_ENCODING");
+  });
+});
+
+
+describe("ECLEAR Stage 2C client-only 40-row partition (synthetic)",()=>{
+  it("does not send any memo, preserves seven numbers and explicit zero vs NULL",()=>{
+    const csv=eclearHeader+"\n"+
+      '2026/01/02,07:40,75,0,0,23.5,7,2.9,1570,"private, very sensitive memo"\n'+
+      "2026/01/02,21:40,74.9,,,,,,,\n";
+    const out=partitionOfficialEclearComposition(csv);
+    expect(out).toMatchObject({total:2,missingCells:6});
+    expect(out.parts).toHaveLength(1);
+    expect(out.parts[0]).not.toContain("private");
+    expect(out.parts[0]).not.toContain("sensitive");
+    const decoded=inspectOfficialEclearComposition(out.parts[0]);
+    expect(decoded[0]).toMatchObject({bodyFatPct:0,skeletalMusclePct:0,
+      bmi:23.5,visceralFatLevel:7,boneMassKg:2.9,basalMetabolismKcal:1570});
+    expect(decoded[1]).toMatchObject({measuredAt:"2026-01-02T21:40:00+09:00",
+      bodyFatPct:null,skeletalMusclePct:null});
+  });
+  it("partitions parsed records, not text lines, so quoted multi-line memo never leaks",()=>{
+    const rows=Array.from({length:81},(_,i)=>{
+      const date=new Date(Date.parse("2026-01-01T00:00:00Z")+i*86400000).toISOString().slice(0,10).replaceAll("-","/");
+      return date+',07:40,75,25,36,23.5,7,3,1700,"private memo, first line'+
+        (i===0?"\nsecond line":"")+'"';
+    });
+    const result=partitionOfficialEclearComposition(eclearHeader+"\n"+rows.join("\n")+"\n");
+    expect(result.total).toBe(81);
+    expect(result.parts).toHaveLength(3);
+    expect(result.parts.map(x=>inspectOfficialEclearComposition(x).length)).toEqual([40,40,1]);
+    expect(result.parts.join("")).not.toContain("private memo");
+    expect(result.parts.join("")).not.toContain("second line");
+  });
+  it("rejects duplicate timestamp and invalid ECLEAR before producing any network payload",()=>{
+    const repeated=eclearHeader+"\n2026/01/02,07:40,75,25,36,23.5,7,3,1700,\n"+
+      "2026/01/02,07:40:00,75,25,36,23.5,7,3,1700,\n";
+    expect(()=>partitionOfficialEclearComposition(repeated)).toThrow("DUPLICATE_DATE_OR_TIMESTAMP_IN_SOURCE");
+    expect(()=>partitionOfficialEclearComposition(
+      eclearHeader+"\n2026/01/02,07:40,75,25,36,-1,7,3,1700,\n")).toThrow();
   });
 });
