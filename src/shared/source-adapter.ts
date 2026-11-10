@@ -208,3 +208,36 @@ export function inspectOfficialEclearComposition(raw:string):EclearCompositionMe
   }
   return measurements;
 }
+
+
+/**
+ * Stage 2C: prepare the original ECLEAR ten-column source for the independent
+ * v2 enrichment API. Only seven numeric fields plus the real measurement time
+ * are serialized; the original memo NEVER leaves the browser.
+ *
+ * The v2 Worker validates the canonical ten-column format again. Partitioning
+ * parsed observations (not raw text lines) also supports quoted multiline memos.
+ */
+export function partitionOfficialEclearComposition(raw:string):{
+  parts:string[];total:number;missingCells:number
+}{
+  const records=inspectOfficialEclearComposition(raw);
+  if(records.length<1)throw Error("CSV_EMPTY");
+  const header=ECLEAR_COMPOSITION_HEADER.join(",");
+  const parts:string[]=[];
+  let missingCells=0;
+  for(let i=0;i<records.length;i+=PART_ROWS){
+    const lines=records.slice(i,i+PART_ROWS).map(r=>{
+      const time=r.measuredAt;
+      const values=[
+        time.slice(0,10).replaceAll("-","/"),time.slice(11,19),
+        r.weightKg,r.bodyFatPct,r.skeletalMusclePct,r.bmi,
+        r.visceralFatLevel,r.boneMassKg,r.basalMetabolismKcal
+      ];
+      missingCells+=values.slice(2).filter(v=>v===null).length;
+      return [...values.map(v=>v===null?"":String(v)),""].join(",");
+    });
+    parts.push(header+"\n"+lines.join("\n")+"\n");
+  }
+  return {parts,total:records.length,missingCells};
+}
