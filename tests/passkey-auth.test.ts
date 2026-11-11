@@ -139,7 +139,9 @@ describe("exact loopback WebAuthn synthetic acceptance boundary",()=>{
       first:async()=>sql.includes("SELECT owner_id AS owner")?{owner:"owner"}:null,
       run:async()=>({meta:{changes:1}})
     })};}};
-    const res=await passkeyRoute(localReq(localOrigin+route("register/options")),{
+    const req=localReq(localOrigin+route("register/options"));
+    req.headers.set("Cookie","__Host-life_log_session="+"a".repeat(64));
+    const res=await passkeyRoute(req,{
       DB:db,PASSWORD_ONLY_UAT:"true",PASSKEY_LOCAL_E2E_ONLY:"true"
     } as never);
     expect(res.status).toBe(200);
