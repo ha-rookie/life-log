@@ -110,7 +110,7 @@ try{
  await wait(()=>contains("補完対象"),"stale preview");
  await js("document.querySelector('.eclear-ack input').click()");
  await click("確認して不足項目を保存する");
- await wait(()=>contains("再プレビューが必要"),"409 stale");
+ await wait(()=>contains("もう一度プレビューしてください"),"409 stale");
  assert.equal(confirmed,1,"no auto retry");
  assert(!await contains("補完が完了し、保存結果を再照合しました"));
  mode="ok";await upload();
