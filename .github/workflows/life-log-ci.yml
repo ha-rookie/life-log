@@ -33,7 +33,7 @@ jobs:
           node scripts/verify-integration-gates.mjs --self-test
           node scripts/verify-integration-gates.mjs
       - name: Verify remote D1 schema workflow without network or credentials
-        run: node --test scripts/d1-schema-readonly.test.mjs
+        run: node --test scripts/d1-schema-readonly.check.mjs
       - name: Verify package-lock stays unchanged
         run: git diff --exit-code -- package-lock.json
       - name: Reject unsupported Worker PBKDF2 iterations and verify guard fixtures
