@@ -1,22 +1,35 @@
 name: Cloudflare credential and development D1 read-only check
 
-# Cloudflare credentials are used ONLY by trusted, human-approved main commits.
-# PRs are validated by the separate Repository validation workflow without these secrets.
+# Remote Cloudflare metadata is NEVER read on an automatic push/PR.
+# Explicit manual dispatch on an approved exact main SHA is the only entrypoint.
+# This gate itself is reviewed as a Draft PR and has no external effect until
+# a separately authorized main merge. No remote read is performed in PR CI.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: 'Explicitly approved exact 40-character main SHA'
+        type: string
+        required: true
+      confirmation:
+        description: 'Enter READ LIFELOG D1 METADATA only after separate authorization'
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: life-log-cloudflare-readonly-check-main
+  group: life-log-cloudflare-readonly-check-manual
   cancel-in-progress: false
 
 jobs:
   validate:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'ha-rookie/life-log'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'ha-rookie/life-log' &&
+      inputs.confirmation == 'READ LIFELOG D1 METADATA'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -25,6 +38,23 @@ jobs:
       EXPECTED_D1_ID: '421d0116-5c33-4782-a2b6-28f9684d3956'
       EXPECTED_D1_NAME: life-log-dev
     steps:
+      - name: Require exact explicitly approved current main SHA before any remote access
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REPOSITORY" = 'ha-rookie/life-log'
+          test "$CONFIRMATION" = 'READ LIFELOG D1 METADATA'
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$TARGET_SHA"
+          current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          test "$current_main" = "$TARGET_SHA"
+          echo 'Explicitly confirmed main SHA. Read-only verification permitted by this manually dispatched job.'
       - name: Confirm secrets are populated
         shell: bash
         run: |
@@ -58,7 +88,7 @@ jobs:
           echo 'Development D1 metadata verified: name and UUID match.'
           {
             echo '### Read-only Cloudflare validation'
-            echo '- Trigger: trusted main push'
+            echo '- Trigger: manually authorized workflow_dispatch, exact current main SHA'
             echo '- API token: active'
             echo '- GitHub secrets: present'
             echo '- Development D1 metadata: name/UUID match'
