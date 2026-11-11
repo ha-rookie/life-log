@@ -124,7 +124,13 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","memo privacy","passkey status UI","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
+}catch(error){
+ console.error("Chromium E2E failed:",error);
+ process.exitCode=1;
 }finally{
  try{ws?.close();}catch{}
- chrome?.kill();vite.kill();await sleep(250);await rm(dir,{recursive:true,force:true});
+ chrome?.kill();vite.kill();
+ await sleep(800);
+ try{await rm(dir,{recursive:true,force:true,maxRetries:8,retryDelay:200});}
+ catch(error){console.error("Non-fatal browser temp cleanup:",String(error));}
 }
