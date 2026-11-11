@@ -62,7 +62,7 @@ jobs:
           console.log("PASS: exact approved SHA and pinned local UAT D1 metadata contract");
           JS
       - name: Offline SQL allowlist, redaction and trigger negative tests
-        run: node --test scripts/d1-schema-readonly.test.mjs
+        run: node --test scripts/d1-schema-readonly.check.mjs
       - name: Inspect D1 schema metadata ONLY (separately approved dispatch)
         env:
           TARGET_SHA: ${{ inputs.target_sha }}
