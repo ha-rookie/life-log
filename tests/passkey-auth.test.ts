@@ -105,3 +105,53 @@ describe("Owner-only Android passkey boundary",()=>{
     expect(batch[1]).toContain("NOT IN (SELECT token_hash FROM owner_passkey_sessions)");
   });
 });
+
+
+describe("exact loopback WebAuthn synthetic acceptance boundary",()=>{
+  const localOrigin="https://localhost:8787";
+  const localReq=(url:string,origin=localOrigin)=>
+    new Request(url,{method:"POST",headers:{
+      Origin:origin,"Sec-Fetch-Site":"same-origin",
+      "X-Life-Log-Intent":"passkey-v1","Content-Type":"application/json"
+    },body:"{}"});
+  it("never enables localhost RP without the explicit flag, even in UAT password-only mode",async()=>{
+    const res=await passkeyRoute(localReq(localOrigin+route("register/options")),{
+      ...unavailable,PASSWORD_ONLY_UAT:"true",
+    } as never);
+    expect(res.status).toBe(403);
+  });
+  it("with flag, still rejects localhost different port, HTTP, false origin and UAT origin",async()=>{
+    for(const [url,origin] of [
+      ["https://localhost:8788"+route("register/options"),"https://localhost:8788"],
+      ["http://localhost:8787"+route("register/options"),"http://localhost:8787"],
+      [localOrigin+route("register/options"),"https://evil.example"],
+      [origin+route("register/options"),origin],
+    ]){
+      const res=await passkeyRoute(localReq(url,origin),{
+        ...unavailable,PASSWORD_ONLY_UAT:"true",PASSKEY_LOCAL_E2E_ONLY:"true",
+      } as never);
+      expect(res.status,url).toBe(403);
+    }
+  });
+  it("generates localhost RP only after explicit flag and an Owner cookie, not globally",async()=>{
+    const seen:string[]=[];
+    const db={prepare(sql:string){seen.push(sql);return {bind:()=>({
+      first:async()=>sql.includes("SELECT owner_id AS owner")?{owner:"owner"}:null,
+      run:async()=>({meta:{changes:1}})
+    })};}};
+    const res=await passkeyRoute(localReq(localOrigin+route("register/options")),{
+      DB:db,PASSWORD_ONLY_UAT:"true",PASSKEY_LOCAL_E2E_ONLY:"true"
+    } as never);
+    expect(res.status).toBe(200);
+    const response=await res.json() as {options:{rp:{id:string}}};
+    expect(response.options.rp.id).toBe("localhost");
+    expect(seen.some(sql=>sql.includes("owner_passkey_challenges"))).toBe(true);
+  });
+  it("does not bypass rate limiter on local public passkey login",async()=>{
+    const res=await passkeyRoute(localReq(localOrigin+route("login/options")),{
+      ...unavailable,PASSWORD_ONLY_UAT:"true",PASSKEY_LOCAL_E2E_ONLY:"true",
+      AUTH_RATE_LIMITER:{limit:async()=>({success:false})}
+    } as never);
+    expect(res.status).toBe(503);
+  });
+});
