@@ -127,6 +127,7 @@ try{
   await wait(()=>contains("パスキーを登録しました"),"real virtual passkey registration",20000);
   const stored=await cmd("WebAuthn.getCredentials",{authenticatorId:authenticator.authenticatorId});
   assert.equal(stored.credentials?.length,1,"one created resident credential");
+  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('ログアウトしてパスキーでログイン')&&!x.disabled)"),"logout button ready after registration");
   await click("ログアウトしてパスキーでログイン");
   await wait(()=>contains("パスキーでログインしてください"),"logged out login screen");
   const anonymous=await js("(async()=>{const r=await fetch('/api/dashboard');return r.status})()");
