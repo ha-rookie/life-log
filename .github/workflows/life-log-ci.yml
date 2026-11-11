@@ -48,3 +48,20 @@ jobs:
         run: npx --no-install wrangler d1 execute life-log-dev --local --command "SELECT count(*) AS n FROM body_measurements"
       - name: Local Workerd passkey-only session, retired password endpoints and app API
         run: bash scripts/verify-password-uat-local.sh
+
+  chromium-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install pinned dependencies (no Cloudflare credentials)
+        run: npm ci --no-audit --no-fund
+      - name: Real 390px Chromium E2E against actual Vite app, synthetic APIs only
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          test -x "$CHROME_BIN"
+          node scripts/eclear-390-chromium-e2e.mjs
