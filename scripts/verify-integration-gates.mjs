@@ -32,6 +32,10 @@ function requireManualOnly(workflow){
   assert.match(workflow,/test "\$GITHUB_SHA" = "\$TARGET_SHA"/);
   assert.match(workflow,/test "\$current_main" = "\$TARGET_SHA"/);
   assert.match(workflow,/\[\[ "\$TARGET_SHA" =~ \^\[a-f0-9\]\{40\}\$ \]\]/);
+  const firstStep=workflow.indexOf("    steps:");
+  assert(firstStep>0,"manual job has steps");
+  assert.doesNotMatch(workflow.slice(0,firstStep),/secrets\.CLOUDFLARE_/,
+    "do not expose Cloudflare Secrets at the job level before the SHA gate");
   const auth=workflow.indexOf("- name: Require exact explicitly approved current main SHA");
   const token=workflow.indexOf("- name: Verify token status (GET only)");
   const d1=workflow.indexOf("- name: Check development D1 metadata (GET only)");
