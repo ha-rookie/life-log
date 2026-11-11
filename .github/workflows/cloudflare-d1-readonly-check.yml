@@ -33,8 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       EXPECTED_D1_ID: '421d0116-5c33-4782-a2b6-28f9684d3956'
       EXPECTED_D1_NAME: life-log-dev
     steps:
@@ -56,6 +54,9 @@ jobs:
           test "$current_main" = "$TARGET_SHA"
           echo 'Explicitly confirmed main SHA. Read-only verification permitted by this manually dispatched job.'
       - name: Confirm secrets are populated
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -64,6 +65,9 @@ jobs:
           if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]; then echo 'Cloudflare account ID format is invalid'; exit 1; fi
           echo 'Cloudflare GitHub Actions secrets are present (values never shown).'
       - name: Verify token status (GET only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +79,9 @@ jobs:
           fi
           echo 'Cloudflare API token active.'
       - name: Check development D1 metadata (GET only)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: |
           set -euo pipefail
