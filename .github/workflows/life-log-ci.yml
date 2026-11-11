@@ -48,3 +48,24 @@ jobs:
         run: npx --no-install wrangler d1 execute life-log-dev --local --command "SELECT count(*) AS n FROM body_measurements"
       - name: Local Workerd passkey-only session, retired password endpoints and app API
         run: bash scripts/verify-password-uat-local.sh
+
+  worker-browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install pinned dependencies without Cloudflare credentials
+        run: npm ci --no-audit --no-fund
+      - name: Build private app assets for real local Workerd
+        run: npm run build
+      - name: Chromium + virtual CTAP2 + real Workerd + isolated synthetic D1
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          test -x "$CHROME_BIN"
+          bash scripts/eclear-worker-browser-local.sh
