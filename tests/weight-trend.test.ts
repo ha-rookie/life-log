@@ -303,9 +303,20 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
       await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
       const bin=["/usr/bin/google-chrome","/usr/bin/google-chrome-stable","/usr/bin/chromium","/usr/bin/chromium-browser"].find((n:string)=>fs.existsSync(n));
       if(!bin)throw Error("Chrome not found on CI runner");
-      chrome=cp.spawn(bin,["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--remote-debugging-port=0","--user-data-dir="+profile,"about:blank"],{stdio:"ignore"});
-      let info="";for(let i=0;i<100;i++){const f=path.join(profile,"DevToolsActivePort");if(fs.existsSync(f)){info=fs.readFileSync(f,"utf8");break;}await sleep(100)}
-      if(!info)throw Error("Chrome debugging port not available");
+      let info="";
+      for(let attempt=0;attempt<2&&!info;attempt++){
+        const launchProfile=attempt===0?profile:fs.mkdtempSync(path.join(work,"chrome-retry-"));
+        chrome=cp.spawn(bin,["--headless=new","--no-sandbox","--disable-gpu",
+          "--disable-dev-shm-usage","--disable-background-networking","--no-first-run",
+          "--remote-debugging-port=0","--user-data-dir="+launchProfile,"about:blank"],{stdio:"ignore"});
+        for(let i=0;i<120;i++){
+          const current=path.join(launchProfile,"DevToolsActivePort");
+          if(fs.existsSync(current)){info=fs.readFileSync(current,"utf8");break;}
+          await sleep(100);
+        }
+        if(!info){chrome.kill("SIGKILL");await sleep(200);}
+      }
+      if(!info)throw Error("Chrome debugging port not available after fresh-profile retry");
       const port=Number(info.split("\n")[0]);const tabs=await (await fetch("http://127.0.0.1:"+port+"/json/list")).json() as any[];
       ws=new WebSocket(tabs.find(x=>x.type==="page").webSocketDebuggerUrl);
       await new Promise<void>((resolve,reject)=>{ws!.addEventListener("open",()=>resolve(),{once:true});ws!.addEventListener("error",()=>reject(Error("Chrome websocket error")),{once:true});});
