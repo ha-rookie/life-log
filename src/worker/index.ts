@@ -16,8 +16,6 @@ export interface Env extends AccessEnv {
   DB: Database;
   OWNER_SETUP_CODE?: string;
   PASSWORD_ONLY_UAT?: string;
-  /** Strict https://localhost:8787 WebAuthn E2E only; never configure remotely. */
-  PASSKEY_LOCAL_E2E_ONLY?: string;
   AUTH_RATE_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> };
   // Opt-in must be set only in a trusted loopback-local runtime, never deployed.
   IMPORT_LOCAL_ONLY?: string;
