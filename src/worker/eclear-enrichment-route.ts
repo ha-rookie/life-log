@@ -23,13 +23,43 @@ const fromHex=(raw:string)=>Uint8Array.from(raw.match(/../g)!.map(x=>parseInt(x,
 export type EclearEnrichmentConfig={
   enabled?:string;
   reviewKey?:string;
+  remote?:{
+    enabled?:string;
+    target?:string;
+    origin?:string;
+    /** Set only after the Worker router has verified a stored passkey session. */
+    passkeySession?:boolean;
+  };
 };
 
-/** Never set this switch/key in a deployed Worker. Host and Origin alone are forgeable. */
+const UAT_ORIGIN="https://life-log-uat.ha-rookie.workers.dev";
+const hasReviewKey=(key:unknown):key is string=>
+  typeof key==="string" && enc.encode(key).length>=32;
+
+/** Local test flag is independent from any UAT opt-in. Never deploy it. */
 export function isSafeLocalEclear(request:Request,config:EclearEnrichmentConfig):boolean{
   return isSafeLocalImport(request,config.enabled)
-    && typeof config.reviewKey==="string" && enc.encode(config.reviewKey).length>=32
+    && hasReviewKey(config.reviewKey)
     && request.headers.get("X-Life-Log-Intent")===VERSION
+    && request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")===true;
+}
+
+/**
+ * Remote UAT is deliberately separate from LOCAL_ONLY and manual import flags.
+ * Origin and Host alone are forgeable, so they are never sufficient: the
+ * Worker MUST also prove an Owner passkey session before passing true.
+ * No CORS is granted and the exact canonical HTTPS UAT origin is pinned.
+ */
+export function isSafeRemoteEclear(request:Request,config:EclearEnrichmentConfig):boolean{
+  const remote=config.remote;
+  if(remote?.enabled!=="true"||remote.target!=="uat"||
+     remote.origin!==UAT_ORIGIN||remote.passkeySession!==true||
+     !hasReviewKey(config.reviewKey)||request.method!=="POST")return false;
+  const url=new URL(request.url);
+  if(url.origin!==UAT_ORIGIN||url.username||url.password||url.search||url.hash)return false;
+  if(request.headers.get("Origin")!==UAT_ORIGIN||
+     request.headers.get("Sec-Fetch-Site")!=="same-origin")return false;
+  return request.headers.get("X-Life-Log-Intent")===VERSION
     && request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")===true;
 }
 
@@ -192,7 +222,8 @@ async function commitPlan(
 /**
  * Separate owner-only ECLEAR v2 endpoint, guarded at the Worker router as well.
  * This function never receives Access identity from a request header.
- * Preview is read-only; confirm is restricted to a synthetic LOCAL D1 runtime.
+ * Preview is read-only. Confirm requires local opt-in or independently gated
+ * UAT Owner passkey session, canonical Origin, intent and signing key.
  */
 export async function handleEclearEnrichment(
   request:Request,db:ImportDb,owner:string,config:EclearEnrichmentConfig
@@ -200,7 +231,11 @@ export async function handleEclearEnrichment(
   const path=new URL(request.url).pathname;
   if(path!=="/api/eclear/enrichment/preview"&&path!=="/api/eclear/enrichment/confirm")return error("NOT_FOUND",404);
   if(request.method!=="POST")return error("METHOD",405);
-  if(!owner||!isSafeLocalEclear(request,config))return error("ECLEAR_LOCAL_DISABLED",403);
+  // Authorization and feature flags are validated before parsing/reading any
+  // enrichment data. Keep the existing client error contract fail-closed.
+  if(owner!=="owner"||
+     !(isSafeLocalEclear(request,config)||isSafeRemoteEclear(request,config)))
+    return error("ECLEAR_LOCAL_DISABLED",403);
   let payload:unknown;
   try{
     if(Number(request.headers.get("Content-Length")||0)>MAX_BYTES*2)return error("SIZE",413);
