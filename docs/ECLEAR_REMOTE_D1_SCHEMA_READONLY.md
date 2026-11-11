@@ -29,7 +29,7 @@ New workflow: `.github/workflows/life-log-d1-schema-readonly-manual.yml`.
 
 ## Safety verification and evidence
 
-`node --test scripts/d1-schema-readonly.test.mjs` performs *offline*, synthetic checks: exact allowed SQL, denial of measurement and session queries, forbidding schema and migration writes, wrong UUID, missing flags, wrong main SHA/ref/repository/confirmation, untrusted output columns, changed-DB response, and negative trigger tests. No external network is contacted in CI.
+`node --test scripts/d1-schema-readonly.check.mjs` performs *offline*, synthetic checks: exact allowed SQL, denial of measurement and session queries, forbidding schema and migration writes, wrong UUID, missing flags, wrong main SHA/ref/repository/confirmation, untrusted output columns, changed-DB response, and negative trigger tests. No external network is contacted in CI.
 
 Repository validation / Scope Guard must pass for the planned five files. Normal local CI retains validation, synthetic local D1 migrations and two real 390px Chromium E2E jobs, unaffected by this inspector. The new inspector's remote mode is never called by PR CI.
 
