@@ -25,15 +25,19 @@ Date: 2026-11-11. Scope: Issue #142 / parent #124, separate from Draft PR #145.
 
 ## Safe test-only RP origin
 
-Existing WebAuthn UAT origin and RP ID are unchanged unless **all** of
-`PASSKEY_LOCAL_E2E_ONLY=true`, exact `https://localhost:8787` URL, and
-matching same-origin browser headers are present. In test-only mode, any URL
-other than this exact local TLS origin fails closed, including UAT hostname,
-other ports and plaintext HTTP. The separate local-only feature flag is
-never set in `wrangler.jsonc` or deployed to Cloudflare, and is provided
-only as a `wrangler dev --local --var` argument on a disposable runner.
-Unit tests verify negative UAT/HTTP/port/Origin cases. Public login continues
-to exercise the configured rate limiter; no stubbed bypass is introduced.
+**Production auth source is unchanged**: `src/worker/passkey-auth.ts`,
+`src/worker/index.ts` and `tests/passkey-auth.test.ts` remain byte-identical
+to main. No runtime local-RP bypass flag is shipped in the Worker bundle.
+Only the disposable CI checkout of `src/worker/passkey-auth.ts` is temporarily
+patched by `scripts/eclear-worker-browser-local.sh` just before launching
+`wrangler dev --env uat --local`: it changes the RP to `localhost` and
+Origin to exact `https://localhost:8787`, plus a loopback synthetic IP
+fallback for the existing rate limiter. The script restores the original file
+on cleanup. The patched source is **never committed** or deployed.
+Ordinary UAT-origin/Host/CSRF, rate limiting, browser UV and credential checks
+remain unchanged in the real production Worker. Existing passkey security unit
+tests continue to enforce the fixed UAT Origin and missing-rate-limiter denial.
+The real browser E2E checks 403 anonymous access and successful signed login.
 
 ## Security / release boundary
 
