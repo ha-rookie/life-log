@@ -36,6 +36,12 @@ jobs:
         run: npm run build
       - name: Unit security and legacy tests (synthetic)
         run: npm test
+      - name: Real 390px Chromium E2E with synthetic intercepted APIs (no credentials)
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          test -x "$CHROME_BIN"
+          node scripts/eclear-390-chromium-e2e.mjs
       - name: Validate SQLite constraints (synthetic in-memory)
         run: npm run test:schema
       - name: Apply migrations ONLY to Wrangler local D1
