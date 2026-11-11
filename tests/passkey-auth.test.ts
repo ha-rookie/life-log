@@ -121,13 +121,13 @@ describe("exact loopback WebAuthn synthetic acceptance boundary",()=>{
     expect(res.status).toBe(403);
   });
   it("with flag, still rejects localhost different port, HTTP, false origin and UAT origin",async()=>{
-    for(const [url,origin] of [
+    for(const [url,requestOrigin] of [
       ["https://localhost:8788"+route("register/options"),"https://localhost:8788"],
       ["http://localhost:8787"+route("register/options"),"http://localhost:8787"],
       [localOrigin+route("register/options"),"https://evil.example"],
       [origin+route("register/options"),origin],
     ]){
-      const res=await passkeyRoute(localReq(url,origin),{
+      const res=await passkeyRoute(localReq(url,requestOrigin),{
         ...unavailable,PASSWORD_ONLY_UAT:"true",PASSKEY_LOCAL_E2E_ONLY:"true",
       } as never);
       expect(res.status,url).toBe(403);
