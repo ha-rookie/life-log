@@ -16,6 +16,9 @@ const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{std
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 const pending=new Map();
 const calls=[];
+const blockedRemoteOrigins=new Set();
+// All Chromium HTTP(S) traffic is intercepted: localhost is the *only*
+// allowed host. Test data must never reach any live UAT or production endpoint.
 function cmd(method,params={}){
  return new Promise((resolve,reject)=>{
   const id=++seq;pending.set(id,{resolve,reject});
@@ -25,7 +28,19 @@ function cmd(method,params={}){
 }
 const encode=x=>Buffer.from(JSON.stringify(x)).toString("base64");
 async function intercept(p){
- const path=new URL(p.request.url).pathname;calls.push(path);
+ const url=new URL(p.request.url);
+ if(url.protocol==="http:"||url.protocol==="https:"){
+   if(url.origin!=="http://127.0.0.1:5187"){
+     blockedRemoteOrigins.add(url.origin);
+     await cmd("Fetch.failRequest",{requestId:p.requestId,errorReason:"BlockedByClient"});
+     return;
+   }
+ }
+ if(!url.pathname.startsWith("/api/")){
+   await cmd("Fetch.continueRequest",{requestId:p.requestId});
+   return;
+ }
+ const path=url.pathname;calls.push(path);
  let code=200,data={};
  if(path==="/api/dashboard")data={latestWeightKg:75,measuredAt:"2026-01-02T07:40:00+09:00",weightSource:"csv:eclear",latestSteps:null,stepsDay:null,stepsSource:null};
  else if(path==="/api/eclear/enrichment/preview"){
@@ -85,7 +100,7 @@ try{
  await cmd("Page.enable");await cmd("Runtime.enable");
  await cmd("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:2,mobile:true});
  await cmd("Emulation.setTouchEmulationEnabled",{enabled:true,maxTouchPoints:1});
- await cmd("Fetch.enable",{patterns:[{urlPattern:"*://127.0.0.1:5187/api/*",requestStage:"Request"}]});
+ await cmd("Fetch.enable",{patterns:[{urlPattern:"*",requestStage:"Request"}]});
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#data"});
  await wait(()=>contains("CSVを取り込む"),"React app mounted");
  assert.equal(await js("window.innerWidth"),390);
@@ -132,6 +147,7 @@ try{
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
  await wait(()=>contains("ログイン設定（Android UAT）"),"passkey settings");
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
+ assert.deepEqual([...blockedRemoteOrigins],[],"Chrome tried to request a non-local host");
  console.log(JSON.stringify({result:"PASS",browser:"Chromium",viewport:390,
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI","no overflow"],
