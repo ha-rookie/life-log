@@ -314,16 +314,20 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
       const chromePath=["/usr/bin/google-chrome","/usr/bin/google-chrome-stable",
         "/usr/bin/chromium","/usr/bin/chromium-browser"].find((p:string)=>fs.existsSync(p));
       if (!chromePath) throw new Error("Chromium unavailable in CI");
-      chrome=child.spawn(chromePath,["--headless=new","--no-sandbox","--disable-gpu",
-        "--disable-dev-shm-usage","--remote-debugging-port=0",
-        "--user-data-dir="+profile,"about:blank"],{stdio:"ignore"});
       let info="";
-      for(let i=0;i<120;i++){
-        const active=path.join(profile,"DevToolsActivePort");
-        if(fs.existsSync(active)){info=fs.readFileSync(active,"utf8");break;}
-        await pause(100);
+      for(let attempt=0;attempt<2&&!info;attempt++){
+        const launchProfile=attempt===0?profile:fs.mkdtempSync(path.join(dir,"chrome-retry-"));
+        chrome=child.spawn(chromePath,["--headless=new","--no-sandbox","--disable-gpu",
+          "--disable-dev-shm-usage","--disable-background-networking","--no-first-run",
+          "--remote-debugging-port=0","--user-data-dir="+launchProfile,"about:blank"],{stdio:"ignore"});
+        for(let i=0;i<120;i++){
+          const current=path.join(launchProfile,"DevToolsActivePort");
+          if(fs.existsSync(current)){info=fs.readFileSync(current,"utf8");break;}
+          await pause(100);
+        }
+        if(!info){chrome.kill("SIGKILL");await pause(200);}
       }
-      if(!info)throw Error("Chromium DevTools never started");
+      if(!info)throw Error("Chromium DevTools never started after fresh-profile retry");
       const debugPort=Number(info.split("\n")[0]);
       const tabs=await (await fetch("http://127.0.0.1:"+debugPort+"/json/list")).json() as any[];
       ws=new WebSocket(tabs.find(t=>t.type==="page").webSocketDebuggerUrl);

@@ -11,10 +11,13 @@ function closingIssues(body){
   return [...body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([0-9]+)/gi)]
     .map(x=>Number(x[1]));
 }
-function testClosing(body,issue){
+function testClosing(body){
   const found=closingIssues(body);
-  assert.deepEqual(found,[issue],
-    "Scope Guard must close only the test-infrastructure issue, not acceptance #142");
+  assert.equal(found.length,1,
+    "Scope Guard requires exactly one closing Issue");
+  assert(![142,124].includes(found[0]),
+    "Owner acceptance Issues #142/#124 must never auto-close from a technical CI PR");
+  return found[0];
 }
 function requireManualOnly(workflow){
   const start=workflow.indexOf("\non:\n");
@@ -75,14 +78,17 @@ function verify(){
   assert.match(production,/const ORIGIN="https:\/\/life-log-uat\.ha-rookie\.workers\.dev"/);
   assert.doesNotMatch(production,/PASSKEY_LOCAL_E2E_ONLY/);
   const testedBody=process.env.PR_BODY??"";
-  if(process.env.GITHUB_EVENT_NAME==="pull_request")testClosing(testedBody,147);
+  if(process.env.GITHUB_EVENT_NAME==="pull_request")testClosing(testedBody);
   console.log("PASS offline: both browser jobs, local-only D1, fixed production passkey, manual-only Remote D1 GET, single non-acceptance closing Issue");
 }
 
 if(process.argv.includes("--self-test")){
-  testClosing("Closes #147. Refs #142; Refs #124.",147);
-  assert.throws(()=>testClosing("Closes #142",147));
-  assert.throws(()=>testClosing("Closes #147\nFixes #142",147));
+  assert.equal(testClosing("Closes #147. Refs #142; Refs #124."),147);
+  assert.equal(testClosing("Closes #149. Refs #142; Refs #124."),149);
+  assert.throws(()=>testClosing("Closes #142"));
+  assert.throws(()=>testClosing("Closes #124"));
+  assert.throws(()=>testClosing("Closes #147\nFixes #142"));
+  assert.throws(()=>testClosing("Refs #142"));
   assert.throws(()=>requireManualOnly("name: accidental read\non:\n  push:\n    branches: [main]\npermissions:\n  contents: read\n"));
   console.log("PASS: unsafe close references and automatic push triggers rejected");
 }else{verify();}

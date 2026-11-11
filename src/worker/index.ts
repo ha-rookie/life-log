@@ -1,10 +1,10 @@
 import { verifyOwner, type AccessEnv } from "./auth";
 import { localPreview } from "./local-preview";
 import { loginScreen } from "./login-screen";
-import { authRoute, sessionOwner } from "./password-auth";
+import { authRoute, sessionOwner, sessionIsPasskey } from "./password-auth";
 import { getSummary, getDashboard, type Database } from "./summary";
 import { handleImport, isSafeLocalImport, type ImportDb } from "./import";
-import { handleEclearEnrichment } from "./eclear-enrichment-route";
+import { handleEclearEnrichment, isSafeRemoteEclear } from "./eclear-enrichment-route";
 import { isSafeRemoteManual } from "./manual-entry";
 import { handleAuditHistory } from "./audit-history";
 import { handleWeightTrend, type TrendDb } from "./weight-trend";
@@ -22,6 +22,10 @@ export interface Env extends AccessEnv {
   // v2 enrichment is an independent local-only feature; never set on UAT/Production.
   ECLEAR_ENRICHMENT_LOCAL_ONLY?: string;
   ECLEAR_ENRICHMENT_REVIEW_KEY?: string;
+  // Dedicated UAT v2 opt-in. Deliberately absent from every deployed config.
+  ECLEAR_ENRICHMENT_REMOTE_ENABLED?: string;
+  ECLEAR_ENRICHMENT_REMOTE_TARGET?: string;
+  ECLEAR_ENRICHMENT_REMOTE_ORIGIN?: string;
   // Separate opt-in for manual writes. Must never be set in a remote Worker.
   MANUAL_ENTRY_LOCAL_ONLY?: string;
   // UAT-only: independently provisioned, deliberately absent from all deploy configs.
@@ -73,10 +77,31 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
             origin: env.MANUAL_REMOTE_ORIGIN,
           });
         if (path === "/api/eclear/enrichment/preview" || path === "/api/eclear/enrichment/confirm") {
-          return handleEclearEnrichment(request,env.DB as unknown as ImportDb,ownerId,{
+          const remote={
+            enabled:env.ECLEAR_ENRICHMENT_REMOTE_ENABLED,
+            target:env.ECLEAR_ENRICHMENT_REMOTE_TARGET,
+            origin:env.ECLEAR_ENRICHMENT_REMOTE_ORIGIN,
+            passkeySession:false
+          };
+          const eclearConfig={
             enabled:env.ECLEAR_ENRICHMENT_LOCAL_ONLY,
-            reviewKey:env.ECLEAR_ENRICHMENT_REVIEW_KEY
-          });
+            reviewKey:env.ECLEAR_ENRICHMENT_REVIEW_KEY,
+            remote
+          };
+          // Remote request metadata and the independent opt-in are checked
+          // before querying session credentials. Never trust request headers
+          // alone or treat a legacy Owner session as a WebAuthn session.
+          if(env.PASSWORD_ONLY_UAT==="true"&&ownerSession&&
+             isSafeRemoteEclear(request,{...eclearConfig,remote:{...remote,passkeySession:true}})){
+            try{
+              remote.passkeySession=await sessionIsPasskey(
+                request,env.DB as unknown as Parameters<typeof sessionIsPasskey>[1]
+              );
+            }catch{
+              return Response.json({error:"ECLEAR_AUTH_UNAVAILABLE"},{status:503,headers:privateHeaders});
+            }
+          }
+          return handleEclearEnrichment(request,env.DB as unknown as ImportDb,ownerId,eclearConfig);
         }
         if (path === "/api/import/history" || path.startsWith("/api/import/history/")) return handleAuditHistory(request,env.DB as unknown as ImportDb,ownerId);
         if (path === "/api/import/confirm") {
