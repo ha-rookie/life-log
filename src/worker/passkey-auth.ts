@@ -17,10 +17,22 @@ type Statement = { bind(...args:unknown[]): {
 type DB = { prepare(sql:string):Statement;batch(statements:unknown[]):Promise<unknown[]> };
 type Env = {
   DB:DB;PASSWORD_ONLY_UAT?:string;
+  // Exact loopback TLS synthetic browser test only. Never deploy this flag.
+  PASSKEY_LOCAL_E2E_ONLY?:string;
   AUTH_RATE_LIMITER?:{limit(input:{key:string}):Promise<{success:boolean}>};
 };
 const ORIGIN="https://life-log-uat.ha-rookie.workers.dev";
 const RP_ID="life-log-uat.ha-rookie.workers.dev";
+const LOCAL_E2E_ORIGIN="https://localhost:8787";
+type PasskeyTarget={origin:string;rpID:string};
+function targetFor(request:Request,env:Env):PasskeyTarget|null{
+  if(env.PASSKEY_LOCAL_E2E_ONLY==="true"){
+    // Fail closed outside the exact loopback TLS test host and port.
+    return new URL(request.url).origin===LOCAL_E2E_ORIGIN
+      ? {origin:LOCAL_E2E_ORIGIN,rpID:"localhost"} : null;
+  }
+  return {origin:ORIGIN,rpID:RP_ID};
+}
 const TTL_SECONDS=120;
 const HEADERS={"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer"};
 const encoder=new TextEncoder();
@@ -58,9 +70,9 @@ function extractedChallenge(response:{response:{clientDataJSON:string}}):string{
   if(!canonical(data.challenge))throw Error("invalid challenge");
   return data.challenge;
 }
-const validRequest=(request:Request)=>{
+const validRequest=(request:Request,target:PasskeyTarget)=>{
   const u=new URL(request.url);
-  return u.origin===ORIGIN && request.headers.get("Origin")===ORIGIN
+  return u.origin===target.origin && request.headers.get("Origin")===target.origin
     && request.headers.get("Sec-Fetch-Site")==="same-origin"
     && request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
     && request.headers.get("X-Life-Log-Intent")==="passkey-v1";
@@ -72,8 +84,12 @@ async function readBody(request:Request):Promise<Record<string,unknown>|null>{
   try{const data:unknown=JSON.parse(text);return data&&typeof data==="object"&&!Array.isArray(data)?data as Record<string,unknown>:null;}
   catch{return null;}
 }
-async function limit(request:Request,env:Env):Promise<boolean>{
-  const ip=request.headers.get("CF-Connecting-IP");
+async function limit(request:Request,env:Env,target:PasskeyTarget):Promise<boolean>{
+  // Local Workerd lacks a real Cloudflare connecting IP. Still use the
+  // configured limiter with a loopback test key instead of bypassing it.
+  const ip=request.headers.get("CF-Connecting-IP")
+    ??(env.PASSKEY_LOCAL_E2E_ONLY==="true"&&target.origin===LOCAL_E2E_ORIGIN
+      ?"127.0.0.1":null);
   if(!ip||!env.AUTH_RATE_LIMITER)return false;
   try{
     const perIp=await env.AUTH_RATE_LIMITER.limit({key:"passkey:"+ip});
@@ -81,12 +97,12 @@ async function limit(request:Request,env:Env):Promise<boolean>{
     return perIp.success&&perAccount.success;
   }catch{return false;}
 }
-async function registerOptions(env:Env){
+async function registerOptions(env:Env,target:PasskeyTarget){
   const exists=await env.DB.prepare("SELECT credential_id FROM owner_passkey_credentials LIMIT 1").bind().first();
   if(exists)return json({error:"PASSKEY_ALREADY_REGISTERED"},409);
   const challenge=await issueChallenge(env.DB,"register");
   const options=await generateRegistrationOptions({
-    rpName:"ライフログ",rpID:RP_ID,userName:"owner",
+    rpName:"ライフログ",rpID:target.rpID,userName:"owner",
     userID:encoder.encode("life-log:owner"),
     challenge:decode(challenge.challenge),attestationType:"none",
     supportedAlgorithmIDs:[-7],timeout:TTL_SECONDS*1000,
@@ -95,7 +111,7 @@ async function registerOptions(env:Env){
   if(options.challenge!==challenge.challenge)throw Error("challenge mismatch");
   return json({flowId:challenge.id,options,expiresAt:challenge.expiresAt});
 }
-async function registerVerify(env:Env,data:Record<string,unknown>){
+async function registerVerify(env:Env,data:Record<string,unknown>,target:PasskeyTarget){
   if(!validFlow(data.flowId)||!data.credential||typeof data.credential!=="object"||Array.isArray(data.credential))
     return json({error:"INVALID"},400);
   const response=data.credential as RegistrationResponseJSON;
@@ -105,7 +121,7 @@ async function registerVerify(env:Env,data:Record<string,unknown>){
   const result=await verifyRegistrationResponse({
     response,
     expectedChallenge:async value=>canonical(value)&&await hash(value)===pending.challengeHash,
-    expectedOrigin:ORIGIN,expectedRPID:RP_ID,
+    expectedOrigin:target.origin,expectedRPID:target.rpID,
     requireUserVerification:true,supportedAlgorithmIDs:[-7],
   });
   const c=result.registrationInfo?.credential;
@@ -120,16 +136,16 @@ async function registerVerify(env:Env,data:Record<string,unknown>){
     .bind(c.id,c.publicKey,c.counter,JSON.stringify(c.transports??[]),new Date().toISOString()).run();
   return json({registered:true},201);
 }
-async function loginOptions(env:Env){
+async function loginOptions(env:Env,target:PasskeyTarget){
   const challenge=await issueChallenge(env.DB,"login");
   const options=await generateAuthenticationOptions({
-    rpID:RP_ID,challenge:decode(challenge.challenge),
+    rpID:target.rpID,challenge:decode(challenge.challenge),
     allowCredentials:[],userVerification:"required",timeout:TTL_SECONDS*1000,
   });
   if(options.challenge!==challenge.challenge)throw Error("challenge mismatch");
   return json({flowId:challenge.id,options,expiresAt:challenge.expiresAt});
 }
-async function loginVerify(env:Env,data:Record<string,unknown>){
+async function loginVerify(env:Env,data:Record<string,unknown>,target:PasskeyTarget){
   if(!validFlow(data.flowId)||!data.credential||typeof data.credential!=="object"||Array.isArray(data.credential))
     return json({error:"INVALID"},400);
   const response=data.credential as AuthenticationResponseJSON;
@@ -143,7 +159,7 @@ async function loginVerify(env:Env,data:Record<string,unknown>){
   const checked=await verifyAuthenticationResponse({
     response,
     expectedChallenge:async value=>canonical(value)&&await hash(value)===pending.challengeHash,
-    expectedOrigin:ORIGIN,expectedRPID:RP_ID,
+    expectedOrigin:target.origin,expectedRPID:target.rpID,
     credential:{
       id:row.credentialId,publicKey:new Uint8Array(row.publicKey),
       counter:row.signCount,
@@ -185,19 +201,20 @@ export async function passkeyRoute(request:Request,env:Env):Promise<Response>{
   const path=new URL(request.url).pathname;
   if(env.PASSWORD_ONLY_UAT!=="true")return json({error:"NOT_AVAILABLE"},404);
   if(request.method!=="POST")return json({error:"METHOD"},405);
-  if(!validRequest(request))return json({error:"ORIGIN"},403);
+  const target=targetFor(request,env);
+  if(!target||!validRequest(request,target))return json({error:"ORIGIN"},403);
   const publicRoute=path==="/api/auth/passkey/login/options"||path==="/api/auth/passkey/login/verify";
-  if(publicRoute && !await limit(request,env))return json({error:"AUTH_PROTECTION_UNAVAILABLE"},503);
+  if(publicRoute && !await limit(request,env,target))return json({error:"AUTH_PROTECTION_UNAVAILABLE"},503);
   const data=await readBody(request);
   if(!data)return json({error:"INVALID"},400);
   try{
-    if(path==="/api/auth/passkey/login/options")return loginOptions(env);
-    if(path==="/api/auth/passkey/login/verify")return loginVerify(env,data);
+    if(path==="/api/auth/passkey/login/options")return loginOptions(env,target);
+    if(path==="/api/auth/passkey/login/verify")return loginVerify(env,data,target);
     if(path==="/api/auth/passkey/status")return status(request,env);
     if(path==="/api/auth/passkey/disable-password")return disablePassword(request,env);
     if(await sessionOwner(request,env.DB)!=="owner")return json({error:"UNAUTHORIZED"},401);
-    if(path==="/api/auth/passkey/register/options")return registerOptions(env);
-    if(path==="/api/auth/passkey/register/verify")return registerVerify(env,data);
+    if(path==="/api/auth/passkey/register/options")return registerOptions(env,target);
+    if(path==="/api/auth/passkey/register/verify")return registerVerify(env,data,target);
     return json({error:"NOT_FOUND"},404);
   }catch{return json({error:"UNAVAILABLE"},503);}
 }
