@@ -69,3 +69,7 @@ Updated: 2026-11-11. Tracking: #124 / #142. Main baseline:
 
 No remote Cloudflare API, D1, Secrets, Worker or personal measurements are
 read or changed in this planning change.
+
+Browser E2E uses an explicit synthetic-only origin on 127.0.0.1 and does not
+claim hardware WebAuthn authentication; passkey ceremony remains a separate
+physical-device acceptance gate. The branch is never automatically merged.
