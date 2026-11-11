@@ -181,7 +181,7 @@ test("new workflow remains manual-only and secrets occur after exact-SHA guard",
   assert(auth>0&&remote>auth);
   assert.doesNotMatch(workflow.slice(0,remote),/secrets\.CLOUDFLARE_/);
   assert.match(workflow,/scripts\/d1-schema-readonly\.mjs --remote/);
-  assert.doesNotMatch(workflow,/(?:wrangler\s+d1|wrangler deploy|--remote\b|migrations apply|workflow_run:)/i);
+  assert.doesNotMatch(workflow,/(?:wrangler\s+d1|wrangler deploy|migrations apply|workflow_run:)/i);
   const ci=readFileSync(".github/workflows/life-log-ci.yml","utf8");
   assert(ci.includes("node --test scripts/d1-schema-readonly.test.mjs"));
 });
