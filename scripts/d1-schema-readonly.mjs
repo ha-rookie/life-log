@@ -174,7 +174,9 @@ export async function readMetadata(fetchFn,env,configText){
     }
     tables[name]=details;
   }
-  const applied0005=migrations.some(m=>m.name===MIGRATION_0005);
+  // An absent migration ledger means UNKNOWN, never "not yet applied".
+  const applied0005=migrationTableExists?
+    migrations.some(m=>m.name===MIGRATION_0005):null;
   const eclearNames=TABLES.filter(n=>n.startsWith("eclear_enrichment_"));
   const eclearPresent=eclearNames.filter(name=>tables[name].present);
   return {
