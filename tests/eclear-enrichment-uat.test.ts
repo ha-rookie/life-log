@@ -114,7 +114,8 @@ describe("ECLEAR remote UAT Owner WebAuthn defense-in-depth (synthetic local D1 
 
   it("rejects legacy Owner-only sessions and fake Access headers even with opt-in",async()=>{
     await db.prepare("DELETE FROM owner_passkey_sessions").run();
-    for(const extra of [{}, {"Cf-Access-Authenticated-User-Email":"owner@example.test"}]){
+    const extras:Record<string,string|null>[]=[{}, {"Cf-Access-Authenticated-User-Email":"owner@example.test"}];
+    for(const extra of extras){
       const res=await send(req("preview",CSV,undefined,extra));
       expect(res.status).toBe(403);
     }
