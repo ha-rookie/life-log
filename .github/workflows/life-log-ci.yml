@@ -27,7 +27,11 @@ jobs:
       - name: Install pinned npm dependencies (no Cloudflare credentials)
         run: npm ci --no-audit --no-fund
       - name: Verify integration CI, read-only workflow and issue closing gates (offline)
-        run: node scripts/verify-integration-gates.mjs
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node scripts/verify-integration-gates.mjs --self-test
+          node scripts/verify-integration-gates.mjs
       - name: Verify package-lock stays unchanged
         run: git diff --exit-code -- package-lock.json
       - name: Reject unsupported Worker PBKDF2 iterations and verify guard fixtures
