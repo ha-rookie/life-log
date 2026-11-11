@@ -3,8 +3,14 @@ set -euo pipefail
 # Synthetic-only integration. No --remote, credentials, deploys or personal data.
 tmp="$(mktemp -d)"
 worker_pid=""
+# The checked-in passkey implementation stays byte-identical to main.
+# Only this disposable CI checkout is temporarily patched for the localhost RP.
+auth_source="src/worker/passkey-auth.ts"
+auth_original="$tmp/passkey-auth.ts"
+cp "$auth_source" "$auth_original"
 cleanup(){
   if [[ -n "$worker_pid" ]]; then kill "$worker_pid" 2>/dev/null || true; wait "$worker_pid" 2>/dev/null || true; fi
+  cp "$auth_original" "$auth_source"
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -35,10 +41,27 @@ writeFileSync(conflictFile,header+'2026/01/02,07:40,75,29,36,23.5,7,3,1700,"'+ma
 writeFileSync(normalFile,header+'2026/01/03,08:10,76,24,37,23.6,7,3.1,1710,"'+marker+'"\n');
 NODE
 npx --no-install wrangler d1 execute DB --env uat --local --persist-to "$state" --file "$tmp/seed.sql"
+# Test-local patch: do not change committed application authentication code.
+# Host and RP are scoped to a disposable HTTPS loopback Workerd runtime.
+node --input-type=module - "$auth_source" <<'NODE'
+import {readFileSync,writeFileSync} from "node:fs";
+const path=process.argv[2];
+let text=readFileSync(path,"utf8");
+function exact(a,b){
+  if(text.split(a).length!==2)throw Error("Unexpected passkey auth contract: "+a);
+  text=text.replace(a,b);
+}
+exact('const ORIGIN="https://life-log-uat.ha-rookie.workers.dev";',
+      'const ORIGIN="https://localhost:8787";');
+exact('const RP_ID="life-log-uat.ha-rookie.workers.dev";',
+      'const RP_ID="localhost";');
+exact('const ip=request.headers.get("CF-Connecting-IP");',
+      'const ip=request.headers.get("CF-Connecting-IP") ?? "127.0.0.1";');
+writeFileSync(path,text);
+NODE
 npx --no-install wrangler dev --env uat --local --ip 127.0.0.1 --port 8787 \
   --local-protocol https --persist-to "$state" \
   --var PASSWORD_ONLY_UAT:true \
-  --var PASSKEY_LOCAL_E2E_ONLY:true \
   --var ECLEAR_ENRICHMENT_LOCAL_ONLY:true \
   --var ECLEAR_ENRICHMENT_REVIEW_KEY:synthetic-local-hmac-never-deploy-0000000000000001 \
   --var IMPORT_LOCAL_ONLY:true \
