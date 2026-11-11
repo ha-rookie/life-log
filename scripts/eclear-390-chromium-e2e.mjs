@@ -37,6 +37,7 @@ async function intercept(p){
   confirmed++;
   assert(!String(p.request.postData).includes("SYNTHETIC PRIVATE MEMO"),"memo sent to API");
   if(mode==="stale"){code=409;data={error:"REVIEW_STALE"};}
+  else if(mode==="timeout"){code=503;data={error:"SYNTHETIC_TIMEOUT"};}
   else{mode="readback";data={status:"applied",inserted:0,enriched:1,cells:5};}
  }else if(path==="/api/import/confirm"){normal++;data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};}
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
@@ -113,16 +114,27 @@ try{
  await wait(()=>contains("もう一度プレビューしてください"),"409 stale");
  assert.equal(confirmed,1,"no auto retry");
  assert(!await contains("補完が完了し、保存結果を再照合しました"));
+ mode="ok";await upload();await click("体組成の不足項目だけ補完");
+ mode="timeout";confirmed=0;
+ await click("不足項目を確認する");
+ await wait(()=>contains("補完対象"),"timeout preview");
+ await js("document.querySelector('.eclear-ack input').click()");
+ await click("確認して不足項目を保存する");
+ await wait(()=>contains("登録結果は未確定"),"network failure uncertainty");
+ assert.equal(confirmed,1,"no auto retry after transport failure");
  mode="ok";await upload();
  assert(await contains("体重・体脂肪率を通常取込"));
  assert(await contains("確認して登録する"));
  assert.equal(normal,0,"normal import never auto-sent");
+ await click("確認して登録する");
+ await wait(()=>contains("登録完了：追加 1件"),"normal CSV import");
+ assert.equal(normal,1,"normal import uses distinct v1 endpoint");
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
  await wait(()=>contains("ログイン設定（Android UAT）"),"passkey settings");
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
  console.log(JSON.stringify({result:"PASS",browser:"Chromium",viewport:390,
   verified:["React UI","file picker","normal import isolation","preview","conflict",
-   "403 disabled","commit readback","409 no retry","memo privacy","passkey status UI","no overflow"],
+   "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
