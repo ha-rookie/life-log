@@ -27,16 +27,16 @@ const response=body=>({ok:true,json:async()=>body});
 const queryResponse=rows=>response({success:true,result:[{
   success:true,results:rows,meta:{changes:0,changed_db:false}
 }]});
-const ddlRows=(present=false)=>[
-  {type:"table",name:"d1_migrations",tbl_name:"d1_migrations",
-    sql:"CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY, name TEXT UNIQUE, applied_at TIMESTAMP)"},
+const ddlRows=(present=false,ledger=true)=>[
+  ...(ledger?[{type:"table",name:"d1_migrations",tbl_name:"d1_migrations",
+    sql:"CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY, name TEXT UNIQUE, applied_at TIMESTAMP)"}]:[]),
   {type:"table",name:"body_measurements",tbl_name:"body_measurements",
     sql:"CREATE TABLE body_measurements(id TEXT PRIMARY KEY, weight_kg REAL)"},
   ...(present?TABLES.filter(n=>n.startsWith("eclear_enrichment_")).map(n=>({
     type:"table",name:n,tbl_name:n,sql:"CREATE TABLE "+n+"(id TEXT PRIMARY KEY)"
   })):[])
 ];
-function stub({hasEclear=false,hasMigration=false,wrongId=false,
+function stub({hasEclear=false,hasMigration=false,hasLedger=true,wrongId=false,
               changedDb=false,leak=false}={}){
   const requests=[];
   const fetchFn=async(url,opts)=>{
@@ -50,7 +50,7 @@ function stub({hasEclear=false,hasMigration=false,wrongId=false,
     assert.equal(payload.params.length,0);
     assertAllowedSql(payload.sql);
     let rows=[];
-    if(payload.sql===SQL.schema)rows=ddlRows(hasEclear);
+    if(payload.sql===SQL.schema)rows=ddlRows(hasEclear,hasLedger);
     else if(payload.sql===SQL.migrations){
       rows=[{name:"0003_owner_passkey.sql",applied_at:"2026-11-08 00:00:00"}];
       if(hasMigration)rows.push({name:MIGRATION_0005,applied_at:"2026-11-12 00:00:00"});
@@ -124,6 +124,14 @@ test("read-only metadata returns no measured, credential, session or audit row v
   assert(summary.includes("Migration 0005 applied: false"));
   assert(!summary.includes("synthetic-cloudflare-token-only"));
   assert(!summary.includes("NO_VALUE_MAY_ESCAPE"));
+});
+test("missing migration ledger is UNKNOWN, not a claim 0005 is unapplied",async()=>{
+  const s=stub({hasLedger:false});
+  const result=await readMetadata(s.fetchFn,env(),config());
+  assert.equal(result.migrationLedgerPresent,false);
+  assert.equal(result.applied0005,null);
+  assert(!s.requests.some(r=>r.body&&JSON.parse(r.body).sql===SQL.migrations));
+  assert(renderSummary(result).includes("Migration 0005 applied: null"));
 });
 test("positive metadata-only 0005 and four tables are detected without row SQL",async()=>{
   const s=stub({hasEclear:true,hasMigration:true});
