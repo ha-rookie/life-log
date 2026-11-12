@@ -1,6 +1,6 @@
 # ECLEAR Remote D1 metadata-only one-shot CI trigger
 
-This Draft PR prepares a **separately approved** one-time read-only D1 metadata inspection. **It does not authorize merging this PR**. Once approved and merged, the one-shot GitHub Actions job may run exactly once for the exact squash commit and only after the normal main CI succeeds.
+Technical issue: #156. Draft PR: #155. This Draft PR prepares a **separately approved** one-time read-only D1 metadata inspection. **It does not authorize merging this PR**. Once approved and merged, the one-shot GitHub Actions job may run exactly once for the exact squash commit and only after the normal main CI succeeds. The upstream and downstream run attempts must both equal 1; a workflow rerun cannot repeat the inspection. The exact squash subject must be `ci(d1): one-shot ECLEAR schema read (#155)` and the squash commit must contain exactly four approved files.
 
 - Existing D1: `life-log-dev`, UUID `421d0116-5c33-4782-a2b6-28f9684d3956`; root and UAT Wrangler bindings must match.
 - The job must accept only a main **push** `workflow_run` of `Life-log local app and D1 CI` with `conclusion=success`, exact approved squash commit title, and exact changed-file allowlist. It must compare the checked-out SHA and current main SHA.
