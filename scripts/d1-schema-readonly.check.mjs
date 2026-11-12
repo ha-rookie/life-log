@@ -4,7 +4,8 @@ import {readFileSync} from "node:fs";
 import {
   DATABASE_ID,DATABASE_NAME,REPO,CONFIRMATION,MIGRATION_0005,TABLES,SQL,
   assertAllowedSql,assertManualContext,validateLocalConfig,sanitizeRows,
-  readMetadata,queryOnly,renderSummary
+  readMetadata,queryOnly,renderSummary,assertOnceContext,
+  ONCE_TITLE,ONCE_PARENT_SHA,ONCE_SOURCE_WORKFLOW
 } from "./d1-schema-readonly.mjs";
 
 const SHA="a".repeat(40);
@@ -192,4 +193,87 @@ test("new workflow remains manual-only and secrets occur after exact-SHA guard",
   assert.doesNotMatch(workflow,/(?:wrangler\s+d1|wrangler deploy|migrations apply|workflow_run:)/i);
   const ci=readFileSync(".github/workflows/life-log-ci.yml","utf8");
   assert(ci.includes("node --test scripts/d1-schema-readonly.check.mjs"));
+});
+
+const onceEnv=()=>({
+  ...env(),
+  GITHUB_EVENT_NAME:"workflow_run",
+  SOURCE_WORKFLOW:ONCE_SOURCE_WORKFLOW,
+  SOURCE_EVENT:"push",SOURCE_BRANCH:"main",SOURCE_CONCLUSION:"success",
+  SOURCE_RUN_ID:"123456789",SOURCE_RUN_ATTEMPT:"2",
+  GITHUB_RUN_ATTEMPT:"1",
+  SOURCE_SHA:SHA,
+  ONCE_COMMIT_TITLE:ONCE_TITLE,
+  ONCE_PARENT_SHA
+});
+test("authorized synthetic one-shot has exact main/DB and metadata-only SQL",async()=>{
+  const e=onceEnv(),s=stub({hasEclear:true,hasMigration:true});
+  assertOnceContext(e);
+  const data=await readMetadata(s.fetchFn,e,config(),"once");
+  assert.equal(data.readMode,"once");
+  assert.equal(data.applied0005,true);
+  assert.equal(data.eclearTablePresence,"4/4");
+  assert(renderSummary(data).includes("one-shot CI-success-gated"));
+  assert(s.requests.slice(2).every(r=>assertAllowedSql(JSON.parse(r.body).sql)));
+});
+test("any wrong event/branch/title/parent/SHA/re-run fails before Cloudflare",async()=>{
+  const invalid=[
+    {GITHUB_EVENT_NAME:"workflow_dispatch"},
+    {GITHUB_REPOSITORY:"fake/life-log"},
+    {GITHUB_REF:"refs/heads/something"},
+    {SOURCE_WORKFLOW:"Other CI"},
+    {SOURCE_EVENT:"pull_request"},
+    {SOURCE_BRANCH:"feature"},
+    {SOURCE_CONCLUSION:"failure"},
+    {SOURCE_RUN_ID:""},
+    {SOURCE_RUN_ATTEMPT:"0"},
+    {SOURCE_SHA:"c".repeat(40)},
+    {GITHUB_SHA:"c".repeat(40)},
+    {TARGET_SHA:"short"},
+    {GITHUB_RUN_ATTEMPT:"2"},
+    {ONCE_COMMIT_TITLE:ONCE_TITLE+" extra"},
+    {ONCE_PARENT_SHA:"c".repeat(40)}
+  ];
+  for(const bad of invalid){
+    const s=stub(),altered={...onceEnv(),...bad};
+    assert.throws(()=>assertOnceContext(altered));
+    await assert.rejects(()=>readMetadata(s.fetchFn,altered,config(),"once"));
+    assert.equal(s.requests.length,0,JSON.stringify(bad));
+  }
+});
+test("manual mode is never implicitly authorized by one-shot context",async()=>{
+  const s=stub();
+  await assert.rejects(()=>readMetadata(s.fetchFn,onceEnv(),config()));
+  await assert.rejects(()=>readMetadata(s.fetchFn,env(),config(),"once"));
+  await assert.rejects(()=>readMetadata(s.fetchFn,env(),config(),"something-else"));
+  assert.equal(s.requests.length,0);
+});
+test("one-shot workflow only follows successful main CI, rejects replay and scopes credentials",()=>{
+  const workflow=readFileSync(".github/workflows/life-log-d1-schema-once.yml","utf8");
+  const trigger=workflow.slice(workflow.indexOf("\non:\n"),workflow.indexOf("\npermissions:"));
+  assert.match(trigger,/\n  workflow_run:\n/);
+  assert.match(trigger,/workflows: \["Life-log local app and D1 CI"\]/);
+  assert.match(trigger,/types: \[completed\]/);
+  assert.match(trigger,/branches: \[main\]/);
+  assert.doesNotMatch(trigger,/\n  (?:push|pull_request|workflow_dispatch|schedule|repository_dispatch):/);
+  assert.match(workflow,/github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(workflow,/github\.event\.workflow_run\.event == 'push'/);
+  assert.match(workflow,/github\.run_attempt == 1/);
+  assert(workflow.includes(ONCE_TITLE));
+  assert(workflow.includes(ONCE_PARENT_SHA));
+  assert.match(workflow,/git rev-parse HEAD\^/);
+  assert.match(workflow,/git diff-tree --no-commit-id --name-only -r HEAD/);
+  assert.match(workflow,/actions\/runs\/\$SOURCE_RUN_ID\/jobs/);
+  assert.match(workflow,/prior.*gh api|prior="\$\(gh api/);
+  assert.match(workflow,/test "\$prior" = 0/);
+  assert(workflow.includes("validate")&&workflow.includes("chromium-e2e")&&
+    workflow.includes("worker-browser-e2e"));
+  const beforeRemote=workflow.slice(0,workflow.indexOf("- name: One-time Remote D1 metadata read"));
+  assert(!beforeRemote.includes("secrets.CLOUDFLARE_"));
+  assert(workflow.includes("node scripts/d1-schema-readonly.mjs --once"));
+  assert.doesNotMatch(workflow,/wrangler d1|wrangler deploy|migrations apply|--remote\b/);
+  const manual=readFileSync(".github/workflows/life-log-d1-schema-readonly-manual.yml","utf8");
+  assert(manual.includes("  workflow_dispatch:"));
+  assert(!manual.includes("  workflow_run:"));
+  assert(manual.includes("node scripts/d1-schema-readonly.mjs --remote"));
 });
