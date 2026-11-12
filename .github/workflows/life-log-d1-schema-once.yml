@@ -89,7 +89,8 @@ jobs:
           # Prior workflow_run events caused by FAILED CI are SKIPPED and ignored.
           prior="$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/life-log-d1-schema-once.yml/runs?head_sha=$TARGET_SHA&event=workflow_run&per_page=100" \
-            --jq '[.workflow_runs[] | select(.id < (env.GITHUB_RUN_ID|tonumber) and .conclusion != "skipped")] | length')"
+            | jq --argjson current "$GITHUB_RUN_ID" \
+              '[.workflow_runs[] | select(.id < $current and .conclusion != "skipped")] | length')"
           test "$prior" = 0
 
           # The upstream workflow_run event identifies the exact CI run. Verify
