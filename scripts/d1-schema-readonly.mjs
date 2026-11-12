@@ -12,6 +12,9 @@ export const DATABASE_NAME="life-log-dev";
 export const UAT_NAME="life-log-uat";
 export const REPO="ha-rookie/life-log";
 export const CONFIRMATION="READ LIFELOG D1 SCHEMA ONLY";
+export const ONCE_TITLE="audit(d1): one-shot ECLEAR schema metadata (#153)";
+export const ONCE_PARENT_SHA="03eb6f1110b37d6cd9535f2102c23e0a229e96ba";
+export const ONCE_SOURCE_WORKFLOW="Life-log local app and D1 CI";
 export const MIGRATION_0005="0005_eclear_enrichment_audit.sql";
 export const TABLES=Object.freeze([
   "d1_migrations","body_measurements",
@@ -65,6 +68,29 @@ export function assertManualContext(env){
   assert.equal(env.CONFIRMATION,CONFIRMATION,"EXPLICIT_CONFIRMATION_REQUIRED");
   assert(/^[a-f0-9]{40}$/.test(env.TARGET_SHA??""),"EXACT_SHA_REQUIRED");
   assert.equal(env.GITHUB_SHA,env.TARGET_SHA,"DISPATCH_SHA_MISMATCH");
+  return true;
+}
+
+/** Distinct, fail-closed attestation for the single approved squash-merge gate.
+ * The old workflow_dispatch context remains unchanged and strictly manual.
+ * A workflow_run is not a substitute for a manual dispatch.
+ */
+export function assertOnceContext(env){
+  assert.equal(env.GITHUB_EVENT_NAME,"workflow_run","WORKFLOW_RUN_REQUIRED");
+  assert.equal(env.GITHUB_REPOSITORY,REPO,"EXACT_REPOSITORY_REQUIRED");
+  assert.equal(env.GITHUB_REF,"refs/heads/main","MAIN_REF_REQUIRED");
+  assert.equal(env.SOURCE_WORKFLOW,ONCE_SOURCE_WORKFLOW,"CI_WORKFLOW_MISMATCH");
+  assert.equal(env.SOURCE_EVENT,"push","MAIN_PUSH_REQUIRED");
+  assert.equal(env.SOURCE_BRANCH,"main","MAIN_BRANCH_REQUIRED");
+  assert.equal(env.SOURCE_CONCLUSION,"success","MANDATORY_CI_NOT_SUCCESS");
+  assert(/^[1-9][0-9]{0,15}$/.test(env.SOURCE_RUN_ID??""),"CI_RUN_ID_REQUIRED");
+  assert(/^[1-9][0-9]{0,3}$/.test(env.SOURCE_RUN_ATTEMPT??""),"CI_RUN_ATTEMPT_REQUIRED");
+  assert.equal(env.GITHUB_RUN_ATTEMPT,"1","ONE_SHOT_REPLAY_FORBIDDEN");
+  assert.equal(env.ONCE_COMMIT_TITLE,ONCE_TITLE,"SQUASH_SUBJECT_MISMATCH");
+  assert.equal(env.ONCE_PARENT_SHA,ONCE_PARENT_SHA,"PARENT_MAIN_SHA_MISMATCH");
+  assert(/^[a-f0-9]{40}$/.test(env.TARGET_SHA??""),"PINNED_SHA_REQUIRED");
+  assert.equal(env.SOURCE_SHA,env.TARGET_SHA,"SOURCE_SHA_MISMATCH");
+  assert.equal(env.GITHUB_SHA,env.TARGET_SHA,"DEFAULT_BRANCH_SHA_MISMATCH");
   return true;
 }
 
@@ -148,8 +174,10 @@ export async function queryOnly(fetchFn,env,sql,id){
   assert(meta.changed_db===undefined||meta.changed_db===false,"QUERY_REPORTED_DB_CHANGE");
   return sanitizeRows(result[0].results,id.split(":")[0]);
 }
-export async function readMetadata(fetchFn,env,configText){
-  assertManualContext(env);
+export async function readMetadata(fetchFn,env,configText,mode="manual"){
+  if(mode==="manual")assertManualContext(env);
+  else if(mode==="once")assertOnceContext(env);
+  else throw Error("UNSUPPORTED_INSPECTION_MODE");
   validateLocalConfig(configText);
   assert(/^[0-9a-fA-F]{32}$/.test(env.CLOUDFLARE_ACCOUNT_ID??""),"ACCOUNT_ID_INVALID");
   assert(typeof env.CLOUDFLARE_API_TOKEN==="string"&&env.CLOUDFLARE_API_TOKEN.length>=12,
@@ -180,6 +208,7 @@ export async function readMetadata(fetchFn,env,configText){
   const eclearNames=TABLES.filter(n=>n.startsWith("eclear_enrichment_"));
   const eclearPresent=eclearNames.filter(name=>tables[name].present);
   return {
+    readMode:mode,
     mainSha:env.TARGET_SHA,databaseName:DATABASE_NAME,databaseId:DATABASE_ID,
     migrationLedgerPresent:migrationTableExists,migrations,applied0005,
     eclearTablePresence:eclearPresent.length+"/"+eclearNames.length,
@@ -191,7 +220,7 @@ export async function readMetadata(fetchFn,env,configText){
 export function renderSummary(data){
   const lines=[
     "### Remote D1 metadata-only preflight",
-    "- Read mode: manual, exact main SHA, fixed allowlist",
+    "- Read mode: "+(data.readMode==="once"?"one-shot CI-success-gated":"manual")+", exact main SHA, fixed allowlist",
     "- Target: "+data.databaseName+" ("+data.databaseId+")",
     "- Approved main SHA: "+data.mainSha,
     "- Migration ledger present: "+String(data.migrationLedgerPresent),
@@ -222,9 +251,9 @@ export function renderSummary(data){
     "This is **not** authorization to apply Migration 0005.");
   return lines.join("\n")+"\n";
 }
-export async function runRemote(env=process.env,fetchFn=fetch){
+export async function runRemote(env=process.env,fetchFn=fetch,mode="manual"){
   const config=readFileSync("wrangler.jsonc","utf8");
-  const result=await readMetadata(fetchFn,env,config);
+  const result=await readMetadata(fetchFn,env,config,mode);
   if(env.GITHUB_STEP_SUMMARY)
     appendFileSync(env.GITHUB_STEP_SUMMARY,renderSummary(result),{encoding:"utf8",flag:"a"});
   console.log("PASS D1 metadata only: migration 0005 present="+result.applied0005+
@@ -232,8 +261,10 @@ export async function runRemote(env=process.env,fetchFn=fetch){
   return result;
 }
 if(process.argv[1]&&new URL("file://"+process.argv[1]).href===import.meta.url){
-  if(process.argv.length!==3||process.argv[2]!=="--remote")
-    throw Error("MANUAL_REMOTE_INVOCATION_ONLY; offline tests use node --test");
-  try{await runRemote();}
+  const args=process.argv.slice(2);
+  if(args.length!==1||!["--remote","--once"].includes(args[0]))
+    throw Error("APPROVED_EXECUTION_MODE_REQUIRED; offline tests use node --test");
+  const mode=args[0]==="--once"?"once":"manual";
+  try{await runRemote(process.env,fetch,mode);}
   catch{console.error("D1_METADATA_INSPECTION_FAILED (reason intentionally redacted)");process.exitCode=1;}
 }
