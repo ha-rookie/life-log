@@ -32,7 +32,7 @@ jobs:
         run: |
           node scripts/verify-integration-gates.mjs --self-test
           node scripts/verify-integration-gates.mjs
-      - name: Verify remote D1 schema workflow without network or credentials
+      - name: Verify manual and one-shot D1 metadata guards offline (no Cloudflare credentials)
         run: node --test scripts/d1-schema-readonly.check.mjs
       - name: Verify package-lock stays unchanged
         run: git diff --exit-code -- package-lock.json
