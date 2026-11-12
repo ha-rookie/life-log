@@ -69,7 +69,6 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           git diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' \
-            .github/workflows/life-log-ci.yml \
             .github/workflows/life-log-d1-schema-readonly-once.yml \
             docs/ECLEAR_D1_ONE_SHOT_READONLY.md \
             scripts/d1-schema-readonly.check.mjs \
@@ -81,7 +80,7 @@ jobs:
           import {assertOneShotContext,validateLocalConfig} from "./scripts/d1-schema-readonly.mjs";
           assertOneShotContext(process.env);
           validateLocalConfig(readFileSync("wrangler.jsonc","utf8"));
-          console.log("PASS: exact one-shot squash SHA, main, five files and pinned UAT D1");
+          console.log("PASS: exact one-shot squash SHA, main, four files and pinned UAT D1");
           JS
       - name: Offline negative tests (no network or Cloudflare credentials)
         run: node --test scripts/d1-schema-readonly.check.mjs
