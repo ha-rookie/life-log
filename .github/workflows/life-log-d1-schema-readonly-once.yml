@@ -60,7 +60,50 @@ jobs:
           test "$WORKFLOW_RUN_CONCLUSION" = 'success'
           test "$WORKFLOW_RUN_HEAD_BRANCH" = 'main'
           test "$WORKFLOW_RUN_REPOSITORY" = 'ha-rookie/life-log'
-          test "$WORKFLOW_RUN_HEAD_SUBJECT" = 'ci(d1): one-shot ECLEAR schema read (#155)'
+          test "${WORKFLOW_RUN_HEAD_SUBJECT%%
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$TARGET_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'ci(d1): one-shot ECLEAR schema read (#155)'
+          test "$(git show -s --format=%B HEAD | head -n 1)" = 'ci(d1): one-shot ECLEAR schema read (#155)'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort > "$RUNNER_TEMP/actual-files.txt"
+          printf '%s\n' \
+            .github/workflows/life-log-ci.yml \
+            .github/workflows/life-log-d1-schema-readonly-once.yml \
+            docs/ECLEAR_D1_ONE_SHOT_READONLY.md \
+            scripts/d1-schema-readonly.check.mjs \
+            scripts/d1-schema-readonly.mjs \
+            | LC_ALL=C sort > "$RUNNER_TEMP/expected-files.txt"
+          diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
+          node --input-type=module <<'JS'
+          import {readFileSync} from "node:fs";
+          import {assertOneShotContext,validateLocalConfig} from "./scripts/d1-schema-readonly.mjs";
+          assertOneShotContext(process.env);
+          validateLocalConfig(readFileSync("wrangler.jsonc","utf8"));
+          console.log("PASS: exact one-shot squash SHA, main, five files and pinned UAT D1");
+          JS
+      - name: Offline negative tests (no network or Cloudflare credentials)
+        run: node --test scripts/d1-schema-readonly.check.mjs
+      - name: Read only D1 schema and migration ledger after approved CI
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          ONE_SHOT_APPROVAL: ONE_SHOT_APPROVED_ECLEAR_D1_METADATA_155
+          WORKFLOW_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_RUN_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_HEAD_SUBJECT: ${{ github.event.workflow_run.head_commit.message }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never use set -x or print raw HTTP responses / token values.
+          node scripts/d1-schema-readonly.mjs --remote
+\n'*}" = 'ci(d1): one-shot ECLEAR schema read (#155)'
           [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$TARGET_SHA" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
