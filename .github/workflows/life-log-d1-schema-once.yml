@@ -1,0 +1,145 @@
+name: Life-log one-shot approved ECLEAR schema metadata inspection
+
+# The PR itself cannot query Cloudflare. After a separately approved exact
+# Squash merge, only SUCCESS of the named MAIN push CI may trigger this job.
+# No manual dispatch, push, PR, schedule or repository_dispatch path exists.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: life-log-eclear-d1-schema-once-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.name == 'Life-log local app and D1 CI' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.workflow_run.head_commit.message,
+        'audit(d1): one-shot ECLEAR schema metadata (#153)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Strict exact-SHA, five-file Squash and source-CI success gate (GitHub API only)
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_parent='03eb6f1110b37d6cd9535f2102c23e0a229e96ba'
+          expected_title='audit(d1): one-shot ECLEAR schema metadata (#153)'
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REPOSITORY" = ha-rookie/life-log
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$SOURCE_WORKFLOW" = 'Life-log local app and D1 CI'
+          test "$SOURCE_EVENT" = push
+          test "$SOURCE_BRANCH" = main
+          test "$SOURCE_CONCLUSION" = success
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]{0,15}$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,3}$ ]]
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$TARGET_SHA" = "$SOURCE_SHA"
+          test "$TARGET_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 2
+          test "$(git rev-parse HEAD^)" = "$expected_parent"
+          test "$(git show -s --format=%s HEAD)" = "$expected_title"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+
+          # A Squash commit containing any extra changed path cannot authorize a read.
+          printf '%s\n' \
+            '.github/workflows/life-log-ci.yml' \
+            '.github/workflows/life-log-d1-schema-once.yml' \
+            'docs/ECLEAR_REMOTE_D1_SCHEMA_READONLY.md' \
+            'scripts/d1-schema-readonly.check.mjs' \
+            'scripts/d1-schema-readonly.mjs' | sort > "$RUNNER_TEMP/expected-paths"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-paths"
+          diff -u "$RUNNER_TEMP/expected-paths" "$RUNNER_TEMP/actual-paths"
+
+          # This run must be the FIRST eligible/non-skipped one for the exact SHA.
+          # A failed/partial earlier inspection is consumed, never retried silently.
+          # Prior workflow_run events caused by FAILED CI are SKIPPED and ignored.
+          prior="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/life-log-d1-schema-once.yml/runs?head_sha=$TARGET_SHA&event=workflow_run&per_page=100" \
+            --jq '[.workflow_runs[] | select(.id < (env.GITHUB_RUN_ID|tonumber) and .conclusion != "skipped")] | length')"
+          test "$prior" = 0
+
+          # The upstream workflow_run event identifies the exact CI run. Verify
+          # source metadata and three required successful jobs from GitHub API.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" \
+            | jq -e --arg sha "$TARGET_SHA" \
+              '.name == "Life-log local app and D1 CI" and .event == "push" and
+               .head_branch == "main" and .head_sha == $sha and
+               .status == "completed" and .conclusion == "success"' > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100&filter=latest" \
+            | jq -e '
+              [ .jobs[] | select(.name == "validate" or .name == "chromium-e2e"
+                  or .name == "worker-browser-e2e") | .name ] | sort ==
+                ["chromium-e2e","validate","worker-browser-e2e"] and
+              ([ .jobs[] | select(.name == "validate" or .name == "chromium-e2e"
+                  or .name == "worker-browser-e2e")
+                | select(.status != "completed" or .conclusion != "success") ] | length) == 0
+              ' > /dev/null
+
+          node --input-type=module <<'JS'
+          import {readFileSync} from "node:fs";
+          import {validateLocalConfig,assertOnceContext,ONCE_PARENT_SHA} from "./scripts/d1-schema-readonly.mjs";
+          validateLocalConfig(readFileSync("wrangler.jsonc","utf8"));
+          const env={...process.env,
+            ONCE_COMMIT_TITLE:"audit(d1): one-shot ECLEAR schema metadata (#153)",
+            ONCE_PARENT_SHA};
+          assertOnceContext(env);
+          JS
+          echo "ONCE_COMMIT_TITLE=$expected_title" >> "$GITHUB_ENV"
+          echo "ONCE_PARENT_SHA=$expected_parent" >> "$GITHUB_ENV"
+          echo "PASS: exact main Squash, 5-file allowlist, required CI, first-use gate"
+
+      - name: Offline synthetic security regression only (no Cloudflare credentials)
+        run: node --test scripts/d1-schema-readonly.check.mjs
+
+      - name: One-time Remote D1 metadata read (no writes, migrations or personal rows)
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No -x, raw response logs, artifacts, migration CLI, deploys or secrets.
+          node scripts/d1-schema-readonly.mjs --once
