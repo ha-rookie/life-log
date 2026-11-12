@@ -49,3 +49,24 @@ Cloudflare D1 Query API: https://developers.cloudflare.com/api/resources/d1/subr
 Cloudflare D1 migrations table: https://developers.cloudflare.com/d1/reference/migrations/
 
 GitHub manual workflows: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow
+
+## One-shot automatic alternative (implementation only — Issue #153)
+
+The manual workflow from PR #152 remains unchanged and manual-only. This independent Draft PR prepares a **single guarded workflow_run job** in `.github/workflows/life-log-d1-schema-once.yml` for cases where the connected GitHub app cannot call `workflow_dispatch`.
+
+### Activation requires separate approval and a uniquely named Squash merge
+
+- **Not activated by this Draft PR.** On the separately authorized merge, the exact **Squash commit subject** must be `audit(d1): one-shot ECLEAR schema metadata (#153)`. A different commit subject does **not** authorize a remote read. The Squash commit's only parent must be the pinned base `03eb6f1110b37d6cd9535f2102c23e0a229e96ba`. If main advances, STOP and re-review; do not loosen the pin.
+- The Squash commit may change **exactly these five paths**: `.github/workflows/life-log-d1-schema-once.yml`, `.github/workflows/life-log-ci.yml`, `scripts/d1-schema-readonly.mjs`, `scripts/d1-schema-readonly.check.mjs`, `docs/ECLEAR_REMOTE_D1_SCHEMA_READONLY.md`. No `src/**`, `migrations/**`, `wrangler.jsonc`, package or protected UAT deploy workflow change.
+- The `workflow_run` trigger is limited to the named **Life-log local app and D1 CI** workflow *completed* on the **main push** event; its conclusion must be `success`. No PR or manual/scheduled trigger. The preflight also checks the exact source CI run and verifies the latest `validate`, `chromium-e2e` and `worker-browser-e2e` jobs all completed SUCCESS.
+- Before any Cloudflare credentials or requests: check `GITHUB_SHA`, checked-out HEAD, live main ref and source workflow head SHA all match; exact main parent and commit subject; exact five changed paths; pinned root+UAT D1 config and Owner-safe local constants. Concurrent runs for the same SHA are serialized.
+- The first eligible one-shot run for that exact SHA is consumed. If a previous non-skipped one-shot run exists for the same SHA (including a failed or partially completed one), a later run fails before any Cloudflare access; retries require **new explicit user approval**. A manual rerun of the one-shot job is blocked by `GITHUB_RUN_ATTEMPT == 1`; a prior CI failure's skipped one-shot does not consume the gate.
+- The only remote operations are Cloudflare GET for the fixed D1's UUID/name, followed by the existing fixed SQL allowlist's `sqlite_schema`, `d1_migrations` filename/time, and PRAGMA table/index/foreign-key metadata. These SQL queries use Cloudflare POST transport but cannot contain arbitrary user SQL or any personal rows/values. No Remote D1 mutations, migration application, Secrets changes or Worker deployment.
+- Cloudflare secrets are only passed to the final, remote-read step. Preflight checks and 15 offline negative/positive Node test cases use only synthetic data. Output is restricted to schema metadata, migration filenames/time, 0005 status, and D1 identity; failures redact API response bodies.
+
+### Execution sequence
+
+1. Current task: create this technical Issue, independent branch, Draft PR and required CI, **no main merge and no Remote D1 read**.
+2. Later: user separately approves final safety verification and exact-title Squash merge, including the consequent **one-time metadata read only**. If all checks pass, main CI runs and, only on main CI SUCCESS, the new one-shot read may run.
+3. Read GitHub Actions job summary and logs (without raw personal values); compare Migration 0005 ledger record and target DDL/constraints. Any mismatch or missing ledger is a blocker; **never** infer that missing 0005 is permission to apply it.
+4. Remote Migration 0005, UAT Secret/flags/deploy, real Android acceptance and ECLEAR personal CSV import remain **separate approvals**. Acceptance Issues #142 and #124 stay OPEN.
