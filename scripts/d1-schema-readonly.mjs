@@ -58,6 +58,27 @@ export function validateLocalConfig(configText){
   assert(check(cfg.env?.uat?.d1_databases),"UAT_D1_BINDING_MISMATCH");
   return true;
 }
+export const ONE_SHOT_SUBJECT="ci(d1): one-shot ECLEAR schema read (#155)";
+export const ONE_SHOT_APPROVAL="ONE_SHOT_APPROVED_ECLEAR_D1_METADATA_155";
+export function assertOneShotContext(env){
+  assert.equal(env.GITHUB_EVENT_NAME,"workflow_run","ONE_SHOT_WORKFLOW_RUN_REQUIRED");
+  assert.equal(env.GITHUB_REF,"refs/heads/main","ONE_SHOT_MAIN_REF_REQUIRED");
+  assert.equal(env.GITHUB_REPOSITORY,REPO,"ONE_SHOT_REPOSITORY_REQUIRED");
+  assert.equal(env.ONE_SHOT_APPROVAL,ONE_SHOT_APPROVAL,"ONE_SHOT_APPROVAL_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_EVENT,"push","ONE_SHOT_PUSH_CI_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_CONCLUSION,"success","ONE_SHOT_CI_SUCCESS_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_HEAD_BRANCH,"main","ONE_SHOT_CI_MAIN_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_REPOSITORY,REPO,"ONE_SHOT_CI_REPOSITORY_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_HEAD_SUBJECT,ONE_SHOT_SUBJECT,"ONE_SHOT_COMMIT_SUBJECT_REQUIRED");
+  assert(/^[a-f0-9]{40}$/.test(env.TARGET_SHA??""),"ONE_SHOT_SHA_REQUIRED");
+  assert.equal(env.WORKFLOW_RUN_HEAD_SHA,env.TARGET_SHA,"ONE_SHOT_HEAD_SHA_MISMATCH");
+  assert.equal(env.GITHUB_SHA,env.TARGET_SHA,"ONE_SHOT_DEFAULT_BRANCH_SHA_MISMATCH");
+  return true;
+}
+export function assertReadContext(env){
+  if(env.GITHUB_EVENT_NAME==="workflow_run")return assertOneShotContext(env);
+  return assertManualContext(env);
+}
 export function assertManualContext(env){
   assert.equal(env.GITHUB_EVENT_NAME,"workflow_dispatch","MANUAL_EVENT_REQUIRED");
   assert.equal(env.GITHUB_REF,"refs/heads/main","MAIN_REF_REQUIRED");
@@ -149,7 +170,7 @@ export async function queryOnly(fetchFn,env,sql,id){
   return sanitizeRows(result[0].results,id.split(":")[0]);
 }
 export async function readMetadata(fetchFn,env,configText){
-  assertManualContext(env);
+  assertReadContext(env);
   validateLocalConfig(configText);
   assert(/^[0-9a-fA-F]{32}$/.test(env.CLOUDFLARE_ACCOUNT_ID??""),"ACCOUNT_ID_INVALID");
   assert(typeof env.CLOUDFLARE_API_TOKEN==="string"&&env.CLOUDFLARE_API_TOKEN.length>=12,
