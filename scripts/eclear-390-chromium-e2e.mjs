@@ -14,6 +14,7 @@ await writeFile(fixture,[
 ].join("\n"));
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
+let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null;
 const pending=new Map();
 const calls=[];
 const blockedRemoteOrigins=new Set();
@@ -56,6 +57,25 @@ async function intercept(p){
   else{mode="readback";data={status:"applied",inserted:0,enriched:1,cells:5};}
  }else if(path==="/api/import/confirm"){normal++;data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};}
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
+ else if(path==="/api/mvp/drinks"){
+  const method=p.request.method;
+  if(method==="GET")data={entries:syntheticDrink?[syntheticDrink]:[]};
+  else if(method==="POST"){
+   lastDrinkPost=JSON.parse(p.request.postData??"{}");
+   assert.equal(typeof lastDrinkPost.cups,"number","POST cups must remain numeric");
+   syntheticDrink={...lastDrinkPost,alcohol:1};
+   data={status:"created"};
+  }else if(method==="PATCH"){
+   lastDrinkPatch=JSON.parse(p.request.postData??"{}");
+   assert.equal(typeof lastDrinkPatch.cups,"number","PATCH cups must remain numeric");
+   assert.equal(lastDrinkPatch.key,syntheticDrink?.key);
+   syntheticDrink={...syntheticDrink,cups:lastDrinkPatch.cups,kind:lastDrinkPatch.kind,
+     size:lastDrinkPatch.size,volumeMl:lastDrinkPatch.volumeMl,abvPct:lastDrinkPatch.abvPct,
+     observedAt:lastDrinkPatch.observedAt};
+   data={status:"updated"};
+  }else {code=405;data={error:"METHOD_NOT_ALLOWED"};}
+ }
+ else if(path==="/api/mvp/meals"||path==="/api/mvp/outings")data={entries:[]};
  else {code=404;data={error:"SYNTHETIC_UNHANDLED"};}
  await cmd("Fetch.fulfillRequest",{requestId:p.requestId,responseCode:code,responseHeaders:[{name:"content-type",value:"application/json"}],body:encode(data)});
 }
@@ -146,11 +166,63 @@ try{
  assert.equal(normal,1,"normal import uses distinct v1 endpoint");
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
  await wait(()=>contains("ログイン設定（Android UAT）"),"passkey settings");
+ // Android Chrome-like 390px touch viewport: both cup fields must permit clearing
+ // the current value without immediately replacing it with "0".
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#record"});
+ await wait(()=>js("Boolean(document.querySelector('#drink-cups-new'))"),"drink form mounted");
+ const cupSettings=await js("(()=>{const x=document.querySelector('#drink-cups-new');return {type:x.type,keyboard:x.inputMode,size:Math.round(x.getBoundingClientRect().height),font:getComputedStyle(x).fontSize,value:x.value}})()");
+ assert.deepEqual(cupSettings,{type:"text",keyboard:"numeric",size:48,font:"16px",value:"1"});
+ const selected=await js("(()=>{const x=document.querySelector('#drink-cups-new');x.focus();x.click();return [x.selectionStart,x.selectionEnd]})()");
+ assert.deepEqual(selected,[0,1],"new cup existing value must be selected on focus");
+ async function backspace(){
+  await cmd("Input.dispatchKeyEvent",{type:"keyDown",key:"Backspace",code:"Backspace",windowsVirtualKeyCode:8});
+  await cmd("Input.dispatchKeyEvent",{type:"keyUp",key:"Backspace",code:"Backspace",windowsVirtualKeyCode:8});
+ }
+ async function cupInput(id,value){
+  await js("document.querySelector("+JSON.stringify(id)+").select()");
+  await cmd("Input.insertText",{text:value});
+  await wait(()=>js("document.querySelector("+JSON.stringify(id)+").value==="+JSON.stringify(value)),
+    "cup text "+id+"="+value);
+ }
+ await backspace();
+ await wait(()=>js("document.querySelector('#drink-cups-new').value===''"),"new cup clears to empty");
+ assert.equal(await js("document.querySelector('#drink-cups-new').getAttribute('aria-invalid')"),"true");
+ assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('杯数を入力')&&!x.disabled)"),false);
+ await cmd("Input.insertText",{text:"0"});
+ await wait(()=>js("document.querySelector('#drink-cups-new').value==='0'"),"new cup invalid zero");
+ assert.equal(await js("document.querySelector('#drink-cups-new').getAttribute('aria-invalid')"),"true");
+ await cupInput("#drink-cups-new","51");
+ assert.equal(await js("document.querySelector('#drink-cups-new').getAttribute('aria-invalid')"),"true");
+ await cupInput("#drink-cups-new","7");
+ await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('ハイボールを7杯記録')&&!x.disabled)"),"valid cups save enabled");
+ await click("ハイボールを7杯記録");
+ await wait(()=>lastDrinkPost?.cups===7,"POST numeric cups");
+ assert.equal(typeof lastDrinkPost.cups,"number");
+ await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic record listed");
+ assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('過去30日の飲酒記録を確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
+ await click("訂正");
+ await wait(()=>js("Boolean(document.querySelector('#drink-cups-edit'))"),"edit cup form");
+ const editSettings=await js("(()=>{const x=document.querySelector('#drink-cups-edit');x.focus();x.click();return {type:x.type,keyboard:x.inputMode,value:x.value,selected:[x.selectionStart,x.selectionEnd]}})()");
+ assert.deepEqual(editSettings,{type:"text",keyboard:"numeric",value:"7",selected:[0,1]});
+ await backspace();
+ await wait(()=>js("document.querySelector('#drink-cups-edit').value===''"),"edit cups remains empty");
+ assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),false);
+ await cupInput("#drink-cups-edit","51");
+ assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),false);
+ await cupInput("#drink-cups-edit","4");
+ await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),"edit cups valid");
+ await click("訂正を保存");
+ await wait(()=>lastDrinkPatch?.cups===4,"PATCH numeric cups");
+ assert.equal(typeof lastDrinkPatch.cups,"number");
+ assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"drink form 390px overflow");
+ assert.equal(await js("window.innerWidth"),390);
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
  assert.deepEqual([...blockedRemoteOrigins],[],"Chrome tried to request a non-local host");
  console.log(JSON.stringify({result:"PASS",browser:"Chromium",viewport:390,
   verified:["React UI","file picker","normal import isolation","preview","conflict",
-   "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI","no overflow"],
+   "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
+   "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
+   "POST number cups","edit empty/51 blocked","PATCH number cups","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
