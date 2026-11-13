@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
   drinkVariant, storedDrinkKind, equivalentNormalServings, pureAlcoholGrams,
-  isDrinkKind, isDrinkSize, referenceMl, validDrinkAmounts,
+  isDrinkKind, isDrinkSize, parseDrinkCupsInput, referenceMl, validDrinkAmounts,
 } from "../src/shared/drink-measures";
 
+describe("Android numeric keyboard: cup text draft and save-time validation",()=>{
+  it("keeps empty input invalid instead of normalizing it to zero",()=>{
+    expect(parseDrinkCupsInput("")).toBeNull();
+    expect(parseDrinkCupsInput("0")).toBeNull();
+    expect(parseDrinkCupsInput("00")).toBeNull();
+  });
+  it("accepts only complete integer glasses in the inclusive range 1–50",()=>{
+    for(const [raw,want] of [["1",1],["5",5],["10",10],["50",50],["07",7]] as const){
+      expect(parseDrinkCupsInput(raw)).toBe(want);
+      expect(validDrinkAmounts("highball",parseDrinkCupsInput(raw),350,null)).toBe(true);
+    }
+    for(const raw of ["51","99","-1","1.5","1e1","1 "," 1","abc","７","5杯"]){
+      expect(parseDrinkCupsInput(raw)).toBeNull();
+      expect(validDrinkAmounts("highball",parseDrinkCupsInput(raw),350,null)).toBe(false);
+    }
+  });
+});
 describe("drink volume and pure alcohol quantity (synthetic only)",()=>{
   it("distinguishes ordered cups from relative 350ml reference serves",()=>{
     expect(equivalentNormalServings({cups:2,volumeMl:referenceMl.mega})).toBe(4);
