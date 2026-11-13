@@ -130,7 +130,7 @@ footer{color:#7a8c8f;font-size:.74rem;margin:36px 0 0}
   background:#fff;color:var(--ink);border:1px solid #a8bdbc;border-radius:11px;min-height:44px;padding:9px 12px;max-width:100%
 }
 /* Android Chrome: 16px prevents focus zoom; 48px touch target for cup editing. */
-.drinks-panel input.drink-cups-input{font-size:16px;min-height:48px;touch-action:manipulation}
+.panel.drinks-panel input.drink-cups-input{font-size:16px;min-height:48px;touch-action:manipulation}
 .drinks-panel input.drink-cups-input[aria-invalid=true]{border-color:#b4534c}
 .panel input[type=file]{max-width:100%;font-size:.85rem}
 .panel input[type=file]::file-selector-button{min-height:42px;border:1px solid #bbd5d0;border-radius:10px;background:var(--soft);color:#075b57;padding:8px 12px;margin-right:8px;font-weight:700}
