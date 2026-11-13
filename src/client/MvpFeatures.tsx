@@ -312,6 +312,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
           type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} autoComplete="off"
           value={drinkCups} disabled={drinksBusy} aria-invalid={drinkCupCount===null}
           onFocus={e=>e.currentTarget.select()}
+          onClick={e=>e.currentTarget.select()}
           onChange={e=>setDrinkCups(e.target.value)}/></label>
       </div>
       <details className="sub-details">
@@ -365,6 +366,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} autoComplete="off"
             value={editCups} aria-invalid={editCupCount===null}
             onFocus={e=>e.currentTarget.select()}
+            onClick={e=>e.currentTarget.select()}
             onChange={e=>setEditCups(e.target.value)}/></label>
           <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
             value={editVolume} onChange={e=>setEditVolume(e.target.value)}/></label>
