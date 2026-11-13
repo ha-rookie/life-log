@@ -172,7 +172,7 @@ try{
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-new'))"),"drink form mounted");
  const cupSettings=await js("(()=>{const x=document.querySelector('#drink-cups-new');return {type:x.type,keyboard:x.inputMode,size:Math.round(x.getBoundingClientRect().height),font:getComputedStyle(x).fontSize,value:x.value}})()");
  assert.deepEqual(cupSettings,{type:"text",keyboard:"numeric",size:48,font:"16px",value:"1"});
- const selected=await js("(()=>{const x=document.querySelector('#drink-cups-new');x.focus();return [x.selectionStart,x.selectionEnd]})()");
+ const selected=await js("(()=>{const x=document.querySelector('#drink-cups-new');x.focus();x.click();return [x.selectionStart,x.selectionEnd]})()");
  assert.deepEqual(selected,[0,1],"new cup existing value must be selected on focus");
  async function backspace(){
   await cmd("Input.dispatchKeyEvent",{type:"keyDown",key:"Backspace",code:"Backspace",windowsVirtualKeyCode:8});
@@ -202,7 +202,7 @@ try{
  assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('過去30日の飲酒記録を確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
  await click("訂正");
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-edit'))"),"edit cup form");
- const editSettings=await js("(()=>{const x=document.querySelector('#drink-cups-edit');x.focus();return {type:x.type,keyboard:x.inputMode,value:x.value,selected:[x.selectionStart,x.selectionEnd]}})()");
+ const editSettings=await js("(()=>{const x=document.querySelector('#drink-cups-edit');x.focus();x.click();return {type:x.type,keyboard:x.inputMode,value:x.value,selected:[x.selectionStart,x.selectionEnd]}})()");
  assert.deepEqual(editSettings,{type:"text",keyboard:"numeric",value:"7",selected:[0,1]});
  await backspace();
  await wait(()=>js("document.querySelector('#drink-cups-edit').value===''"),"edit cups remains empty");
