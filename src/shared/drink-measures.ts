@@ -31,6 +31,14 @@ export function storedDrinkKind(kind:DrinkKind):StoredDrinkKind{
 export function drinkVariant(kind:DrinkKind):"beer"|null{
   return kind==="beer"?"beer":null;
 }
+/** UI-only: keep the raw text while editing; convert only complete integer input.
+ * Never treat a cleared field as zero or silently clamp an invalid cup count.
+ */
+export function parseDrinkCupsInput(raw:string):number|null{
+  if(!/^[0-9]{1,2}$/.test(raw))return null;
+  const cups=Number(raw);
+  return cups>=1&&cups<=50?cups:null;
+}
 export function validDrinkAmounts(kind:DrinkKind,cups:unknown,volumeMl:unknown,abvPct:unknown):boolean{
   if(!Number.isInteger(cups)||(cups as number)<1||(cups as number)>50)return false;
   if(volumeMl!==null&&(typeof volumeMl!=="number"||!Number.isFinite(volumeMl)||
