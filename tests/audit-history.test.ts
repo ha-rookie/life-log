@@ -6,6 +6,7 @@ import { handleAuditHistory } from "../src/worker/audit-history";
 import { handleImport } from "../src/worker/import";
 import type { ImportDb, Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
+import { normalizeOfficialCsv } from "../src/shared/source-adapter";
 
 interface LocalStatement extends Statement { bind(...values:unknown[]):LocalStatement;run():Promise<unknown> }
 interface LocalDb extends ImportDb {prepare(sql:string):LocalStatement}
@@ -60,6 +61,52 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect(spy.prepare).not.toHaveBeenCalled();
     expect(spy.batch).not.toHaveBeenCalled();
   });
+  it("Japanese lifestyle canonical chunks retain strict one-row/one-audit cardinality and detect missing audit",async()=>{
+    const original="\uFEFF歩数,飲酒,日付,体重_kg,測定時刻\r\n"+
+      "0,1,2026/01/02,,\r\n"+
+      ",0,2026/01/03,,\r\n"+
+      "6500,,2026/01/04,,\r\n";
+    const normalized=normalizeOfficialCsv("lifestyle",original);
+    expect(normalized.parts).toHaveLength(1);
+    const canonical=normalized.parts[0];
+    const request=()=>new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle",csv:canonical,hash:awaitDigest,confirmed:true})
+    });
+    const awaitDigest=await hash(canonical);
+    const first=await handleImport(request(),db,"owner");
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({inserted:3,skipped:0,auditStatus:"complete"});
+    const list=await get(db);
+    expect(list.code).toBe(200);
+    expect(list.body.jobs).toHaveLength(1);
+    expect(list.body.jobs[0]).toMatchObject({
+      source:"lifestyle",auditStatus:"available",auditCount:3,insertedRecords:3
+    });
+    const job=list.body.jobs[0].id as string;
+    const detail=await get(db,"/"+job);
+    expect(detail.body.job).toMatchObject({auditStatus:"available",counts:{inserted:3,conflict:0}});
+    expect(detail.body.rows.map((r:{result:string;values:unknown})=>[r.result,r.values])).toEqual([
+      ["inserted",{drinkingPresence:1,drinkCups:null,steps:0}],
+      ["inserted",{drinkingPresence:0,drinkCups:0,steps:null}],
+      ["inserted",{drinkingPresence:null,drinkCups:null,steps:6500}]
+    ]);
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM body_measurements")
+      .first<{n:number}>())?.n).toBe(0);
+    const again=await handleImport(request(),db,"owner");
+    expect(again.status).toBe(200);
+    expect((await get(db)).body.jobs).toHaveLength(1);
+    // Removing a genuine inserted row audit must still fail the verified readback.
+    const realId="owner:lifestyle:"+awaitDigest;
+    await db.prepare("DELETE FROM import_row_audit WHERE import_job_id=? AND source_row_number=?")
+      .bind(realId,3).run();
+    const after=await get(db,"/"+job);
+    expect(after.body.job).toMatchObject({auditStatus:"incomplete",counts:null});
+    expect((await get(db)).body.jobs[0]).toMatchObject({
+      auditStatus:"incomplete",auditCount:2,insertedRecords:3
+    });
+  },100_000);
+
   it("reports Fit CSV corrections separately and preserves prior job audit provenance",async()=>{
     const importFit=async(csv:string)=>{
       const req=new Request("https://example.invalid/api/import/confirm",{
