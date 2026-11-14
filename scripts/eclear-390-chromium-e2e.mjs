@@ -111,7 +111,41 @@ async function intercept(p){
    data={status:"updated"};
   }else {code=405;data={error:"METHOD_NOT_ALLOWED"};}
  }
- else if(path==="/api/mvp/experiments")data={experiments:[]};
+ else if(path==="/api/mvp/experiments")data={experiments:[{
+   id:"00000000-0000-4000-8000-000000000015",statement:"合成：散歩の実験",
+   supportText:"記録を比較",counterText:"欠測もある",unknownText:"因果関係",
+   status:"active",startsOn:new Date(Date.now()+9*3600000-8*86400000).toISOString().slice(0,10),
+   endsOn:new Date(Date.now()+9*3600000+7*86400000).toISOString().slice(0,10),
+   targetAction:"夜に散歩",outcomeText:null,decision:null
+ }]};
+ else if(path==="/api/mvp/experiments/evidence"){
+   assert.equal(url.searchParams.get("id"),"00000000-0000-4000-8000-000000000015");
+   const today=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+   const beforeFrom=new Date(Date.now()+9*3600000-17*86400000).toISOString().slice(0,10);
+   const beforeTo=new Date(Date.now()+9*3600000-9*86400000).toISOString().slice(0,10);
+   const duringFrom=new Date(Date.now()+9*3600000-8*86400000).toISOString().slice(0,10);
+   const period=(from,to,observed)=>({
+     from,to,calendarDays:9,
+     weight:{startDay:observed?from:null,startKg:observed?78:null,
+       startMeasuredAt:observed?from+"T08:00:00+09:00":null,startSource:observed?"eclear":null,
+       endDay:observed?to:null,endKg:observed?77:null,
+       endMeasuredAt:observed?to+"T08:00:00+09:00":null,endSource:observed?"eclear":null,
+       deltaKg:observed?-1:null,observedDays:observed?5:1,missingDays:observed?4:8,
+       lastSevenMeanKg:observed?77.5:null,lastSevenObservedDays:observed?5:1,lastSevenWindowDays:7},
+     steps:{mean:observed?5000:null,observedDays:observed?5:0,
+       missingDays:observed?4:9,zeroDays:0,sources:observed?["google_fit"]:[]},
+     drinking:{observedDays:observed?3:0,drinkingDays:observed?1:0,nondrinkingDays:observed?2:0,
+       missingDays:observed?6:9,recordedAlcoholCups:0,recordedNonAlcoholCups:0,
+       cupEntryCount:0,knownAlcoholG:0,unknownAlcoholCups:0},
+     meals:{lateMealDays:0,lateMealObservedDays:0,observedLunchDays:0,observedDinnerDays:0,
+       restaurantLunchDays:0,restaurantDinnerDays:0,takeoutLunchDays:0,takeoutDinnerDays:0},
+     outings:{visits:0,work:0,bar:0,other:0}
+   });
+   data={id:"00000000-0000-4000-8000-000000000015",status:"in_progress",asOf:today,
+     plannedFrom:duringFrom,plannedTo:new Date(Date.now()+9*3600000+7*86400000).toISOString().slice(0,10),
+     before:period(beforeFrom,beforeTo,true),during:period(duringFrom,today,false),
+     disclaimer:"合成データ：因果判定を自動化しません"};
+ }
  else if(path==="/api/mvp/compare"){
    const q=url.searchParams;
    const summary=(from,to,observed)=>({
@@ -386,6 +420,20 @@ try{
  assert(await contains("夜：観測 1日・不明 14日"),"observed and missing dinner");
  assert(await js("(()=>{const b=document.querySelector('.mvp-periods section:nth-child(2)');return Boolean(b&&b.innerText.includes('観測なし')&&b.innerText.includes('不明 15日'))})()"),
    "empty period has no fabricated Fit source or nondrinking days");
+ // M07: the plan's own button must load matched evidence, not predict future outcomes
+ // or auto-write a user verdict; both lack of data and qualified 7-day mean are visible.
+ await wait(()=>contains("合成：散歩の実験"),"synthetic registered plan shown");
+ await click("この実験の前後を比較");
+ await wait(()=>contains("開始前と実行期間の比較"),"M07 evidence panel loaded");
+ assert(await contains("実行中（途中経過）"),"future days never treated as completed");
+ assert(await contains("7日平均体重"),"qualified seven-day mean shown");
+ assert(await contains("測定不足（7日中4日以上が必要）"),"insufficient data is NULL");
+ assert(await contains("77.5 kg"),"qualified observed mean shown");
+ assert(await contains("飲酒あり・なし・不明"),"actual drinking vs missing included");
+ assert(await contains("記録がない杯数は推定しません"),"historical yes does not imply 1 cup");
+ assert(await contains("最終判定は本人が行います"),"no automatic decision");
+ assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
+   "390px evidence panel overflow");
  // Editing a date must immediately hide stale evidence until re-comparing.
  await js("(()=>{const el=document.querySelector('#compare-title').closest('section').querySelector('input[type=date]');"+
   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
@@ -402,7 +450,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","stale compare cleared","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

@@ -261,6 +261,101 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
    id:one,decision:"stop",outcomeText:"retry"
   })).status).toBe(409);
  });
+ it("computes Owner-scoped matched elapsed experiment and baseline windows with qualified 7-day weight means",async()=>{
+  const plan={id:one,statement:"Synthetic test: daily walks",targetAction:"Walk after dinner",
+    startsOn:day(8),endsOn:day(-7),supportText:"prior records",counterText:"missing days",unknownText:"other factors"};
+  expect((await call(db,"/api/mvp/experiments","POST",plan)).status).toBe(200);
+  const insertWeight=async(ago:number,kg:number,source:string,id:string,owner="owner")=>
+    db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+      "VALUES(?,?,?,?,?,?,?)").bind(id,owner,time(ago),kg,source,id,"measured").run();
+  // Before: nine JST days, last seven have 4 reliable ECLEAR days -> 79.5kg mean.
+  for(const [ago,kg] of [[15,80],[14,81],[13,79],[12,78]] as const)
+    await insertWeight(ago,kg,"eclear","before-"+ago);
+  // During: first 9 days of a longer plan, last seven contain 4 ECLEAR measurements.
+  for(const [ago,kg] of [[8,90],[6,77],[5,76],[4,76.5],[3,75]] as const)
+    await insertWeight(ago,kg,"csv:eclear","after-"+ago);
+  await insertWeight(6,140,"manual:weight","conflicting-manual");
+  await insertWeight(5,200,"eclear","other-owner","other");
+  const insertStep=async(ago:number,n:number,source:string,id:string)=>
+    db.prepare("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key) VALUES(?,?,?,?,?,?)")
+      .bind(id,"owner",day(ago),n,source,id).run();
+  await insertStep(6,0,"google_fit","fit-zero");
+  await insertStep(6,9999,"manual:steps","manual-conflict");
+  await insertStep(5,3000,"fit","fit-nonzero");
+  await db.prepare("INSERT INTO lifestyle_days(owner_id,local_day,drinking_presence,drink_cups,source_id,source_row_key) "+
+    "VALUES (?,?,?,?,?,?)").bind("owner",day(15),1,null,"csv","drank-but-no-cups").run();
+  await db.prepare("INSERT INTO lifestyle_days(owner_id,local_day,drinking_presence,drink_cups,source_id,source_row_key) "+
+    "VALUES (?,?,?,?,?,?)").bind("owner",day(5),0,0,"csv","confirmed-sober").run();
+  const reply=await call(db,"/api/mvp/experiments/evidence?id="+one);
+  expect(reply.status).toBe(200);
+  expect(reply.headers.get("Cache-Control")).toContain("no-store");
+  const out=await reply.json() as any;
+  expect(out).toMatchObject({id:one,status:"in_progress",asOf:day(0),
+    plannedFrom:day(8),plannedTo:day(-7),
+    before:{from:day(17),to:day(9),calendarDays:9},
+    during:{from:day(8),to:day(0),calendarDays:9}});
+  expect(out.before.weight).toMatchObject({lastSevenWindowDays:7,
+    lastSevenObservedDays:4,lastSevenMeanKg:79.5});
+  expect(out.during.weight).toMatchObject({lastSevenWindowDays:7,
+    lastSevenObservedDays:4,lastSevenMeanKg:76.13,startKg:90,observedDays:5});
+  expect(out.during.steps).toMatchObject({mean:1500,zeroDays:1,observedDays:2,
+    sources:["google_fit","fit"]});
+  expect(out.before.drinking).toMatchObject({drinkingDays:1,nondrinkingDays:0,
+    recordedAlcoholCups:0,missingDays:8});
+  expect(out.during.drinking).toMatchObject({drinkingDays:0,nondrinkingDays:1,missingDays:8});
+  // Read-only aggregation must not write experiment decisions or any measurements.
+  expect((await db.prepare("SELECT user_decision FROM behavior_experiments WHERE id=?").bind(one)
+    .first<{user_decision:string|null}>())?.user_decision).toBeNull();
+  expect((await db.prepare("SELECT count(*) n FROM body_measurements WHERE owner_id='owner'")
+    .first<{n:number}>())?.n).toBe(10);
+  for(const path of [
+    "/api/mvp/experiments/evidence?id=bad",
+    "/api/mvp/experiments/evidence",
+    "/api/mvp/experiments/evidence?id="+one+"&owner=other",
+    "/api/mvp/experiments/evidence?id="+one+"&id="+one
+  ])expect((await call(db,path)).status).toBe(400);
+  const foreign=await handleMvpFeatures(new Request(site+"/api/mvp/experiments/evidence?id="+one),
+    db,"other",env);
+  expect(foreign.status).toBe(404);
+  expect((await call(db,"/api/mvp/experiments/evidence","POST",{id:one})).status).toBe(405);
+ });
+ it("returns no future evidence, no invented partial 7-day mean, and stops at a finished plan's actual end",async()=>{
+  const future={id:one,statement:"Future synthetic",targetAction:"Try a walk",
+    startsOn:day(-5),endsOn:day(-12)};
+  expect((await call(db,"/api/mvp/experiments","POST",future)).status).toBe(200);
+  const futureResult=await call(db,"/api/mvp/experiments/evidence?id="+one);
+  expect(futureResult.status).toBe(200);
+  expect(await futureResult.json()).toMatchObject({
+    status:"not_started",before:null,during:null,asOf:day(0)});
+  // A separate owner can register an overlapping future plan without leaking ours.
+  const resolved=await call(db,"/api/mvp/experiments","PATCH",{
+    id:one,decision:"unknown",outcomeText:"No observation yet"});
+  expect(resolved.status).toBe(200);
+  const plan={id:two,statement:"Short synthetic",targetAction:"Track a habit",
+    startsOn:day(2),endsOn:day(-6)};
+  expect((await call(db,"/api/mvp/experiments","POST",plan)).status).toBe(200);
+  await db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+    "VALUES(?,?,?,?,?,?,?)").bind("single","owner",time(0),75,"eclear","single","measured").run();
+  const partial=await (await call(db,"/api/mvp/experiments/evidence?id="+two)).json() as any;
+  expect(partial).toMatchObject({status:"in_progress",
+    before:{from:day(5),to:day(3),calendarDays:3},
+    during:{from:day(2),to:day(0),calendarDays:3,
+      weight:{observedDays:1,deltaKg:null,lastSevenWindowDays:3,
+        lastSevenObservedDays:1,lastSevenMeanKg:null}}});
+  expect(partial.before.weight.lastSevenMeanKg).toBeNull();
+  // Finished historical plans may be compared through ends_on only, never today.
+  expect((await call(db,"/api/mvp/experiments","PATCH",{
+    id:two,decision:"unknown",outcomeText:"Data not available"})).status).toBe(200);
+  const finishedId="00000000-0000-4000-8000-000000000017";
+  const ended={id:finishedId,statement:"Finished synthetic",targetAction:"Recorded trial",
+    startsOn:day(30),endsOn:day(20)};
+  expect((await call(db,"/api/mvp/experiments","POST",ended)).status).toBe(200);
+  const endedResult=await (await call(db,"/api/mvp/experiments/evidence?id="+finishedId)).json() as any;
+  expect(endedResult).toMatchObject({status:"finished",before:{from:day(41),to:day(31),calendarDays:11},
+    during:{from:day(30),to:day(20),calendarDays:11,
+      weight:{observedDays:0,lastSevenMeanKg:null}}});
+  expect(endedResult.during.weight.deltaKg).toBeNull();
+ });
  it("exports Owner-only CSV, preserving NULL separately from 0 and escaping formulas",async()=>{
   await db.prepare("INSERT INTO activity_daily(id,owner_id,local_day,steps,source_id,source_row_key) "+
    "VALUES(?,?,?,?,?,?)").bind("s0","owner",day(0),0,"manual:steps","today").run();

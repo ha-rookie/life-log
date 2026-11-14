@@ -15,7 +15,8 @@ type Experiment={id:string;statement:string;supportText:string|null;counterText:
 type Period={from:string;to:string;calendarDays:number;
   weight:{startDay:string|null;startKg:number|null;startMeasuredAt:string|null;startSource:string|null;
     endDay:string|null;endKg:number|null;endMeasuredAt:string|null;endSource:string|null;
-    deltaKg:number|null;observedDays:number;missingDays:number};
+    deltaKg:number|null;observedDays:number;missingDays:number;
+    lastSevenMeanKg:number|null;lastSevenObservedDays:number;lastSevenWindowDays:number};
   steps:{mean:number|null;observedDays:number;missingDays:number;zeroDays:number;sources:string[]};
   drinking:{observedDays:number;drinkingDays:number;nondrinkingDays:number;missingDays:number;
     recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number;
@@ -24,6 +25,8 @@ type Period={from:string;to:string;calendarDays:number;
   meals:{lateMealDays:number;lateMealObservedDays:number;observedLunchDays:number;observedDinnerDays:number;
     restaurantLunchDays:number;restaurantDinnerDays:number;takeoutLunchDays:number;takeoutDinnerDays:number}};
 type CompareResult={a:Period;b:Period;disclaimer:string};
+type ExperimentEvidence={id:string;status:"not_started"|"in_progress"|"finished";
+  asOf:string;plannedFrom:string;plannedTo:string;before:Period|null;during:Period|null;disclaimer:string};
 const names=drinkNames;
 const jstNow=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,16);
 const jstDay=()=>jstNow().slice(0,10);
@@ -90,6 +93,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const pendingOuting=useRef<string|null>(null);
   const [experimentList,setExperimentList]=useState<Experiment[]>([]);
   const [experimentError,setExperimentError]=useState("");
+  const [evidence,setEvidence]=useState<ExperimentEvidence|null>(null);
+  const [evidenceError,setEvidenceError]=useState("");
+  const [evidenceBusy,setEvidenceBusy]=useState(false);
+  const evidenceSequence=useRef(0);
   const [planBusy,setPlanBusy]=useState(false);
   const [statement,setStatement]=useState("");
   const [support,setSupport]=useState("");
@@ -310,6 +317,18 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         setComparison(null);setCompareError(e instanceof Error?e.message:"期間を比較できません。");
       }
     }finally{if(epoch===compareEpoch.current)setCompareBusy(false);}
+  }
+  async function loadExperimentEvidence(id:string){
+    const sequence=++evidenceSequence.current;
+    setEvidenceBusy(true);setEvidenceError("");setEvidence(null);
+    try{
+      const data=await jsonGet<ExperimentEvidence>(
+        "/api/mvp/experiments/evidence?"+new URLSearchParams({id}));
+      if(sequence===evidenceSequence.current)setEvidence(data);
+    }catch(e){
+      if(sequence===evidenceSequence.current)setEvidenceError(
+        e instanceof Error?e.message:"実験の比較根拠を取得できません。");
+    }finally{if(sequence===evidenceSequence.current)setEvidenceBusy(false);}
   }
   async function createPlan(e:React.FormEvent){
     e.preventDefault();if(planBusy)return;
@@ -575,6 +594,39 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         <p>{x.startsOn} ～ {x.endsOn} ／ {x.targetAction}</p>
         <p>支持：{x.supportText||"未記録"} ／ 反証：{x.counterText||"未記録"}</p>
         <p>不明点：{x.unknownText||"未記録"}</p>
+        <button type="button" disabled={evidenceBusy}
+          onClick={()=>void loadExperimentEvidence(x.id)}>この実験の前後を比較</button>
+        {evidenceBusy&&<p role="status">実測記録を照合中…</p>}
+        {evidenceError&&<p role="alert">{evidenceError}</p>}
+        {evidence?.id===x.id&&<section className="mvp-experiment-evidence" aria-label="行動実験の比較根拠">
+          <h4>開始前と実行期間の比較</h4>
+          <p className="hint">状態：{evidence.status==="not_started"?"開始前":evidence.status==="in_progress"?"実行中（途中経過）":"予定期間終了"} ／ 基準日 {evidence.asOf}</p>
+          <p className="hint">{evidence.disclaimer}</p>
+          {evidence.before&&evidence.during
+            ?<div className="mvp-periods">
+              {([["開始前",evidence.before],["実行期間",evidence.during]] as const).map(([label,p])=>
+                <section key={label}>
+                  <h5>{label}：{p.from} ～ {p.to}（{p.calendarDays}日）</h5>
+                  <dl>
+                    <dt>7日平均体重</dt><dd>{p.weight.lastSevenWindowDays<7?"対象期間が7日未満":
+                      p.weight.lastSevenMeanKg===null?"測定不足（7日中4日以上が必要）":render(p.weight.lastSevenMeanKg," kg")}
+                      （観測 {p.weight.lastSevenObservedDays}日／{p.weight.lastSevenWindowDays}日）
+                    </dd>
+                    <dt>体重変化・測定日数</dt><dd>{p.weight.deltaKg===null?"2測定日未満で算出不可":render(p.weight.deltaKg," kg")}
+                      （観測 {p.weight.observedDays}日／{p.calendarDays}日、欠測 {p.weight.missingDays}日）
+                    </dd>
+                    <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日・欠測 {p.steps.missingDays}日、出典 {p.steps.sources.join("・")||"観測なし"}）</dd>
+                    <dt>飲酒あり・なし・不明</dt><dd>{p.drinking.drinkingDays}日・{p.drinking.nondrinkingDays}日・{p.drinking.missingDays}日</dd>
+                    <dt>記録されたお酒の杯数</dt><dd>{p.drinking.recordedAlcoholCups}杯（記録がない杯数は推定しません）</dd>
+                    <dt>外食・飲みの場</dt><dd>外食 昼{p.meals.restaurantLunchDays}日／夜{p.meals.restaurantDinnerDays}日
+                      （観測 昼{p.meals.observedLunchDays}日・夜{p.meals.observedDinnerDays}日）、
+                      飲みの場 {p.outings.visits}回</dd>
+                  </dl>
+                </section>)}
+            </div>
+            :<p>開始前のため比較データはありません。未来の測定値を0として扱いません。</p>}
+          <p className="hint">体重・歩数・飲酒が一緒に変わっても、行動の因果効果とは断定しません。最終判定は本人が行います。</p>
+        </section>}
         {x.decision?<p>本人判定：{({continue:"継続",revise:"修正",stop:"終了",unknown:"不明"} as Record<string,string>)[x.decision]||x.decision}
           {x.outcomeText?" · "+x.outcomeText:""}</p>:<div>
           <label>振り返り<textarea maxLength={1200} value={outcomes[x.id]??""}
