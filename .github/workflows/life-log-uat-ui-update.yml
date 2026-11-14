@@ -115,7 +115,9 @@ jobs:
           npm run build
           npx --no-install vitest run tests/uat-ui-release-guard.test.mjs
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
-          # GET Worker settings metadata only. No remote D1 query or personal data.
+          # Fail-closed BEFORE Wrangler upload: GET live Worker settings, active deployment and version metadata.
+          # Confirm rate limiter, runtime date/flags, assets routing, D1 and every auth/secret binding identity.
+          # Unknown API fields, permissions or multi-version rollout stop here. No remote D1 request.
           node scripts/uat-ui-release-guard.mjs snapshot "$before"
           # Keep all deployed plaintext vars; omit stale config vars.
           # Cloudflare preserves existing secrets without --secrets-file.
