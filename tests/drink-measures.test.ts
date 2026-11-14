@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   drinkVariant, storedDrinkKind, equivalentNormalServings, pureAlcoholGrams,
-  isDrinkKind, isDrinkSize, parseDrinkCupsInput, parseDrinkLocalDateTime, referenceMl, validDrinkAmounts,
+  isDrinkKind, isDrinkSize, parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, referenceMl, validDrinkAmounts,
 } from "../src/shared/drink-measures";
 
 describe("Android numeric keyboard: cup text draft and save-time validation",()=>{
@@ -80,5 +80,18 @@ describe("new drink entry historical JST date/time validation",()=>{
     expect(parseDrinkLocalDateTime(inside,now)).not.toBeNull();
     expect(parseDrinkLocalDateTime("2024-02-29T19:30",Date.parse("2024-03-02T12:00:00+09:00")))
       .toBe("2024-02-29T19:30:00+09:00");
+  });
+});
+
+describe("select any older 30-day drink history without changing today's totals",()=>{
+  it("returns a strict inclusive 30-calendar-day JST window",()=>{
+    expect(drinkHistoryRange("2026-09-30","2026-11-14")).toEqual({from:"2026-09-01",to:"2026-09-30"});
+    expect(drinkHistoryRange("2024-03-01","2026-11-14")).toEqual({from:"2024-02-01",to:"2024-03-01"});
+    expect(drinkHistoryRange("2026-11-14","2026-11-14")).toEqual({from:"2026-10-16",to:"2026-11-14"});
+  });
+  it("rejects impossible, empty and future end dates",()=>{
+    for(const value of ["","2026-02-30","2026-13-01","2026-11-15","2026-11-14T12:00"]){
+      expect(drinkHistoryRange(value,"2026-11-14")).toBeNull();
+    }
   });
 });

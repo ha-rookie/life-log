@@ -48,6 +48,13 @@ export function parseDrinkLocalDateTime(local:string,nowMs=Date.now()):string|nu
   if(new Date(epoch+9*3600000).toISOString().slice(0,16)!==local)return null;
   return observed;
 }
+/** Validates the selected history end day, without conflating it with today's totals. */
+export function drinkHistoryRange(to:string,today:string):{from:string;to:string}|null{
+  const validDay=(s:string)=>/^\d{4}-\d{2}-\d{2}$/.test(s)&&Number.isFinite(Date.parse(s+"T00:00:00Z"))&&
+    new Date(Date.parse(s+"T00:00:00Z")).toISOString().slice(0,10)===s;
+  if(!validDay(to)||!validDay(today)||to>today)return null;
+  return {from:new Date(Date.parse(to+"T00:00:00Z")-29*86400000).toISOString().slice(0,10),to};
+}
 export function validDrinkAmounts(kind:DrinkKind,cups:unknown,volumeMl:unknown,abvPct:unknown):boolean{
   if(!Number.isInteger(cups)||(cups as number)<1||(cups as number)>50)return false;
   if(volumeMl!==null&&(typeof volumeMl!=="number"||!Number.isFinite(volumeMl)||
