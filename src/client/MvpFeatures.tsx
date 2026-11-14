@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
-  pureAlcoholGrams, validDrinkAmounts, parseDrinkCupsInput, parseDrinkLocalDateTime, type DrinkKind, type DrinkRecord,
+  pureAlcoholGrams, validDrinkAmounts, parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, type DrinkKind, type DrinkRecord,
   type DrinkSize } from "../shared/drink-measures";
 
 type Kind=DrinkKind;
@@ -46,6 +46,11 @@ async function mutate(path:string,method:"POST"|"PUT"|"PATCH"|"DELETE",value:Rec
 }
 export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"quick"|"record"|"analysis"|"data"}){
   const [drinks,setDrinks]=useState<Drink[]>([]);
+  const [historyTo,setHistoryTo]=useState(jstDay);
+  const [historyDrinks,setHistoryDrinks]=useState<Drink[]>([]);
+  const [historyError,setHistoryError]=useState("");
+  const [historyBusy,setHistoryBusy]=useState(false);
+  const historySequence=useRef(0);
   const [drinksError,setDrinksError]=useState("");
   const [drinksBusy,setDrinksBusy]=useState(false);
   const pending=useRef<(Record<string,unknown>&{key:string})|null>(null);
@@ -103,8 +108,27 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     try{
       const r=await jsonGet<{entries:Drink[]}>("/api/mvp/drinks");
       setDrinks(r.entries);setDrinksError("");
-    }catch(e){setDrinksError(e instanceof Error?e.message:"飲酒履歴を取得できません。");}
+    }catch(e){setDrinksError(e instanceof Error?e.message:"今日の飲酒情報を取得できません。");}
   },[]);
+  const loadHistory=useCallback(async()=>{
+    const range=drinkHistoryRange(historyTo,jstDay());
+    const sequence=++historySequence.current;
+    if(!range){
+      setHistoryError("終了日を確認してください。未来の日付は指定できません。");
+      setHistoryDrinks([]);setHistoryBusy(false);return;
+    }
+    setHistoryBusy(true);setHistoryError("");
+    try{
+      const query=new URLSearchParams(range).toString();
+      const r=await jsonGet<{entries:Drink[]}>("/api/mvp/drinks?"+query);
+      if(sequence===historySequence.current)setHistoryDrinks(r.entries);
+    }catch(e){
+      if(sequence===historySequence.current){
+        setHistoryDrinks([]);
+        setHistoryError(e instanceof Error?e.message:"選択した期間の飲酒履歴を取得できません。");
+      }
+    }finally{if(sequence===historySequence.current)setHistoryBusy(false);}
+  },[historyTo]);
   const loadExperiments=useCallback(async()=>{
     try{
       const r=await jsonGet<{experiments:Experiment[]}>("/api/mvp/experiments");
@@ -112,6 +136,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     }catch(e){setExperimentError(e instanceof Error?e.message:"行動計画を取得できません。");}
   },[]);
   useEffect(()=>{if(mode==="quick"||mode==="record")void loadDrinks();if(mode==="analysis")void loadExperiments();},[loadDrinks,loadExperiments,mode]);
+  useEffect(()=>{
+    if(mode==="record")void loadHistory();
+    return ()=>{historySequence.current+=1;};
+  },[mode,loadHistory]);
   const loadMeals=useCallback(async()=>{
     try{
       const res=await jsonGet<{entries:Meal[]}>("/api/mvp/meals");
@@ -132,6 +160,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     setMealLate(row?.lateMeal===null||row?.lateMeal===undefined?"":String(row.lateMeal));
   },[meals,mealDay]);
 
+  const historyRange=drinkHistoryRange(historyTo,jstDay());
   const todayDrinks=drinks.filter(d=>localTime(d.observedAt).slice(0,10)===jstDay());
   const todayAlcohol=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>n+d.cups,0);
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
@@ -156,6 +185,13 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     if(editingRecord){setEditSize(size);setEditVolume(next);}
     else{setDrinkSize(size);setDrinkVolume(next);}
   }
+  async function refreshDrinks(selectedDay=historyTo){
+    await loadDrinks();
+    if(mode==="record"){
+      if(selectedDay!==historyTo)setHistoryTo(selectedDay);
+      else await loadHistory();
+    }
+  }
   async function addDrink(){
     const observedAt=parseDrinkLocalDateTime(drinkTime);
     if(drinksBusy||!drinkAmountValid||drinkCupCount===null||observedAt===null)return;
@@ -166,9 +202,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     };
     try{
       await mutate("/api/mvp/drinks","POST",pending.current);
-      pending.current=null;await loadDrinks();onSaved();
+      pending.current=null;await refreshDrinks(observedAt.slice(0,10));onSaved();
     }catch(e){
-      await loadDrinks();
+      await refreshDrinks();
       setDrinksError(e instanceof Error?e.message:"通信結果が不明です。同じ内容で再試行してください。");
     }finally{setDrinksBusy(false);}
   }
@@ -189,8 +225,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         expectedCups:editing.cups,expectedSize:editing.size,
         expectedVolumeMl:editing.volumeMl,expectedAbvPct:editing.abvPct
       });
-      setEditing(null);await loadDrinks();onSaved();
-    }catch(e){await loadDrinks();setDrinksError(e instanceof Error?e.message:"訂正できませんでした。");}
+      setEditing(null);await refreshDrinks(editTime.slice(0,10));onSaved();
+    }catch(e){await refreshDrinks();setDrinksError(e instanceof Error?e.message:"訂正できませんでした。");}
     finally{setDrinksBusy(false);}
   }
   async function removeDrink(d:Drink){
@@ -199,8 +235,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     try{
       await mutate("/api/mvp/drinks","DELETE",{key:d.key,expectedObservedAt:d.observedAt,expectedKind:d.kind});
       if(editing?.key===d.key)setEditing(null);
-      await loadDrinks();onSaved();
-    }catch(e){await loadDrinks();setDrinksError(e instanceof Error?e.message:"取消できませんでした。");}
+      await refreshDrinks();onSaved();
+    }catch(e){await refreshDrinks();setDrinksError(e instanceof Error?e.message:"取消できませんでした。");}
     finally{setDrinksBusy(false);}
   }
   async function saveMeal(){
@@ -348,12 +384,23 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       </button>
       {!drinkAmountValid&&<p role="alert">杯数・容量・度数を確認してください。ノンアルは度数を空欄にしてください。</p>}
       {drinkTimeObserved===null&&<p role="alert">飲んだ日時を確認してください。過去366日以内で、未来の日時は登録できません。</p>}
-      {mode==="record"&&<button type="button" disabled={drinksBusy} onClick={()=>void loadDrinks()}>飲酒履歴を更新</button>}
+      {mode==="record"&&<button type="button" disabled={drinksBusy||historyBusy} onClick={()=>void refreshDrinks()}>飲酒履歴を更新</button>}
       {drinksError&&<p role="alert">{drinksError}</p>}
-      {mode==="record"&&<details className="sub-details"><summary>過去30日の飲酒記録を確認・訂正する</summary>
-        <h3>直近30日の記録</h3>
-        {drinks.length===0&&<p className="hint">まだ飲酒の個別記録はありません。</p>}
-        <ul>{drinks.map(d=><li key={d.key} className="mvp-entry">
+      {mode==="record"&&<details className="sub-details"><summary>飲酒履歴を期間指定して確認・訂正する</summary>
+        <h3>飲酒履歴（30日単位）</h3>
+        <div className="mvp-grid">
+          <label>履歴の終了日（日本時間）<input id="drink-history-to" type="date"
+            value={historyTo} max={jstDay()} disabled={drinksBusy}
+            aria-invalid={historyRange===null}
+            onChange={e=>{setEditing(null);setHistoryTo(e.target.value);}}/></label>
+          <button type="button" onClick={()=>{setEditing(null);setHistoryTo(jstDay());}}
+            disabled={drinksBusy}>直近30日へ戻る</button>
+        </div>
+        {historyRange&&<p className="hint">表示期間：{historyRange.from} 〜 {historyRange.to}（30日間）</p>}
+        {historyBusy&&<p role="status">履歴を取得中…</p>}
+        {historyError&&<p role="alert">{historyError}</p>}
+        {!historyBusy&&!historyError&&historyDrinks.length===0&&<p className="hint">選択した期間に飲酒記録はありません。</p>}
+        <ul>{historyDrinks.map(d=><li key={d.key} className="mvp-entry">
           <span>{localTime(d.observedAt).replace("T"," ")} · {names[d.kind]} {d.cups}杯
             {d.size?" · "+sizeNames[d.size]:""}
             {d.volumeMl===null?" · 容量不明":" · "+d.volumeMl+"ml/杯"}

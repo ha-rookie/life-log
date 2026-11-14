@@ -14,7 +14,7 @@ await writeFile(fixture,[
 ].join("\n"));
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
-let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null;
+let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null;
 const pending=new Map();
 const calls=[];
 const blockedRemoteOrigins=new Set();
@@ -59,7 +59,16 @@ async function intercept(p){
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
  else if(path==="/api/mvp/drinks"){
   const method=p.request.method;
-  if(method==="GET")data={entries:syntheticDrink?[syntheticDrink]:[]};
+  if(method==="GET"){
+    // Mirror the server's bounded JST day filters, including the default last 30 days.
+    const today=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+    const from=url.searchParams.get("from")??
+      new Date(Date.parse(today+"T00:00:00Z")-29*86400000).toISOString().slice(0,10);
+    const to=url.searchParams.get("to")??today;
+    if(url.searchParams.has("from"))lastHistoryQuery={from,to};
+    const day=syntheticDrink?.observedAt?.slice(0,10);
+    data={entries:syntheticDrink&&day>=from&&day<=to?[syntheticDrink]:[]};
+   }
   else if(method==="POST"){
    lastDrinkPost=JSON.parse(p.request.postData??"{}");
    assert.equal(typeof lastDrinkPost.cups,"number","POST cups must remain numeric");
@@ -195,7 +204,7 @@ try{
  assert.equal(await js("document.querySelector('#drink-cups-new').getAttribute('aria-invalid')"),"true");
  await cupInput("#drink-cups-new","7");
  // Past entries must be created at the selected JST time, not submission time.
- const historicDay=new Date(Date.now()+9*3600000-2*86400000).toISOString().slice(0,10);
+ const historicDay=new Date(Date.now()+9*3600000-45*86400000).toISOString().slice(0,10);
  const historicLocal=historicDay+"T20:30";
  const futureLocal=new Date(Date.now()+9*3600000+86400000).toISOString().slice(0,16);
  async function chooseDrinkTime(value){
@@ -220,7 +229,12 @@ try{
  await wait(()=>lastDrinkPost?.cups===7,"POST numeric cups");
  assert.equal(typeof lastDrinkPost.cups,"number");
  assert.equal(lastDrinkPost.observedAt,historicLocal+":00+09:00","POST must use selected JST historical time");
- await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic record listed");
+ await wait(()=>js("document.querySelector('#drink-history-to').value==="+JSON.stringify(historicDay)),
+  "history automatically follows backdated POST");
+ await wait(()=>lastHistoryQuery?.to===historicDay,"history request uses historic end date");
+ assert.equal(await js("document.body.innerText.includes('注文した杯数：お酒 0 杯 ／ ノンアル 0 杯')"),true,
+  "historical browsing must not corrupt today's drink totals");
+ await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic old record listed");
  assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('過去30日の飲酒記録を確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
  await click("訂正");
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-edit'))"),"edit cup form");
@@ -244,7 +258,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
