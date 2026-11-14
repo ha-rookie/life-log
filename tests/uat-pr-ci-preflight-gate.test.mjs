@@ -1,4 +1,4 @@
-import test from "node:test";
+import {it} from "vitest";
 import assert from "node:assert/strict";
 import {evaluateEligibility,verifyFromGitHub} from "../scripts/uat-pr-ci-preflight-gate.mjs";
 
@@ -25,11 +25,11 @@ function fixture(){
   return {source,main,prs:[pr],prFiles,jobs,history,upstreamId:900,
     upstreamHeadSha:HEAD,trustedSha:MAIN,downstreamRunId:1000,downstreamAttempt:1};
 }
-test("owner PR complete CI -> trusted-main metadata eligible (no PR artifacts)",()=>{
+it("owner PR complete CI -> trusted-main metadata eligible (no PR artifacts)",()=>{
   assert.deepEqual(evaluateEligibility(fixture()),{eligible:true,sourceRunId:900,
     sourceHeadSha:HEAD,prNumber:172,mainSha:MAIN});
 });
-test("fail closed on untrusted upstream event, workflow, actor, fork, or rerun",()=>{
+it("fail closed on untrusted upstream event, workflow, actor, fork, or rerun",()=>{
   const cases=[
     x=>x.source.event="push",
     x=>x.source.name="Another workflow",
@@ -46,7 +46,7 @@ test("fail closed on untrusted upstream event, workflow, actor, fork, or rerun",
   for(const change of cases){const x=fixture();change(x);
     assert.throws(()=>evaluateEligibility(x));}
 });
-test("fail closed on PR HEAD/base/main race or external/closed/draft PR",()=>{
+it("fail closed on PR HEAD/base/main race or external/closed/draft PR",()=>{
   const cases=[
     x=>x.main.object.sha="a".repeat(40),
     x=>x.main.ref="refs/heads/feature",
@@ -66,7 +66,7 @@ test("fail closed on PR HEAD/base/main race or external/closed/draft PR",()=>{
   for(const change of cases){const x=fixture();change(x);
     assert.throws(()=>evaluateEligibility(x));}
 });
-test("deny PR changes to CI, guard, secrets/config/schema and truncated pagination",()=>{
+it("deny PR changes to CI, guard, secrets/config/schema and truncated pagination",()=>{
   for(const name of [".github/workflows/life-log-ci.yml",
     ".github/workflows/evil.yml","scripts/uat-readonly-preflight.mjs",
     "migrations/0005.sql","src/worker/index.ts","wrangler.jsonc",
@@ -82,7 +82,7 @@ test("deny PR changes to CI, guard, secrets/config/schema and truncated paginati
   ]){const x=fixture();try{change(x);}catch{continue;}
     assert.throws(()=>evaluateEligibility(x));}
 });
-test("CI must have exact three successful jobs from original upstream run",()=>{
+it("CI must have exact three successful jobs from original upstream run",()=>{
   for(const change of [
     x=>x.jobs.total_count=4,
     x=>x.jobs.total_count=2,
@@ -94,7 +94,7 @@ test("CI must have exact three successful jobs from original upstream run",()=>{
     x=>x.jobs.jobs[1].name="untrusted"
   ]){const x=fixture();change(x);assert.throws(()=>evaluateEligibility(x));}
 });
-test("run-attempt and duplicate source IDs cannot cause a second metadata GET",()=>{
+it("run-attempt and duplicate source IDs cannot cause a second metadata GET",()=>{
   for(const change of [
     x=>x.downstreamAttempt=2,
     x=>x.history.push({id:999,display_title:"UAT GET-only source-900",
@@ -105,7 +105,7 @@ test("run-attempt and duplicate source IDs cannot cause a second metadata GET",(
     x=>x.downstreamRunId=900
   ]){const x=fixture();change(x);assert.throws(()=>evaluateEligibility(x));}
 });
-test("GitHub fetches fixed GET endpoints only and does not need PR-run pull_requests array",async()=>{
+it("GitHub fetches fixed GET endpoints only and does not need PR-run pull_requests array",async()=>{
   const x=fixture(),visited=[];
   const responses={
     "/actions/runs/900":x.source,
@@ -132,7 +132,7 @@ test("GitHub fetches fixed GET endpoints only and does not need PR-run pull_requ
   assert(visited.some(r=>r.path.includes("/commits/"+HEAD+"/pulls")));
   assert(!JSON.stringify(result).includes("TEST-SECRET"));
 });
-test("denies missing token and invalid IDs without making an API request",async()=>{
+it("denies missing token and invalid IDs without making an API request",async()=>{
   let count=0;
   const request=async()=>{count++;throw Error("must not GET");};
   for(const env of [
@@ -143,7 +143,7 @@ test("denies missing token and invalid IDs without making an API request",async(
   ])await assert.rejects(verifyFromGitHub({env,request}));
   assert.equal(count,0);
 });
-test("403/404/malformed JSON or inaccessible history is denied without leakage",async()=>{
+it("403/404/malformed JSON or inaccessible history is denied without leakage",async()=>{
   const env={GH_TOKEN:"x",UPSTREAM_RUN_ID:"900",UPSTREAM_HEAD_SHA:HEAD,
     TRUSTED_MAIN_SHA:MAIN,GITHUB_RUN_ID:"1000",GITHUB_RUN_ATTEMPT:"1"};
   for(const response of [

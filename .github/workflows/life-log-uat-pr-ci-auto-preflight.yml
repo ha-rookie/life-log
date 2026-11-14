@@ -37,10 +37,12 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Install pinned dependencies (no Cloudflare credentials)
+        run: npm ci --no-audit --no-fund
       - name: Synthetic PR-CI trust-boundary and replay negative tests (no Secrets)
         run: |
           node --check scripts/uat-pr-ci-preflight-gate.mjs
-          node --test tests/uat-pr-ci-preflight-gate.test.mjs
+          npx --no-install vitest run tests/uat-pr-ci-preflight-gate.test.mjs
 
   gate:
     # Upstream failure/cancellation/PR-disabled events never reach Cloudflare.
