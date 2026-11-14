@@ -151,6 +151,85 @@ describe("CSV picker automatic source recognition",()=>{
 });
 
 
+describe("Japanese lifestyle CSV mapping is strict and audited as one destination per row (#205)",()=>{
+ const csv=(header:string,rows:string[])=>
+   "\uFEFF"+header+"\r\n"+rows.join("\r\n")+"\r\n";
+ it("recognizes reordered Japanese headers and keeps yes/unknown cups, explicit sober/zero, entirely unknown",async()=>{
+   const raw=csv("歩数,飲酒,日付,体重_kg,測定時刻",[
+     "0,1,2026/01/02,,",
+     ",0,2026/01/03,,",
+     "12345,,2026/01/04,,"
+   ]);
+   expect(detectOfficialCsvSource(raw)).toBe("lifestyle");
+   const norm=normalizeOfficialCsv("lifestyle",raw);
+   expect(norm).toMatchObject({total:3,missingSteps:0});
+   expect(norm.parts).toHaveLength(1);
+   expect(norm.parts[0]).toContain("local_day,drinking_presence,drink_cups,steps");
+   expect(norm.parts[0]).not.toContain("体重_kg");
+   expect(norm.parts[0]).not.toContain("測定時刻");
+   const p=await previewCsv("lifestyle",norm.parts[0]);
+   expect(p.errors).toEqual([]);
+   expect(p.rows.map(x=>[x.day,x.presence,x.cups,x.steps])).toEqual([
+     ["2026-01-02",1,null,0],
+     ["2026-01-03",0,0,null],
+     ["2026-01-04",null,null,12345]
+   ]);
+ });
+ it("accepts minimum required headers, strict values and original Shift_JIS browser decoding",async()=>{
+   const orig="日付,飲酒\r\n2026/02/01,1\r\n2026/02/02,0\r\n";
+   const decoded=decodeOfficialCsv(new TextEncoder().encode(orig));
+   expect(decoded.encoding).toBe("UTF-8");
+   const out=normalizeOfficialCsv("lifestyle",decoded.text);
+   expect((await previewCsv("lifestyle",out.parts[0])).rows.map(x=>[x.presence,x.cups,x.steps]))
+     .toEqual([[1,null,null],[0,0,null]]);
+   // Synthetic, minimal Shift_JIS bytes: canonical Japanese header and ASCII measurements.
+   const bytes=Uint8Array.from([
+     0x93,0xfa,0x95,0x74,0x2c,0x88,0xf9,0x8e,0xf0,0x0d,0x0a,
+     ...new TextEncoder().encode("2026/02/01,1\r\n")
+   ]);
+   const sjis=decodeOfficialCsv(bytes);
+   expect(sjis.encoding).toBe("Shift_JIS");
+   expect(detectOfficialCsvSource(sjis.text)).toBe("lifestyle");
+   expect(normalizeOfficialCsv("lifestyle",sjis.text).total).toBe(1);
+ });
+ it.each([
+   ["nonempty weight","日付,飲酒,体重_kg\n2026/01/02,1,75"],
+   ["nonempty time","日付,飲酒,測定時刻\n2026/01/02,1,07:20"],
+   ["duplicate header","日付,飲酒,日付\n2026/01/02,1,2026/01/02"],
+   ["unknown header","日付,飲酒,メモ\n2026/01/02,1,private"],
+   ["mixed canonical header","日付,飲酒,steps\n2026/01/02,1,0"],
+   ["invalid drinking status","日付,飲酒\n2026/01/02,2"],
+   ["negative steps","日付,飲酒,歩数\n2026/01/02,1,-1"],
+   ["fractional steps","日付,飲酒,歩数\n2026/01/02,1,1.5"],
+   ["impossible day","日付,飲酒,歩数\n2026/02/30,0,1"],
+   ["malformed quote","日付,飲酒,歩数\n2026/01/02,1,\"unterminated"],
+ ])("fails closed for %s before import",(_label,raw)=>{
+   if(/duplicate header|unknown header|mixed canonical/.test(_label))
+     expect(detectOfficialCsvSource(raw)).toBeNull();
+   expect(()=>normalizeOfficialCsv("lifestyle",raw)).toThrow();
+ });
+ it("rejects multi-target values in later rows or later chunks before confirmation",()=>{
+   const days=Array.from({length:17},(_,i)=>
+     "2026/01/"+String(i+1).padStart(2,"0")+",0,0,"+(i===16?"75":"")+",");
+   const file="日付,飲酒,歩数,体重_kg,測定時刻\n"+days.join("\n")+"\n";
+   expect(()=>normalizeOfficialCsv("lifestyle",file)).toThrow("LIFESTYLE_MULTI_TARGET");
+ });
+ it("preserves correct 8-row bounded parts and rejects repeated days even across partitions",async()=>{
+   const days=Array.from({length:17},(_,i)=>
+     "2026/01/"+String(i+1).padStart(2,"0")+",0,"+(i===0?"0":""));
+   const csvText="日付,飲酒,歩数\n"+days.join("\n")+"\n";
+   const out=normalizeOfficialCsv("lifestyle",csvText);
+   expect(out.parts).toHaveLength(3);
+   const all=await Promise.all(out.parts.map(p=>previewCsv("lifestyle",p)));
+   expect(all.every(p=>p.errors.length===0&&p.rows.length<=8)).toBe(true);
+   expect(all.flatMap(p=>p.rows)).toHaveLength(17);
+   const repeated=days.slice();repeated[16]=days[0];
+   expect(()=>normalizeOfficialCsv("lifestyle","日付,飲酒,歩数\n"+repeated.join("\n")+"\n"))
+     .toThrow("DUPLICATE_DATE_OR_TIMESTAMP");
+   expect(detectOfficialCsvSource("local_day,drinking_presence,drink_cups,steps\n")).toBe("lifestyle");
+ });
+});
+
 describe("ECLEAR seven body-composition fields (Stage 1, browser-only, synthetic)",()=>{
   const csv=(rows:string[],header=eclearHeader)=>header+"\n"+rows.join("\n")+"\n";
   it("parses measured JST times and all seven numbers without returning personal memo",async()=>{

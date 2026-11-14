@@ -8,10 +8,15 @@ import {join} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
 const dir=await mkdtemp(join(tmpdir(),"life-log-browser-"));
 const fixture=join(dir,"synthetic.csv");
+const jpLifestyleFixture=join(dir,"synthetic-japanese-lifestyle.csv");
+const jpRejectedFixture=join(dir,"synthetic-japanese-lifestyle-rejected.csv");
 await writeFile(fixture,[
 "年月日,時刻,体重,体脂肪率,骨格筋率,BMI,内蔵脂肪レベル,骨量,基礎代謝量,メモ",
 '2026/01/02,07:40,75,25,36,23.5,7,3,1700,"SYNTHETIC PRIVATE MEMO"',""
 ].join("\n"));
+await writeFile(jpLifestyleFixture,"\uFEFF日付,飲酒,歩数,体重_kg,測定時刻\r\n"+
+ "2026/01/02,1,0,,\r\n2026/01/03,0,,,\r\n2026/01/04,,6500,,\r\n");
+await writeFile(jpRejectedFixture,"日付,飲酒,歩数,体重_kg\n2026/01/05,1,0,75\n");
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null;
@@ -267,6 +272,32 @@ try{
  await click("確認して登録する");
  await wait(()=>contains("登録完了：追加 1件"),"normal CSV import");
  assert.equal(normal,1,"normal import uses distinct v1 endpoint");
+ // Japanese lifestyle mapping: the real 390px picker must normalize safely,
+ // preserve explicit 0/unknown, and never send an unapproved body-weight target.
+ async function uploadSyntheticFile(path){
+  const {root}=await cmd("DOM.getDocument");
+  const {nodeId}=await cmd("DOM.querySelector",{nodeId:root.nodeId,selector:'input[type="file"]'});
+  assert(nodeId,"file input for Japanese lifestyle");
+  await cmd("DOM.setFileInputFiles",{nodeId,files:[path]});
+ }
+ await uploadSyntheticFile(jpLifestyleFixture);
+ await wait(()=>contains("判別した種類：生活記録"),"Japanese lifestyle detected");
+ await wait(()=>contains("対象 3 行"),"Japanese lifestyle original 3 rows");
+ assert(await contains("読み取り文字コード：UTF-8"),"Japanese UTF-8 decoded");
+ assert(await contains("まだ登録していません"),"Japanese mapping is preview-only");
+ assert.equal(normal,1,"picker does not auto-confirm Japanese file");
+ await click("確認して登録する");
+ await wait(()=>normal===2,"Japanese lifestyle canonical explicit submit");
+ assert(await contains("登録完了：追加 1件"),"synthetic Japanese import success");
+ await uploadSyntheticFile(jpRejectedFixture);
+ await wait(()=>contains("CSVの形式・日時・数値・重複を確認できませんでした"),"second target safely rejected");
+ assert.equal(normal,2,"rejected Japanese weight never sent to backend");
+ assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='確認して登録する'&&!x.disabled)"),false,
+  "rejected file cannot be confirmed");
+ await uploadSyntheticFile(jpLifestyleFixture);
+ await wait(()=>contains("判別した種類：生活記録"),"valid file recovers after rejection");
+ assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
+   "Japanese CSV picker 390px overflow");
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
  await wait(()=>contains("ログイン設定（Android UAT）"),"passkey settings");
  // Audit-history pagination is page bounded and uses non-persistent cursor state.
@@ -450,7 +481,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

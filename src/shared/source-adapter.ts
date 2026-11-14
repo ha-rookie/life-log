@@ -79,6 +79,14 @@ const isAlreadyNormalized=(source:CsvSource,header:string[])=>{
   return header.join("\x1f")===expected.join("\x1f");
 };
 
+// Only a strict, single-target Japanese lifestyle header is supported.
+// Do not accept a partial/unknown header or silently drop weight/time columns.
+const japaneseLifestyleFields=new Set(["日付","飲酒","歩数","体重_kg","測定時刻"]);
+const isJapaneseLifestyleHeader=(header:string[]):boolean=>
+  header.length>=2&&new Set(header).size===header.length&&
+  header.includes("日付")&&header.includes("飲酒")&&
+  header.every(name=>japaneseLifestyleFields.has(name));
+
 /** Header detection chooses a parser; full validation still gates registration. */
 export function detectOfficialCsvSource(raw:string):CsvSource|null{
   const text=raw.startsWith("\uFEFF")?raw.slice(1):raw;
@@ -89,7 +97,7 @@ export function detectOfficialCsvSource(raw:string):CsvSource|null{
   if((header.length===28&&header[0]==="日付"&&header[16]==="歩数")||
     isAlreadyNormalized("fit",header))return "fit";
   if(isAlreadyNormalized("weight_day",header))return "weight_day";
-  if(isAlreadyNormalized("lifestyle",header))return "lifestyle";
+  if(isAlreadyNormalized("lifestyle",header)||isJapaneseLifestyleHeader(header))return "lifestyle";
   return null;
 }
 
@@ -103,8 +111,8 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
   const officialFit=source==="fit"&&header[0]==="日付"&&header[16]==="歩数"&&
     header.length===28;
   const normalized=isAlreadyNormalized(source,header);
-  if(!officialEclear&&!officialFit&&!normalized)throw Error("CSV_HEADER_MISMATCH");
-  if(source==="lifestyle"&&!normalized)throw Error("LIFESTYLE_NOT_NORMALIZED");
+  const japaneseLifestyle=source==="lifestyle"&&isJapaneseLifestyleHeader(header);
+  if(!officialEclear&&!officialFit&&!normalized&&!japaneseLifestyle)throw Error("CSV_HEADER_MISMATCH");
 
   const output:string[][]=[],seen=new Set<string>();
   let missingSteps=0;
@@ -120,6 +128,19 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
         numeric(row[2],"weight"),numeric(row[3],"fat")];
     }else if(officialFit){
       values=[isoDay(row[0]),numeric(row[16],"steps")];
+    }else if(japaneseLifestyle){
+      const column=(name:string):string=>{
+        const at=header.indexOf(name);
+        return at<0?"":row[at].trim();
+      };
+      // No single source row may fan out into an unaudited second destination.
+      if(column("体重_kg")!==""||column("測定時刻")!=="")
+        throw Error("LIFESTYLE_MULTI_TARGET_NOT_SUPPORTED_AT_LINE_"+(index+2));
+      const drink=column("飲酒");
+      if(drink!==""&&drink!=="0"&&drink!=="1")
+        throw Error("BAD_DRINKING_PRESENCE_AT_LINE_"+(index+2));
+      const step=column("歩数");
+      values=[isoDay(column("日付")),drink,drink==="0"?"0":"",step===""?"":numeric(step,"steps")];
     }else {
       values=row.map(v=>v.trim());
     }
