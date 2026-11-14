@@ -195,7 +195,7 @@ describe("strict pre-deploy Worker metadata and config protection",()=>{
  it("detects postdeploy metadata drift without requiring the version ID to match",()=>{
    const before=normalizeWorkerState(serverSettings,serverVersion,"worker-id");
    for(const mutate of [
-     x=>x.bindings[2].simple.limit=6,
+     x=>x.bindings.find(b=>b.name==="AUTH_RATE_LIMITER").simple.limit=6,
      x=>x.bindings[6].name="REMOVED",
      x=>x.assets.run_worker_first=false,
      x=>x.runtime.date="2026-11-03"

@@ -61,7 +61,9 @@ export function prepareConfig(text){
     String(uat.unsafe.bindings[0].namespace_id)==="1001","unexpected rate limit");
   requireValue(uat.vars?.MANUAL_REMOTE_WRITE_ENABLED==="false"&&
     uat.vars?.MANUAL_REMOTE_TARGET==="uat"&&
-    uat.vars?.MANUAL_REMOTE_ORIGIN===ORIGIN,"unexpected repository UAT vars");
+    uat.vars?.MANUAL_REMOTE_ORIGIN===ORIGIN&&
+    Object.keys(uat.vars).sort().join(",")==="MANUAL_REMOTE_ORIGIN,MANUAL_REMOTE_TARGET,MANUAL_REMOTE_WRITE_ENABLED",
+    "unexpected repository UAT vars or secret injection");
   requireValue(!cfg.routes&&!uat.routes&&!cfg.triggers&&!uat.triggers,"unexpected routes/triggers");
   // Crucial: never send the stale repository vars (write_enabled=false)
   // over a working UAT deployment. Wrangler --keep-vars retains live vars.
