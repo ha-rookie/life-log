@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
-  pureAlcoholGrams, validDrinkAmounts, parseDrinkCupsInput, type DrinkKind, type DrinkRecord,
+  pureAlcoholGrams, validDrinkAmounts, parseDrinkCupsInput, parseDrinkLocalDateTime, type DrinkKind, type DrinkRecord,
   type DrinkSize } from "../shared/drink-measures";
 
 type Kind=DrinkKind;
@@ -52,6 +52,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [drinkKind,setDrinkKind]=useState<Kind>("highball");
   const [drinkSize,setDrinkSize]=useState<DrinkSize>("regular");
   const [drinkCups,setDrinkCups]=useState("1");
+  const [drinkTime,setDrinkTime]=useState(jstNow);
   const [drinkVolume,setDrinkVolume]=useState("350");
   const [drinkAbv,setDrinkAbv]=useState("");
   const [editSize,setEditSize]=useState<DrinkSize>("custom");
@@ -142,7 +143,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const draftVolume=asOptionalNumber(drinkVolume),draftAbv=asOptionalNumber(drinkAbv);
   const drinkCupCount=parseDrinkCupsInput(drinkCups);
   const editCupCount=parseDrinkCupsInput(editCups);
-  const drinkDraftValid=drinkCupCount!==null&&validDrinkAmounts(drinkKind,drinkCupCount,draftVolume,draftAbv);
+  const drinkTimeObserved=parseDrinkLocalDateTime(drinkTime);
+  const drinkAmountValid=drinkCupCount!==null&&validDrinkAmounts(drinkKind,drinkCupCount,draftVolume,draftAbv);
+  const drinkDraftValid=drinkAmountValid&&drinkTimeObserved!==null;
   const draftAlcohol=drinkKind==="non_alcohol"?0:1;
   const draftG=pureAlcoholGrams({cups:drinkCupCount??0,volumeMl:draftVolume,abvPct:draftAbv,alcohol:draftAlcohol});
   const draftEquivalent=equivalentNormalServings({cups:drinkCupCount??0,volumeMl:draftVolume});
@@ -154,11 +157,12 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     else{setDrinkSize(size);setDrinkVolume(next);}
   }
   async function addDrink(){
-    if(drinksBusy||!drinkDraftValid||drinkCupCount===null)return;
+    const observedAt=parseDrinkLocalDateTime(drinkTime);
+    if(drinksBusy||!drinkAmountValid||drinkCupCount===null||observedAt===null)return;
     setDrinksBusy(true);setDrinksError("");
     if(!pending.current)pending.current={
       key:crypto.randomUUID(),kind:drinkKind,size:drinkSize,cups:drinkCupCount,
-      volumeMl:draftVolume,abvPct:draftAbv,observedAt:new Date().toISOString()
+      volumeMl:draftVolume,abvPct:draftAbv,observedAt
     };
     try{
       await mutate("/api/mvp/drinks","POST",pending.current);
@@ -308,6 +312,13 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
           {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
             <option key={size} value={size}>{label}</option>)}
         </select></label>
+        <label>飲んだ日時（日本時間）<input id="drink-time-new" type="datetime-local"
+          value={drinkTime} max={jstNow()} disabled={drinksBusy}
+          aria-invalid={drinkTimeObserved===null}
+          onChange={e=>setDrinkTime(e.target.value)}/></label>
+        <button type="button" disabled={drinksBusy} onClick={()=>setDrinkTime(jstNow())}>
+          日時を今に戻す
+        </button>
         <label>注文した杯数（1〜50）<input id="drink-cups-new" className="drink-cups-input"
           type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} autoComplete="off"
           value={drinkCups} disabled={drinksBusy} aria-invalid={drinkCupCount===null}
@@ -335,7 +346,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       <button type="button" disabled={drinksBusy||!drinkDraftValid} onClick={()=>void addDrink()}>
         {drinksBusy?"登録中…":drinkCupCount===null?"杯数を入力":names[drinkKind]+"を"+drinkCupCount+"杯記録"}
       </button>
-      {!drinkDraftValid&&<p role="alert">杯数・容量・度数を確認してください。ノンアルは度数を空欄にしてください。</p>}
+      {!drinkAmountValid&&<p role="alert">杯数・容量・度数を確認してください。ノンアルは度数を空欄にしてください。</p>}
+      {drinkTimeObserved===null&&<p role="alert">飲んだ日時を確認してください。過去366日以内で、未来の日時は登録できません。</p>}
       {mode==="record"&&<button type="button" disabled={drinksBusy} onClick={()=>void loadDrinks()}>飲酒履歴を更新</button>}
       {drinksError&&<p role="alert">{drinksError}</p>}
       {mode==="record"&&<details className="sub-details"><summary>過去30日の飲酒記録を確認・訂正する</summary>

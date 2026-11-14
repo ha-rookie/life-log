@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   drinkVariant, storedDrinkKind, equivalentNormalServings, pureAlcoholGrams,
-  isDrinkKind, isDrinkSize, parseDrinkCupsInput, referenceMl, validDrinkAmounts,
+  isDrinkKind, isDrinkSize, parseDrinkCupsInput, parseDrinkLocalDateTime, referenceMl, validDrinkAmounts,
 } from "../src/shared/drink-measures";
 
 describe("Android numeric keyboard: cup text draft and save-time validation",()=>{
@@ -55,5 +55,30 @@ describe("drink volume and pure alcohol quantity (synthetic only)",()=>{
     expect(storedDrinkKind("beer")).toBe("other_alcohol");
     expect(drinkVariant("beer")).toBe("beer");
     expect(drinkVariant("highball")).toBeNull();
+  });
+});
+
+describe("new drink entry historical JST date/time validation",()=>{
+  const now=Date.parse("2026-11-14T12:00:00+09:00");
+  it("POST carries the selected historical JST date/time instead of submission time",()=>{
+    expect(parseDrinkLocalDateTime("2026-11-09T19:30",now)).toBe("2026-11-09T19:30:00+09:00");
+    expect(parseDrinkLocalDateTime("2026-11-14T12:00",now)).toBe("2026-11-14T12:00:00+09:00");
+    expect(parseDrinkLocalDateTime("2026-11-14T12:01",now)).toBe("2026-11-14T12:01:00+09:00");
+  });
+  it("blocks blank, malformed, impossible, future and too-old times",()=>{
+    for(const raw of ["","2026-11-09","2026-11-09T19:30:00","2026-11-09T19:30Z",
+      "2026-02-30T19:30","2026-11-31T19:30","2026-11-14T24:00",
+      "2026-11-15T19:30","2025-11-12T19:30"]){
+      expect(parseDrinkLocalDateTime(raw,now),raw).toBeNull();
+    }
+  });
+  it("aligns with exact server 366-day window and accepts real leap day",()=>{
+    const edge=now-366*86400000;
+    const exact=new Date(edge+9*3600000).toISOString().slice(0,16);
+    expect(parseDrinkLocalDateTime(exact,now)).toBeNull();
+    const inside=new Date(edge+9*3600000+60000).toISOString().slice(0,16);
+    expect(parseDrinkLocalDateTime(inside,now)).not.toBeNull();
+    expect(parseDrinkLocalDateTime("2024-02-29T19:30",Date.parse("2024-03-02T12:00:00+09:00")))
+      .toBe("2024-02-29T19:30:00+09:00");
   });
 });
