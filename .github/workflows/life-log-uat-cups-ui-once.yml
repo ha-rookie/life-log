@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: fd9748e8d6f7f9851a9e691d99ea932c207ddfc6
-      FIX_SHA: fd9748e8d6f7f9851a9e691d99ea932c207ddfc6
+      BASE_SHA: b59b1cf36b94a64b10dcfba4d6c8d19877feccad
+      FIX_SHA: b59b1cf36b94a64b10dcfba4d6c8d19877feccad
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Validate exact one-file merge, unchanged application and authorized drink-cup fix
+      - name: Validate exact one-file merge, unchanged application and authorized weight-comparison evidence fix
         shell: bash
         run: |
           set -euo pipefail
@@ -59,8 +59,8 @@ jobs:
           # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
           git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
             src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
-          gh api "repos/$GITHUB_REPOSITORY/pulls/184" \
-            --jq '.merged_at != null and .merge_commit_sha == "fd9748e8d6f7f9851a9e691d99ea932c207ddfc6"' | grep -Fx true
+          gh api "repos/$GITHUB_REPOSITORY/pulls/188" \
+            --jq '.merged_at != null and .merge_commit_sha == "b59b1cf36b94a64b10dcfba4d6c8d19877feccad"' | grep -Fx true
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
@@ -75,7 +75,7 @@ jobs:
             throw Error('UAT target identity changed; do not deploy');
           }
           JS
-          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged fix #184 and isolated UAT target"
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged fix #188 and isolated UAT target"
       - name: Install/build and validate existing UI release guard with offline fixtures
         shell: bash
         run: |
