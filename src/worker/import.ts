@@ -32,7 +32,7 @@ const reject = (error: string, status = 422) => json({ error }, status);
 type Resolution = { mode: "keep_existing"; token: string };
 type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string; resolution?: Resolution;
   originalBase64?: string; originalSha256?: string };
-type LifestyleRow = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null };
+type LifestyleRow = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null; weight?:number|null };
 type StoredDay = {
   source_id: string; source_row_key: string;
   drinking_presence: 0 | 1 | null; drink_cups: number | null; steps: number | null;
@@ -45,7 +45,7 @@ type Summary = { inserted: number; updated: number; skipped: number; conflicted:
 function valid(x: unknown): x is Payload {
   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
   const p = x as Record<string, unknown>;
-  if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "fit" && p.source !== "weight_day") return false;
+  if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "lifestyle_weight" && p.source !== "fit" && p.source !== "weight_day") return false;
   if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
   const hasRaw=p.originalBase64!==undefined||p.originalSha256!==undefined;
   if(hasRaw&&(
@@ -150,7 +150,7 @@ function jobStatement(
     }
     checks.push("(" + conditions.join(" AND ") + ")");
   }
-  const statusSql = source === "lifestyle"
+  const statusSql = (source === "lifestyle" || source === "lifestyle_weight")
     ? "CASE WHEN " + checks.join(" AND ") + " THEN ? ELSE 'stale_guard' END"
     : "?";
   const sql = "INSERT INTO import_jobs"
@@ -158,9 +158,10 @@ function jobStatement(
     + " VALUES (?,?,?,?,?," + statusSql + ",?,?)";
   // The job source marker differentiates audited-v2 jobs from confirmed pre-audit jobs.
   // Destination row source_id remains the same, preserving existing deduplication.
+  const marker=source==="lifestyle_weight"?"csv:audited-v3:lifestyle_weight":"csv:audited-v2:"+source;
   return db.prepare(sql).bind(job, owner, source,
-    "csv:audited-v2:" + source + (originalSha256===null?"":":raw-utf8-sha256:"+originalSha256), fileHash,
-    ...(source === "lifestyle" ? params : []), status, now, now);
+    marker + (originalSha256===null?"":":raw-utf8-sha256:"+originalSha256), fileHash,
+    ...((source === "lifestyle"||source==="lifestyle_weight") ? params : []), status, now, now);
 }
 // Every import job runs in a single atomic D1.batch: audit the previous
 // canonical source value first, then apply exactly that row's mutation.
@@ -218,7 +219,7 @@ function writeRows(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvR
     " SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS"+
     " (SELECT 1 FROM lifestyle_days WHERE owner_id=? AND local_day=?)"
   ).bind(owner,row.day,row.presence,row.cups,row.steps,
-    "csv:lifestyle",row.key,job,owner,row.day)];
+    source==="lifestyle_weight"?"csv:lifestyle_weight":"csv:lifestyle",row.key,job,owner,row.day)];
 }
 function auditRow(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvRow):Statement{
   if(source==="fit"){
@@ -276,6 +277,74 @@ function auditRow(db:ImportDb,owner:string,source:CsvSource,job:string,row:CsvRo
   return db.prepare(sql).bind(job+":"+row.line,job,row.line,row.key,
     owner,row.day,job,row.key,...d,...d);
 }
+// V3 is a deliberately separate contract. One source row may have one or
+// two independently audited destination attempts; do NOT reuse v2 row counts
+// to assert target counts.
+function v3TargetAudit(db:ImportDb,owner:string,job:string,row:CsvRow,target:"lifestyle"|"weight_day"):Statement{
+  if(target==="lifestyle"){
+    return db.prepare(
+      "INSERT INTO import_target_audit"+
+      "(id,import_job_id,source_row_number,target_type,result,error_code)"+
+      " SELECT ?,?,?,'lifestyle',result,error_code FROM import_row_audit"+
+      " WHERE import_job_id=? AND source_row_number=?"
+    ).bind(job+":"+row.line+":lifestyle",job,row.line,job,row.line);
+  }
+  return db.prepare(
+    "INSERT INTO import_target_audit"+
+    "(id,import_job_id,source_row_number,target_type,result,error_code)"+
+    " VALUES (?,?,?,'weight_day',CASE WHEN EXISTS("+
+    " SELECT 1 FROM import_row_audit WHERE import_job_id=?"+
+    " AND source_row_number=? AND result='conflict')"+
+    " OR EXISTS(SELECT 1 FROM body_measurements WHERE owner_id=?"+
+    " AND date(measured_at,'+9 hours')=? AND weight_kg IS NOT NULL)"+
+    " THEN 'skipped' ELSE 'inserted' END,NULL)"
+  ).bind(job+":"+row.line+":weight_day",job,row.line,job,row.line,owner,row.day);
+}
+function v3WeightWrite(db:ImportDb,owner:string,job:string,row:CsvRow):Statement{
+  // A plain YYYY-MM-DD is source-reported precision, not a fabricated clock.
+  // Never replace a measured ECLEAR or manual observation on the same JST day.
+  return db.prepare(
+    "INSERT INTO body_measurements"+
+    "(id,owner_id,measured_at,source_timezone,weight_kg,body_fat_pct,"+
+    "source_id,source_row_key,source_kind,import_job_id)"+
+    " SELECT ?,?,?,'Asia/Tokyo',?,NULL,'csv:lifestyle_weight',?,'reported',?"+
+    " WHERE NOT EXISTS (SELECT 1 FROM import_row_audit"+
+    " WHERE import_job_id=? AND source_row_number=? AND result='conflict')"+
+    " AND NOT EXISTS (SELECT 1 FROM body_measurements WHERE owner_id=?"+
+    " AND date(measured_at,'+9 hours')=? AND weight_kg IS NOT NULL)"
+  ).bind("lifestyle-weight:"+owner+":"+row.day,owner,row.day,row.weight,row.day,job,
+    job,row.line,owner,row.day);
+}
+type V3Manifest={expected_source_rows:number;expected_target_rows:number;contract_version:string};
+async function v3Integrity(db:ImportDb,owner:string,job:string,rows:number):Promise<{
+  available:boolean;targetCounts:Summary;expectedTargets:number
+}>{
+  const manifest=await db.prepare(
+    "SELECT expected_source_rows,expected_target_rows,contract_version"+
+    " FROM import_job_target_manifest WHERE import_job_id=?"
+  ).bind(job).first<V3Manifest>();
+  if(!manifest||manifest.contract_version!=="v3"||
+    manifest.expected_source_rows!==rows)return {
+    available:false,targetCounts:{inserted:0,updated:0,skipped:0,conflicted:0},expectedTargets:0
+  };
+  const audited=await db.prepare(
+    "SELECT result,error_code,COUNT(*) AS n FROM import_target_audit"+
+    " WHERE import_job_id=? GROUP BY result,error_code"
+  ).bind(job).all<AuditCount>();
+  let tally:Summary;
+  try{tally=counts(audited.results);}catch{
+    return {available:false,targetCounts:{inserted:0,updated:0,skipped:0,conflicted:0},expectedTargets:manifest.expected_target_rows};
+  }
+  const total=tally.inserted+tally.updated+tally.skipped+tally.conflicted;
+  const dest=await db.prepare(
+    "SELECT (SELECT COUNT(*) FROM lifestyle_days WHERE owner_id=? AND import_job_id=?)"+
+    "+(SELECT COUNT(*) FROM body_measurements WHERE owner_id=? AND import_job_id=?) AS n"
+  ).bind(owner,job,owner,job).first<{n:number}>();
+  return {available:total===manifest.expected_target_rows&&
+    tally.inserted===dest?.n,targetCounts:tally,
+    expectedTargets:manifest.expected_target_rows};
+}
+
 function counts(rows:AuditCount[]):Summary{
   const result={inserted:0,updated:0,skipped:0,conflicted:0};
   for(const row of rows){
@@ -291,12 +360,14 @@ function counts(rows:AuditCount[]):Summary{
 // have NO import_row_audit rows. Modern jobs carry "csv:audited-v2:<source>".
 // This deliberately does not guess historical inserted/skipped/conflict counts.
 type ExistingJob = { status: string; source_id: string };
-const originalProofState=(stored:string,source:CsvSource,raw:string|null)=>
-  raw===null?"not_submitted":stored==="csv:audited-v2:"+source+":raw-utf8-sha256:"+raw
-    ?"matches_first_import":stored.startsWith("csv:audited-v2:"+source+":raw-utf8-sha256:")
+const originalProofState=(stored:string,source:CsvSource,raw:string|null)=>{
+  const marker=source==="lifestyle_weight"?"csv:audited-v3:lifestyle_weight":"csv:audited-v2:"+source;
+  return raw===null?"not_submitted":stored===marker+":raw-utf8-sha256:"+raw
+    ?"matches_first_import":stored.startsWith(marker+":raw-utf8-sha256:")
       ?"different_original_same_canonical":"not_recorded_for_existing_job";
+};
 async function existingJobResponse(
-  db: ImportDb, job: string, rows: number, existing: ExistingJob, source: CsvSource,
+  db: ImportDb, owner:string, job: string, rows: number, existing: ExistingJob, source: CsvSource,
   originalSha256:string|null=null,
 ): Promise<Response> {
   const result = await db.prepare(
@@ -317,8 +388,11 @@ async function existingJobResponse(
   if (original.inserted + original.updated + original.skipped + original.conflicted !== rows) {
     return reject("INCOMPLETE_AUDIT", 503);
   }
+  const v3=source==="lifestyle_weight"?await v3Integrity(db,owner,job,rows):null;
+  if(v3&&!v3.available)return reject("INCOMPLETE_AUDIT",503);
   return json({ status: "already_imported", inserted: 0, updated: 0, skipped: rows,
     conflicted: 0, auditStatus: "complete", original,
+    ...(v3?{targetCounts:v3.targetCounts}:{}),
     originalByteEvidence:originalProofState(existing.source_id,source,originalSha256) });
 }
 
@@ -352,7 +426,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     if (distinct.has(key)) return reject("DUPLICATE_IN_FILE");
     distinct.add(key);
   }
-  if (payload.source !== "lifestyle" && payload.resolution) return reject("RESOLUTION_NOT_APPLICABLE", 409);
+  if (payload.source !== "lifestyle" && payload.source !== "lifestyle_weight" && payload.resolution) return reject("RESOLUTION_NOT_APPLICABLE", 409);
   const job = owner + ":" + payload.source + ":" + preview.hash;
 
   try {
@@ -361,14 +435,14 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
     if (existing) {
       if (existing.status === "confirmed" || existing.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length, existing, payload.source,originalSha256);
+        return existingJobResponse(db, owner, job, preview.rows.length, existing, payload.source,originalSha256);
       }
       return reject("JOB_CONFLICT", 409);
     }
-    const snapshots = payload.source === "lifestyle"
+    const snapshots = (payload.source === "lifestyle" || payload.source === "lifestyle_weight")
       ? await snapshotDays(db, owner, lifestyle(preview.rows)) : [];
     const conflicts = conflictsOf(snapshots);
-    const token = payload.source === "lifestyle"
+    const token = (payload.source === "lifestyle" || payload.source === "lifestyle_weight")
       ? await reviewToken(owner, preview.hash, snapshots) : null;
 
     if (payload.resolution) {
@@ -385,7 +459,25 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
       db.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES (?,?)").bind(owner, now),
       jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status,originalSha256),
     ];
+    if(payload.source==="lifestyle_weight"){
+      const expected=preview.rows.length+preview.rows.filter(row=>row.weight!==null).length;
+      ops.push(db.prepare(
+        "INSERT INTO import_job_target_manifest"+
+        "(import_job_id,expected_source_rows,expected_target_rows,contract_version)"+
+        " VALUES (?,?,?,'v3')"
+      ).bind(job,preview.rows.length,expected));
+    }
     for (const row of preview.rows) {
+      if(payload.source==="lifestyle_weight"){
+        ops.push(...writeRows(db,owner,payload.source,job,row));
+        ops.push(auditRow(db,owner,payload.source,job,row));
+        ops.push(v3TargetAudit(db,owner,job,row,"lifestyle"));
+        if(row.weight!==null){
+          ops.push(v3TargetAudit(db,owner,job,row,"weight_day"));
+          ops.push(v3WeightWrite(db,owner,job,row));
+        }
+        continue;
+      }
       // Canonical source updates must classify the pre-update row atomically.
       if(payload.source==="eclear"||payload.source==="fit"||payload.source==="weight_day"){
         ops.push(auditRow(db,owner,payload.source,job,row));
@@ -406,12 +498,16 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     if (summary.inserted + summary.updated + summary.skipped + summary.conflicted !== preview.rows.length) {
       return reject("INCOMPLETE_AUDIT", 503);
     }
+    const v3=payload.source==="lifestyle_weight"
+      ?await v3Integrity(db,owner,job,preview.rows.length):null;
+    if(v3&&!v3.available)return reject("INCOMPLETE_AUDIT",503);
     return json({ status, ...summary,
+      ...(v3?{targetCounts:v3.targetCounts,expectedTargets:v3.expectedTargets}:{}),
       originalByteEvidence:originalSha256===null?"not_submitted":"recorded_first_import" });
   } catch {
     // If a concurrent change invalidated our in-batch snapshot guard, the
     // entire D1 batch (including audit) was rolled back. Require fresh review.
-    if (payload.source === "lifestyle") {
+    if (payload.source === "lifestyle" || payload.source === "lifestyle_weight") {
       try {
         const now = await snapshotDays(db, owner, lifestyle(preview.rows));
         const token = await reviewToken(owner, preview.hash, now);
@@ -430,7 +526,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
         "SELECT status,source_id FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
       ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
       if (winner?.status === "confirmed" || winner?.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length, winner, payload.source,originalSha256);
+        return existingJobResponse(db, owner, job, preview.rows.length, winner, payload.source,originalSha256);
       }
     } catch { /* fail closed */ }
     return reject("IMPORT_FAILED", 503);

@@ -212,7 +212,7 @@ describe("Japanese lifestyle CSV mapping is strict and audited as one destinatio
    const days=Array.from({length:17},(_,i)=>
      "2026/01/"+String(i+1).padStart(2,"0")+",0,0,"+(i===16?"75":"")+",");
    const file="日付,飲酒,歩数,体重_kg,測定時刻\n"+days.join("\n")+"\n";
-   expect(()=>normalizeOfficialCsv("lifestyle",file)).toThrow("LIFESTYLE_MULTI_TARGET");
+   expect(()=>normalizeOfficialCsv("lifestyle",file)).toThrow("LIFESTYLE_WEIGHT_SOURCE_REQUIRED");
  });
  it("preserves correct 8-row bounded parts and rejects repeated days even across partitions",async()=>{
    const days=Array.from({length:17},(_,i)=>
@@ -227,6 +227,54 @@ describe("Japanese lifestyle CSV mapping is strict and audited as one destinatio
    expect(()=>normalizeOfficialCsv("lifestyle","日付,飲酒,歩数\n"+repeated.join("\n")+"\n"))
      .toThrow("DUPLICATE_DATE_OR_TIMESTAMP");
    expect(detectOfficialCsvSource("local_day,drinking_presence,drink_cups,steps\n")).toBe("lifestyle");
+ });
+});
+
+describe("v3 Japanese lifestyle with optional date-only weight (#211)",()=>{
+ it("detects only files with actual weight values as v3, preserving all-blank legacy mapping",async()=>{
+   const head="歩数,飲酒,日付,体重_kg,測定時刻";
+   const one="\uFEFF"+head+"\r\n0,1,2026/01/02,75.1,\r\n,0,2026/01/03,,\r\n";
+   expect(detectOfficialCsvSource(one)).toBe("lifestyle_weight");
+   const out=normalizeOfficialCsv("lifestyle_weight",one);
+   expect(out).toMatchObject({total:2});
+   expect(out.parts[0]).toContain("local_day,drinking_presence,drink_cups,steps,weight_kg");
+   const checked=await previewCsv("lifestyle_weight",out.parts[0]);
+   expect(checked.errors).toEqual([]);
+   expect(checked.rows.map(r=>[r.day,r.presence,r.cups,r.steps,r.weight])).toEqual([
+     ["2026-01-02",1,null,0,75.1],
+     ["2026-01-03",0,0,null,null]
+   ]);
+   const noWeight=one.replace("75.1","");
+   expect(detectOfficialCsvSource(noWeight)).toBe("lifestyle");
+   expect(normalizeOfficialCsv("lifestyle",noWeight).parts).toHaveLength(1);
+ });
+ it("accepts exact v3 canonical columns, rejects impossible weight/duplicate and invented time",async()=>{
+   const canon="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+     "2026-02-01,1,,0,75.6\n2026-02-02,0,0,,\n";
+   expect(detectOfficialCsvSource(canon)).toBe("lifestyle_weight");
+   const parsed=await previewCsv("lifestyle_weight",canon);
+   expect(parsed.errors).toEqual([]);
+   expect(parsed.rows.map(r=>r.weight)).toEqual([75.6,null]);
+   for(const value of ["0","500","-1","abc"]){
+     const bad=await previewCsv("lifestyle_weight",canon.replace("75.6",value));
+     expect(bad.errors).toHaveLength(1);
+   }
+   const time="日付,飲酒,体重_kg,測定時刻\n2026/02/01,1,75.6,07:00\n";
+   expect(detectOfficialCsvSource(time)).toBe("lifestyle_weight");
+   expect(()=>normalizeOfficialCsv("lifestyle_weight",time)).toThrow("LIFESTYLE_TIMESTAMP_NOT_SUPPORTED");
+   const duplicate="日付,飲酒,体重_kg\n2026/02/01,1,75.6\n2026/02/01,0,74\n";
+   expect(()=>normalizeOfficialCsv("lifestyle_weight",duplicate)).toThrow("DUPLICATE_DATE");
+ });
+ it("does not silently lose a later weight across independent 8-row parts",async()=>{
+   const rows=Array.from({length:17},(_,i)=>
+     "2026/01/"+String(i+1).padStart(2,"0")+",0,"+(i===16?"74.2":""));
+   const raw="日付,飲酒,体重_kg\n"+rows.join("\n")+"\n";
+   expect(detectOfficialCsvSource(raw)).toBe("lifestyle_weight");
+   const parts=normalizeOfficialCsv("lifestyle_weight",raw).parts;
+   expect(parts).toHaveLength(3);
+   const all=await Promise.all(parts.map(p=>previewCsv("lifestyle_weight",p)));
+   expect(all.flatMap(p=>p.rows).filter(r=>r.weight!==null)).toHaveLength(1);
+   expect(all.at(-1)?.rows[0].weight).toBe(74.2);
  });
 });
 

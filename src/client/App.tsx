@@ -32,12 +32,14 @@ type ImportResult = {
   status?: string; error?: string; inserted?: number; updated?: number; skipped?: number;
   conflicted?: number; reviewToken?: string | null; conflicts?: Conflict[];
   auditStatus?: "legacy_unavailable" | "complete";
+  targetCounts?:{inserted:number;skipped:number;conflicted:number;updated?:number};expectedTargets?:number;
 };
 
-type HistoryJob = { id:string;source:string;status:string;startedAt:string;auditStatus:string;auditCount:number;insertedRecords:number;originalSha256?:string|null };
-type HistoryRow = {line:number;result:string;errorCode:string|null;values:null|Record<string,number|null>};
+type HistoryJob = { id:string;source:string;status:string;startedAt:string;auditStatus:string;auditCount:number;insertedRecords:number;originalSha256?:string|null;targetAuditCount?:number;expectedTargets?:number };
+type HistoryRow = {line:number;result:string;errorCode:string|null;values:null|Record<string,number|null>;
+  targets?:{target:string;result:string;errorCode:string|null}[]};
 type JobPage = {jobs:HistoryJob[];nextCursor:string|null};
-type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;counts:null|Record<string,number>;originalSha256?:string|null};rows:HistoryRow[];nextCursor:string|null};
+type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;counts:null|Record<string,number>;originalSha256?:string|null;targetCounts?:Record<string,number>|null;expectedTargets?:number};rows:HistoryRow[];nextCursor:string|null};
 const showValue=(n:number|null)=>n===null?"欠測（NULL）":String(n);
 export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
@@ -70,7 +72,8 @@ export function App() {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const selectionEpoch = useRef(0);
   const fileInputRef = useRef<HTMLInputElement|null>(null);
-  const completedParts = useRef(new Map<number,{inserted:number;updated:number;skipped:number;conflicted:number}>());
+  const completedParts = useRef(new Map<number,{inserted:number;updated:number;skipped:number;conflicted:number;
+    targetCounts?:{inserted:number;skipped:number;conflicted:number;updated?:number}}>());
   const [history,setHistory]=useState<HistoryJob[]>([]);
   const [historyCursor,setHistoryCursor]=useState<string|null>(null);
   const [historyPage,setHistoryPage]=useState(0);
@@ -178,7 +181,7 @@ export function App() {
   async function submit(keepExisting = false) {
     if (!csvPreview || csvPreview.errors.length || !csvPreview.rows.length || busy ||
         !canonicalParts.length) return;
-    if (keepExisting && (csvSource!=="lifestyle" || reviewPartIndex===null ||
+    if (keepExisting && ((csvSource!=="lifestyle"&&csvSource!=="lifestyle_weight") || reviewPartIndex===null ||
         !review || review.conflicts.length===0)) return;
     const epoch = selectionEpoch.current;
     const pendingReviewPart=reviewPartIndex;
@@ -191,7 +194,7 @@ export function App() {
         // prevents duplicate counting when a later chunk needs conflict review.
         if(completedParts.current.has(n))continue;
         const part=canonicalParts[n],p=await previewCsv(csvSource,part);
-        const applyReview=keepExisting && csvSource==="lifestyle" && n===pendingReviewPart;
+        const applyReview=keepExisting && (csvSource==="lifestyle"||csvSource==="lifestyle_weight") && n===pendingReviewPart;
         const response=await fetch("/api/import/confirm",{
           method:"POST",credentials:"same-origin",cache:"no-store",
           headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},
@@ -204,7 +207,7 @@ export function App() {
         });
         const data=await response.json() as ImportResult;
         if(epoch!==selectionEpoch.current)return;
-        if(csvSource==="lifestyle"&&response.status===409&&
+        if((csvSource==="lifestyle"||csvSource==="lifestyle_weight")&&response.status===409&&
           (data.error==="LIFESTYLE_CONFLICT"||data.error==="REVIEW_STALE")&&
           data.reviewToken&&data.conflicts){
           setReview({token:data.reviewToken,conflicts:data.conflicts});
@@ -220,7 +223,8 @@ export function App() {
           "（"+(n+1)+"/"+canonicalParts.length+"）");
         completedParts.current.set(n,{
           inserted:data.inserted??0,updated:data.updated??0,
-          skipped:data.skipped??0,conflicted:data.conflicted??0
+          skipped:data.skipped??0,conflicted:data.conflicted??0,
+          targetCounts:data.targetCounts
         });
         setReview(null);setReviewPartIndex(null);
         setImportStatus("登録中 "+(n+1)+"/"+canonicalParts.length+" 分割");
@@ -231,9 +235,16 @@ export function App() {
       }),{inserted:0,updated:0,skipped:0,conflicted:0});
       if(epoch===selectionEpoch.current){
         setReview(null);setReviewPartIndex(null);
+        const targetTotal=[...completedParts.current.values()].reduce((acc,c)=>({
+          inserted:acc.inserted+(c.targetCounts?.inserted??0),
+          skipped:acc.skipped+(c.targetCounts?.skipped??0),
+          conflicted:acc.conflicted+(c.targetCounts?.conflicted??0)
+        }),{inserted:0,skipped:0,conflicted:0});
         setImportStatus("登録完了：追加 "+total.inserted+"件・更新 "+total.updated+
           "件・スキップ "+total.skipped+"件"+
-          (csvSource==="lifestyle"?"・既存優先 "+total.conflicted+"件":"")+
+          ((csvSource==="lifestyle"||csvSource==="lifestyle_weight")?"・既存優先 "+total.conflicted+"件":"")+
+          (csvSource==="lifestyle_weight"?"。保存先別：追加 "+targetTotal.inserted+
+             "件・スキップ "+targetTotal.skipped+"件・競合 "+targetTotal.conflicted+"件":"")+
           "。元データ "+canonicalTotal+"件"+
           (csvSource==="fit"?"、Fit歩数欠測 "+missingFitSteps+"日":"")+"。");
         setRefreshEpoch(n=>n+1);
@@ -359,7 +370,8 @@ export function App() {
         {selectedCsvName&&<p role="status" className="hint">選択したファイル：<strong>{selectedCsvName}</strong></p>}
         {csvPreview&&<p className="hint">判別した種類：{csvSource==="eclear"?"ECLEAR（体重）":
           csvSource==="fit"?"Google Fit（歩数）":
-          csvSource==="weight_day"?"体重（日付のみ・既存日付はスキップ）":"生活記録"}</p>}
+          csvSource==="weight_day"?"体重（日付のみ・既存日付はスキップ）":
+          csvSource==="lifestyle_weight"?"生活記録＋体重（日付のみ）":"生活記録"}</p>}
         {csvPreview&&csvSource==="eclear"&&<div className="eclear-mode" role="group" aria-label="ECLEARの取込方法">
           <button type="button" aria-pressed={eclearMode==="usual"} disabled={busy||compositionBusy}
             onClick={()=>{setEclearMode("usual");setReview(null);setImportStatus("");}}>
@@ -371,6 +383,10 @@ export function App() {
           </button>
         </div>}
         {csvPreview&&(csvSource!=="eclear"||eclearMode==="usual") && <div aria-live="polite">
+          {csvSource==="lifestyle_weight"&&<p className="hint">
+            体重欄のある行は体重も別保存します。測定時刻は作らず、既存の日付の体重は上書きしません。
+            生活記録と体重は保存先ごとに監査します。
+          </p>}
           <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
           <p className="hint">{originalProof
             ?"元ファイルのSHA-256を照合します（1分割のUTF-8 CSV）。"
@@ -426,6 +442,7 @@ export function App() {
         <ul>{history.map(j=><li key={j.id}>
           {j.startedAt} · {j.source} · {j.status} · 監査 {j.auditStatus==="legacy_unavailable"?"旧形式・記録なし":j.auditStatus==="incomplete"?"不完全":j.auditCount+"件"}
           {j.originalSha256&&" · 元CSVハッシュ記録あり"}
+          {j.source==="lifestyle_weight"&&" · 保存先監査 "+(j.targetAuditCount??0)+"/"+(j.expectedTargets??"?")}
           <button type="button" disabled={historyBusy} onClick={()=>void loadAudit(j.id)}>行を表示</button>
         </li>)}</ul>
         {historyPage>0&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyStarts[historyPage-1],historyPage-1)}>前の取込10件</button>}
@@ -443,6 +460,9 @@ export function App() {
           {auditRows.length>0&&<p className="hint">監査行 {auditPage+1}ページ目（各ページ最大10件）</p>}
           <ol>{auditRows.map(r=><li key={r.line}>CSV {r.line}行：{r.result}
             {r.errorCode?" ("+r.errorCode+")":""}
+            {r.targets&&<span> · 保存先：
+              {r.targets.map(t=>t.target==="weight_day"?"体重="+t.result:"生活記録="+t.result).join(" / ")}
+            </span>}
             {r.values&&<span> · {Object.entries(r.values).map(([k,v])=>k+"="+showValue(v)).join(" / ")}</span>}
             {!r.values&&" · 元の値は監査に保存されていません"}
           </li>)}</ol>
