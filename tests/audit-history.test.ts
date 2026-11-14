@@ -192,4 +192,27 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect(detail.body.rows.map((r:{result:string})=>r.result)).toEqual(["conflict","skipped"]);
     expect((await db.prepare("SELECT COUNT(*) AS n FROM import_row_audit").first<{n:number}>())?.n).toBe(before?.n);
   },100_000);
+  it("suppresses internal row error codes while retaining known safe classifications",async()=>{
+    const id=await seed("owner","eclear");
+    await db.prepare("UPDATE import_row_audit SET result='conflict', error_code=? WHERE import_job_id=? AND source_row_number=2")
+      .bind("INTERNAL_SQL_PASSWORD_OR_EMAIL",id).run();
+    const listing=await get(db);
+    const job=listing.body.jobs[0].id as string;
+    const first=await get(db,"/"+job);
+    expect(first.code).toBe(200);
+    expect(first.body.rows[0].errorCode).toBeNull();
+    expect(JSON.stringify(first.body)).not.toContain("INTERNAL_SQL_PASSWORD_OR_EMAIL");
+    await db.prepare("UPDATE import_row_audit SET error_code=? WHERE import_job_id=? AND source_row_number=2")
+      .bind("AMBIGUOUS_ECLEAR_TIMESTAMP",id).run();
+    const second=await get(db,"/"+job);
+    expect(second.body.rows[0].errorCode).toBe("AMBIGUOUS_ECLEAR_TIMESTAMP");
+  },100_000);
+  it("denies non-GET and duplicate/extra query params without any D1 write",async()=>{
+    const nonGet=await handleAuditHistory(new Request(prefix,{method:"POST"}),db,"owner");
+    expect(nonGet.status).toBe(405);
+    for(const path of ["?limit=1&limit=2","?cursor=x&cursor=y","?debug=1"]){
+      expect((await get(db,"",path)).code).toBe(400);
+    }
+    expect(nonGet.headers.get("Cache-Control")).toBe("private, no-store");
+  },100_000);
 });

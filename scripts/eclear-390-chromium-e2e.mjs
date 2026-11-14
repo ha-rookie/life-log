@@ -15,6 +15,7 @@ await writeFile(fixture,[
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null;
+const auditRequestLog=[];
 const syntheticManualDay=new Date(Date.now()+9*3600000-45*86400000).toISOString().slice(0,10);
 const pending=new Map();
 const calls=[];
@@ -58,6 +59,24 @@ async function intercept(p){
   else{mode="readback";data={status:"applied",inserted:0,enriched:1,cells:5};}
  }else if(path==="/api/import/confirm"){normal++;data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};}
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
+ else if(path==="/api/import/history"||path.startsWith("/api/import/history/")){
+   const cursor=url.searchParams.get("cursor");
+   auditRequestLog.push({path,cursor});
+   if(path==="/api/import/history"){
+     const jobs=Array.from({length:12},(_,i)=>({id:String(i+1),source:"eclear",status:"confirmed",
+       startedAt:"2026-11-"+String(14-i).padStart(2,"0")+"T09:00:00Z",
+       auditStatus:"available",auditCount:12,insertedRecords:12}));
+     data={jobs:cursor==="synthetic-job-next"?jobs.slice(10):jobs.slice(0,10),
+       nextCursor:cursor==="synthetic-job-next"?null:"synthetic-job-next"};
+   }else{
+     const rows=Array.from({length:12},(_,i)=>({line:i+2,result:"inserted",errorCode:null,
+       values:{weightKg:75,bodyFatPct:null}}));
+     data={job:{id:path.split("/").at(-1),source:"eclear",status:"confirmed",auditStatus:"available",
+       counts:{inserted:12,updated:0,skipped:0,conflict:0,invalid:0}},
+       rows:cursor==="synthetic-row-next"?rows.slice(10):rows.slice(0,10),
+       nextCursor:cursor==="synthetic-row-next"?null:"synthetic-row-next"};
+   }
+ }
  else if(path==="/api/manual/records"){
   const from=url.searchParams.get("from"),to=url.searchParams.get("to");
   lastManualRange={from,to};
@@ -183,6 +202,23 @@ try{
  assert.equal(normal,1,"normal import uses distinct v1 endpoint");
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
  await wait(()=>contains("ログイン設定（Android UAT）"),"passkey settings");
+ // Audit-history pagination is page bounded and uses non-persistent cursor state.
+ assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('取込履歴・監査の詳細'));if(!d)return false;d.open=true;return true})()"));
+ await click("履歴を表示・更新");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ul > li').length===10"),"first audit job page");
+ await click("次の取込10件");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ul > li').length===2"),"second audit job page");
+ await click("前の取込10件");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ul > li').length===10"),"previous audit job page");
+ await click("行を表示");
+ await wait(()=>contains("当時の元CSVの数値ではありません"),"current saved values disclaimer");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ol > li').length===10"),"first audit row page");
+ await click("次の監査行10件");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ol > li').length===2"),"second audit row page");
+ await click("前の監査行10件");
+ await wait(()=>js("document.querySelector('#history-title')?.closest('section')?.querySelectorAll('ol > li').length===10"),"previous audit row page");
+ assert(auditRequestLog.some(x=>x.cursor==="synthetic-job-next"),"job cursor used in memory");
+ assert(auditRequestLog.some(x=>x.cursor==="synthetic-row-next"),"row cursor used in memory");
  // Android Chrome-like 390px touch viewport: both cup fields must permit clearing
  // the current value without immediately replacing it with "0".
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#record"});
@@ -301,7 +337,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

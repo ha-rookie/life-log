@@ -9,6 +9,10 @@ type Row = { source_row_number: number; result: string; error_code: string | nul
   drinking_presence: number | null; drink_cups: number | null; steps: number | null;
   weight_kg: number | null; body_fat_pct: number | null; fit_steps: number|null };
 type Cursor = { time: string; id: string } | { row: number };
+/** Only contract-approved public audit classification codes may leave the Worker. */
+const PUBLIC_AUDIT_ERRORS = new Set(["LIFESTYLE_CONFLICT_KEPT","AMBIGUOUS_ECLEAR_TIMESTAMP"]);
+const publicAuditError = (code:string|null):string|null =>
+  code!==null && PUBLIC_AUDIT_ERRORS.has(code) ? code : null;
 const encode = (value: Cursor) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 function decode(input: string, kind: "jobs" | "rows"): Cursor | null {
   if (!/^[A-Za-z0-9_-]{1,600}$/.test(input)) return null;
@@ -134,7 +138,7 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       auditStatus:status,counts:status==="available"?stats.counts:null},
       rows:selected.map(r=>({line:r.source_row_number,
         result:r.result==="inserted"&&r.error_code==="UPDATED"?"updated":r.result,
-        errorCode:r.error_code==="UPDATED"?null:r.error_code,
+        errorCode:publicAuditError(r.error_code),
         // Historic before/after values were never stored; do not manufacture
         // past readings by joining today's updated destination rows.
         values:r.error_code==="UPDATED"||r.result!=="inserted"?null:job.source_type==="lifestyle"

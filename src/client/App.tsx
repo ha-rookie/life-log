@@ -72,41 +72,50 @@ export function App() {
   const completedParts = useRef(new Map<number,{inserted:number;updated:number;skipped:number;conflicted:number}>());
   const [history,setHistory]=useState<HistoryJob[]>([]);
   const [historyCursor,setHistoryCursor]=useState<string|null>(null);
+  const [historyPage,setHistoryPage]=useState(0);
+  const [historyStarts,setHistoryStarts]=useState<(string|null)[]>([null]);
   const [selectedJob,setSelectedJob]=useState<string|null>(null);
   const [auditRows,setAuditRows]=useState<HistoryRow[]>([]);
   const [rowCursor,setRowCursor]=useState<string|null>(null);
+  const [auditPage,setAuditPage]=useState(0);
+  const [auditStarts,setAuditStarts]=useState<(string|null)[]>([null]);
   const [auditState,setAuditState]=useState("");
   const [historyError,setHistoryError]=useState("");
   const [historyBusy,setHistoryBusy]=useState(false);
   const historyEpoch=useRef(0);
-  async function loadHistory(next:string|null=null) {
+  async function loadHistory(cursor:string|null=null,pageIndex=0) {
     if(historyBusy)return;
     const epoch=++historyEpoch.current;
     setHistoryBusy(true);setHistoryError("");
     try{
-      const res=await fetch("/api/import/history?limit=10"+(next?"&cursor="+encodeURIComponent(next):""),{credentials:"same-origin",cache:"no-store"});
+      const res=await fetch("/api/import/history?limit=10"+(cursor?"&cursor="+encodeURIComponent(cursor):""),{credentials:"same-origin",cache:"no-store"});
       if(!res.ok)throw Error(String(res.status));
       const data=await res.json() as JobPage;
       if(epoch!==historyEpoch.current)return;
-      setHistory(prev=>next?[...prev,...data.jobs]:data.jobs);
-      setHistoryCursor(data.nextCursor);
+      // Display a bounded page, not all previously fetched rows.
+      setHistory(data.jobs);setHistoryCursor(data.nextCursor);
+      setHistoryPage(pageIndex);
+      setHistoryStarts(prev=>pageIndex===0?[null]:[...prev.slice(0,pageIndex),cursor]);
+      setSelectedJob(null);setAuditRows([]);setRowCursor(null);
+      setAuditPage(0);setAuditStarts([null]);setAuditState("");
     }catch{if(epoch===historyEpoch.current)setHistoryError("監査履歴を取得できません。認証と接続を確認してください。");}
-    finally{setHistoryBusy(false);}
+    finally{if(epoch===historyEpoch.current)setHistoryBusy(false);}
   }
-  async function loadAudit(job:string,next:string|null=null) {
+  async function loadAudit(job:string,cursor:string|null=null,pageIndex=0) {
     if(historyBusy)return;
     const epoch=++historyEpoch.current;
     setHistoryBusy(true);setHistoryError("");
     try{
-      const res=await fetch("/api/import/history/"+encodeURIComponent(job)+"?limit=10"+(next?"&cursor="+encodeURIComponent(next):""),{credentials:"same-origin",cache:"no-store"});
+      const res=await fetch("/api/import/history/"+encodeURIComponent(job)+"?limit=10"+(cursor?"&cursor="+encodeURIComponent(cursor):""),{credentials:"same-origin",cache:"no-store"});
       if(!res.ok)throw Error(String(res.status));
       const data=await res.json() as RowPage;
       if(epoch!==historyEpoch.current)return;
       setSelectedJob(job);setAuditState(data.job.auditStatus);
-      setAuditRows(prev=>next?[...prev,...data.rows]:data.rows);
-      setRowCursor(data.nextCursor);
-    }catch{if(epoch===historyEpoch.current)setHistoryError("監査行を取得できません。");}
-    finally{setHistoryBusy(false);}
+      setAuditRows(data.rows);setRowCursor(data.nextCursor);
+      setAuditPage(pageIndex);
+      setAuditStarts(prev=>pageIndex===0?[null]:[...prev.slice(0,pageIndex),cursor]);
+    }catch{if(epoch===historyEpoch.current)setHistoryError("監査行を取得できません。認証と接続を確認してください。");}
+    finally{if(epoch===historyEpoch.current)setHistoryBusy(false);}
   }
 
   async function selectCsv(file: File) {
@@ -396,23 +405,31 @@ export function App() {
                   <section className="panel" aria-labelledby="history-title">
         <h2 id="history-title">取込履歴の詳細</h2>
         <p>監査は読み取り専用。過去の取込結果が存在しない場合、推測して補完しません。</p>
-        <button type="button" disabled={historyBusy} onClick={()=>{setSelectedJob(null);setAuditRows([]);void loadHistory();}}>履歴を表示・更新</button>
+        <button type="button" disabled={historyBusy} onClick={()=>void loadHistory()}>履歴を表示・更新</button>
         {historyError&&<p role="alert">{historyError}</p>}
+        {historyBusy&&<p role="status">監査履歴を読み込み中…</p>}
+        {!historyBusy&&!historyError&&history.length===0&&<p className="hint">この期間に表示できる取込履歴はありません。</p>}
+        {history.length>0&&<p className="hint">取込履歴 {historyPage+1}ページ目（各ページ最大10件）</p>}
         <ul>{history.map(j=><li key={j.id}>
           {j.startedAt} · {j.source} · {j.status} · 監査 {j.auditStatus==="legacy_unavailable"?"旧形式・記録なし":j.auditStatus==="incomplete"?"不完全":j.auditCount+"件"}
           <button type="button" disabled={historyBusy} onClick={()=>void loadAudit(j.id)}>行を表示</button>
         </li>)}</ul>
-        {historyCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyCursor)}>さらに履歴を表示</button>}
+        {historyPage>0&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyStarts[historyPage-1],historyPage-1)}>前の取込10件</button>}
+        {historyCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyCursor,historyPage+1)}>次の取込10件</button>}
         {selectedJob&&<div aria-live="polite">
           <h3>選択した取込の監査行</h3>
+          <p className="hint">表示する保存済み数値は現在のDBの値です。当時の元CSVの数値ではありません。</p>
           {auditState==="legacy_unavailable"&&<p>旧形式のため行単位監査は存在しません。過去の結果は推定しません。</p>}
           {auditState==="incomplete"&&<p role="alert">監査記録が欠落しています。結果は確定できません。</p>}
+          {auditRows.length===0&&auditState==="available"&&<p className="hint">この取込に監査行はありません。</p>}
+          {auditRows.length>0&&<p className="hint">監査行 {auditPage+1}ページ目（各ページ最大10件）</p>}
           <ol>{auditRows.map(r=><li key={r.line}>CSV {r.line}行：{r.result}
             {r.errorCode?" ("+r.errorCode+")":""}
             {r.values&&<span> · {Object.entries(r.values).map(([k,v])=>k+"="+showValue(v)).join(" / ")}</span>}
             {!r.values&&" · 元の値は監査に保存されていません"}
           </li>)}</ol>
-          {rowCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,rowCursor)}>さらに監査行を表示</button>}
+          {auditPage>0&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,auditStarts[auditPage-1],auditPage-1)}>前の監査行10件</button>}
+          {rowCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadAudit(selectedJob,rowCursor,auditPage+1)}>次の監査行10件</button>}
         </div>}
       </section>
 
