@@ -182,3 +182,12 @@ audit jobs. Conflict rows block the entire submitted chunk until re-reviewed.
 No Android UI or real-UAT data operation is part of Stage 2B; Stage 2C is
 tracked separately in Issue #142. Do not claim remote applicability from
 local unit tests or a successful Draft PR CI.
+
+## MVP-M07 — registered action experiment evidence (Issue #201)
+
+- `GET /api/mvp/experiments/evidence?id=<UUID>` is read-only; existing Worker signed-owner/passkey session authorization remains mandatory **before** database access. The experiment lookup binds both `id` and `owner_id` and another Owner's id is indistinguishable from missing.
+- Baseline and intervention use the **same observed JST calendar day count**. For a started plan, intervention is from its saved `starts_on` through `min(ends_on,today JST)`. Baseline is the same number of days ending immediately before `starts_on`. They never overlap. A plan not yet started returns `not_started` with null evidence: future measurements are not invented. A running plan is expressly marked `in_progress` (not the outcome of its future full duration).
+- Both periods reuse M02/M03 representative-day aggregation and the canonical source precedence: ECLEAR for body weight, Google Fit for steps; other sources cannot masquerade as canonical historical records, and missing days are not zero. An old `drinking_presence=1` never implies a 1-cup drink.
+- Each period's **trailing 7-calendar-day weight mean** requires a full seven-day observed calendar window and at least **4 separate measured days**. Otherwise the mean is `null`, with `observedDays` and `windowDays` reported so a one-day reading cannot be called a trend. This follows the existing REQ-003/MVP-α 4/7 threshold and does not impute missing days.
+- UI displays the two dated windows, their first/last measured weight and coverage, 7-day mean and sufficiency, mean steps and source, drinking yes/no/unknown days, recorded cups and unknown/observed coverage, outings and meals. Read-only values are **observational evidence, not a causal effect estimate**; the user's saved `continue/revise/stop/unknown` decision is never auto-generated or modified.
+- No new table, migration, cache, client permanent record, Cloudflare variable, authorization exception or automatic data upload. Android touch acceptance and richer plan modification remain separate from synthetic desktop/390px Chromium tests.
