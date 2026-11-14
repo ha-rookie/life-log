@@ -39,6 +39,15 @@ export function parseDrinkCupsInput(raw:string):number|null{
   const cups=Number(raw);
   return cups>=1&&cups<=50?cups:null;
 }
+/** The backend accepts precise JST timestamps only within the previous 366 days. */
+export function parseDrinkLocalDateTime(local:string,nowMs=Date.now()):string|null{
+  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)||!Number.isFinite(nowMs))return null;
+  const observed=local+":00+09:00",epoch=Date.parse(observed);
+  if(!Number.isFinite(epoch)||epoch<=nowMs-366*86400000||epoch>nowMs+60000)return null;
+  // Reject silently normalized impossible calendar dates and invalid hours.
+  if(new Date(epoch+9*3600000).toISOString().slice(0,16)!==local)return null;
+  return observed;
+}
 export function validDrinkAmounts(kind:DrinkKind,cups:unknown,volumeMl:unknown,abvPct:unknown):boolean{
   if(!Number.isInteger(cups)||(cups as number)<1||(cups as number)>50)return false;
   if(volumeMl!==null&&(typeof volumeMl!=="number"||!Number.isFinite(volumeMl)||

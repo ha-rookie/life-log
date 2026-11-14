@@ -194,10 +194,32 @@ try{
  await cupInput("#drink-cups-new","51");
  assert.equal(await js("document.querySelector('#drink-cups-new').getAttribute('aria-invalid')"),"true");
  await cupInput("#drink-cups-new","7");
+ // Past entries must be created at the selected JST time, not submission time.
+ const historicDay=new Date(Date.now()+9*3600000-2*86400000).toISOString().slice(0,10);
+ const historicLocal=historicDay+"T20:30";
+ const futureLocal=new Date(Date.now()+9*3600000+86400000).toISOString().slice(0,16);
+ async function chooseDrinkTime(value){
+  await js("(()=>{const e=document.querySelector('#drink-time-new');"+
+   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
+   "setter.call(e,"+JSON.stringify(value)+");"+
+   "e.dispatchEvent(new Event('input',{bubbles:true}));"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));return e.value})()");
+  await wait(()=>js("document.querySelector('#drink-time-new').value==="+JSON.stringify(value)),
+   "chosen drink date/time "+value);
+ }
+ assert.equal(await js("document.querySelector('#drink-time-new').type"),"datetime-local");
+ await chooseDrinkTime(futureLocal);
+ await wait(()=>js("document.querySelector('#drink-time-new').getAttribute('aria-invalid')==='true'"),
+  "future date blocked");
+ await chooseDrinkTime(historicLocal);
+ await wait(()=>js("document.querySelector('#drink-time-new').getAttribute('aria-invalid')==='false'"),
+  "historical date valid");
+
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('ハイボールを7杯記録')&&!x.disabled)"),"valid cups save enabled");
  await click("ハイボールを7杯記録");
  await wait(()=>lastDrinkPost?.cups===7,"POST numeric cups");
  assert.equal(typeof lastDrinkPost.cups,"number");
+ assert.equal(lastDrinkPost.observedAt,historicLocal+":00+09:00","POST must use selected JST historical time");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic record listed");
  assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('過去30日の飲酒記録を確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
  await click("訂正");
@@ -222,7 +244,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","edit empty/51 blocked","PATCH number cups","no overflow"],
+   "POST number cups","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
