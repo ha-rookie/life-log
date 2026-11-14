@@ -111,6 +111,31 @@ async function intercept(p){
    data={status:"updated"};
   }else {code=405;data={error:"METHOD_NOT_ALLOWED"};}
  }
+ else if(path==="/api/mvp/experiments")data={experiments:[]};
+ else if(path==="/api/mvp/compare"){
+   const q=url.searchParams;
+   const summary=(from,to,observed)=>({
+     from,to,calendarDays:15,
+     weight:observed?{
+       startDay:from,startKg:78,startMeasuredAt:from+"T08:00:00+09:00",startSource:"csv:eclear",
+       endDay:to,endKg:77.5,endMeasuredAt:to+"T21:00:00+09:00",endSource:"manual:weight",
+       deltaKg:-0.5,observedDays:2,missingDays:13
+     }:{
+       startDay:null,startKg:null,startMeasuredAt:null,startSource:null,
+       endDay:null,endKg:null,endMeasuredAt:null,endSource:null,
+       deltaKg:null,observedDays:0,missingDays:15
+     },
+     steps:{mean:null,observedDays:0,missingDays:15,zeroDays:0,sources:[]},
+     drinking:{observedDays:0,drinkingDays:0,nondrinkingDays:0,missingDays:15,
+       recordedAlcoholCups:0,recordedNonAlcoholCups:0,cupEntryCount:0,knownAlcoholG:0,unknownAlcoholCups:0},
+     outings:{visits:0,work:0,bar:0,other:0},
+     meals:{lateMealDays:0,lateMealObservedDays:0,observedLunchDays:0,observedDinnerDays:0,
+       restaurantLunchDays:0,restaurantDinnerDays:0,takeoutLunchDays:0,takeoutDinnerDays:0}
+   });
+   data={a:summary(q.get("aFrom"),q.get("aTo"),true),
+     b:summary(q.get("bFrom"),q.get("bTo"),false),
+     disclaimer:"Synthetic only; no causal claim."};
+ }
  else if(path==="/api/mvp/meals"||path==="/api/mvp/outings")data={entries:[]};
  else {code=404;data={error:"SYNTHETIC_UNHANDLED"};}
  await cmd("Fetch.fulfillRequest",{requestId:p.requestId,responseCode:code,responseHeaders:[{name:"content-type",value:"application/json"}],body:encode(data)});
@@ -329,6 +354,25 @@ try{
  await chooseManualHistory(new Date(Date.now()+9*3600000).toISOString().slice(0,10));
  await wait(()=>js("document.querySelector('.manual-records')?.innerText.includes('手入力なし')"),
   "current month has no old manual entries");
+ // The M02 period comparison must show the exact sampled evidence, coverage,
+ // and an honest empty-range state in the real 390px synthetic browser.
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#insights"});
+ await wait(()=>contains("2期間の体重・生活比較"),"analysis view mounted");
+ await click("期間を比較");
+ await wait(()=>contains("期間内の最初の実測"),"comparison evidence");
+ assert(await contains("csv:eclear"),"authoritative ECLEAR source displayed");
+ assert(await contains("manual:weight"),"ending manual source displayed");
+ assert(await contains("欠測 13日"),"missing weight days displayed");
+ assert(await contains("実測が2日未満のため算出不可"),"empty range cannot yield a false delta");
+ assert(await contains("実測記録なし"),"empty period does not fabricate a reading");
+ // Editing a date must immediately hide stale evidence until re-comparing.
+ await js("(()=>{const el=document.querySelector('#compare-title').closest('section').querySelector('input[type=date]');"+
+  "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
+  "setter.call(el,'2026-01-01');el.dispatchEvent(new Event('input',{bubbles:true}));"+
+  "el.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await wait(()=>js("!document.body.innerText.includes('期間内の最初の実測')"),
+   "old compare hidden after date edit");
+ assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px analysis overflow");
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"drink form 390px overflow");
  assert.equal(await js("window.innerWidth"),390);
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
@@ -337,7 +381,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","stale compare cleared","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

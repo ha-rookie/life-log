@@ -168,6 +168,11 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   const result=await res.json() as {a:any;b:any};
   expect(result.a.weight.deltaKg).toBe(-0.5);
   expect(result.b.weight.deltaKg).toBe(-1);
+  expect(result.a.weight).toMatchObject({
+    startDay:day(28),startKg:78,startMeasuredAt:time(28),startSource:"eclear",
+    endDay:day(27),endKg:77.5,endMeasuredAt:time(27),endSource:"eclear",
+    observedDays:2,missingDays:13
+  });
   expect(result.a.weight.observedDays).toBe(2);
   expect(result.a.steps.zeroDays).toBe(1);
   expect(result.a.steps.observedDays).toBe(2);
@@ -208,9 +213,34 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
     weight:{startKg:number|null;endKg:number|null;deltaKg:number|null;observedDays:number};
     steps:{mean:number|null;observedDays:number;zeroDays:number;sources:string[]}
   }};
-  expect(result.a.weight).toMatchObject({startKg:80,endKg:79,deltaKg:-1,observedDays:2});
+  expect(result.a.weight).toMatchObject({
+    startKg:80,startDay:a,startMeasuredAt:a+"T08:00:00+09:00",startSource:"csv:eclear",
+    endKg:79,endDay:b,endMeasuredAt:b+"T08:00:00+09:00",endSource:"eclear",
+    deltaKg:-1,observedDays:2,missingDays:2
+  });
   expect(result.a.steps).toMatchObject({mean:500,observedDays:2,zeroDays:1});
   expect(result.a.steps.sources).toEqual(["google_fit","fit"]);
+ });
+ it("keeps one-observation and empty comparison endpoints null without leaking another Owner",async()=>{
+  await db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+    "VALUES(?,?,?,?,?,?,?)").bind("one-owner","owner",time(3),75,"manual:weight","single","measured").run();
+  await db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+    "VALUES(?,?,?,?,?,?,?)").bind("another-owner","other",time(0),100,"eclear","other","measured").run();
+  const q=new URLSearchParams({aFrom:day(3),aTo:day(2),bFrom:day(1),bTo:day(0)});
+  const response=await call(db,"/api/mvp/compare?"+q);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toContain("no-store");
+  const result=await response.json() as {a:{weight:any};b:{weight:any}};
+  expect(result.a.weight).toMatchObject({
+    startDay:day(3),startKg:75,startMeasuredAt:time(3),startSource:"manual:weight",
+    endDay:day(3),endKg:75,endMeasuredAt:time(3),endSource:"manual:weight",
+    observedDays:1,missingDays:1,deltaKg:null
+  });
+  expect(result.b.weight).toMatchObject({
+    startDay:null,startKg:null,startMeasuredAt:null,startSource:null,
+    endDay:null,endKg:null,endMeasuredAt:null,endSource:null,
+    observedDays:0,missingDays:2,deltaKg:null
+  });
  });
  it("persists one active hypothesis and records explicit user decision",async()=>{
   const plan={id:one,statement:"Evening walks change my steps",supportText:"some observations",
