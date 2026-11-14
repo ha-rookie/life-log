@@ -255,7 +255,7 @@ describe("v3 Japanese lifestyle with optional date-only weight (#211)",()=>{
    const parsed=await previewCsv("lifestyle_weight",canon);
    expect(parsed.errors).toEqual([]);
    expect(parsed.rows.map(r=>r.weight)).toEqual([75.6,null]);
-   for(const [value,code] of [["0","WEIGHT"],["500","WEIGHT"],["-1","WEIGHT"],["abc","WEIGHT"]]){
+   for(const value of ["0","500","-1","abc"]){
      const bad=await previewCsv("lifestyle_weight",canon.replace("75.6",value));
      expect(bad.errors).toHaveLength(1);
    }
