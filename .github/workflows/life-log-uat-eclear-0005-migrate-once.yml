@@ -1,0 +1,149 @@
+name: Life-log one-shot ECLEAR UAT additive audit Migration 0005
+
+# Schema-only migration of the existing D1; no personal data rows read by CI.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-eclear-0005-uat-migration-once-193
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt <= 2 &&
+      github.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == 'ha-rookie/life-log' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(d1): migrate ECLEAR audit 0005 for UAT (#193)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      APPROVED_PARENT: 259a99f2414d375848f87b733746b4bc1c604de2
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      D1_UUID: 421d0116-5c33-4782-a2b6-28f9684d3956
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify immutable UAT target, reviewed migration and exact one-file squash
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REPOSITORY" = ha-rookie/life-log
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^)" = "$APPROVED_PARENT"
+          test "$(git show -s --format=%s HEAD)" = 'ci(d1): migrate ECLEAR audit 0005 for UAT (#193)'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git diff-tree --no-commit-id --name-only -r HEAD > "$RUNNER_TEMP/actual"
+          printf '%s\n' '.github/workflows/life-log-uat-eclear-0005-migrate-once.yml' > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          test "$(git hash-object migrations/0005_eclear_enrichment_audit.sql)" = '2c9898f85798117952a208e8d45f1ab4153037d3'
+          test "$(find migrations -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort | sed 's|^migrations/||')" = "$(printf '%s\n' 0001_initial.sql 0002_owner_auth.sql 0003_owner_passkey.sql 0004_drink_details.sql 0005_eclear_enrichment_audit.sql)"
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          const cfg=JSON.parse(readFileSync('wrangler.jsonc','utf8')
+            .split(/\r?\n/).filter(l=>!l.trimStart().startsWith('//')).join('\n'));
+          const check=arr=>Array.isArray(arr)&&arr.length===1 &&
+            arr[0].binding==='DB' && arr[0].database_name==='life-log-dev' &&
+            arr[0].database_id==='421d0116-5c33-4782-a2b6-28f9684d3956';
+          if(cfg.name!=='life-log-dev'||cfg.env?.uat?.name!=='life-log-uat'||
+             !check(cfg.d1_databases)||!check(cfg.env?.uat?.d1_databases))
+            throw Error('Invalid D1 UAT identity');
+          const sql=readFileSync('migrations/0005_eclear_enrichment_audit.sql','utf8');
+          const withoutComments=sql.split('\n').filter(x=>!x.trimStart().startsWith('--')).join('\n');
+          if(/\b(?:DROP|ALTER|UPDATE|DELETE|INSERT|REPLACE|TRUNCATE)\b/i.test(withoutComments))
+            throw Error('Forbidden mutation in additive 0005');
+          console.log('PASS: exact 0005 migration hash, UAT DB and one-file main commit');
+          JS
+      - name: Install existing locked Wrangler dependencies (no remote access)
+        run: npm ci --no-audit --no-fund
+      - name: Confirm ledger and absent audit tables; apply only 0005; verify ledger and schema
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const token=process.env.CLOUDFLARE_API_TOKEN,acct=process.env.CLOUDFLARE_ACCOUNT_ID;
+          const id=process.env.D1_UUID;
+          assert(token?.length>=12&&/^[a-f0-9]{32}$/i.test(acct||''));
+          const base='https://api.cloudflare.com/client/v4/accounts/'+acct+'/d1/database/'+id;
+          async function call(method,path,body){
+            const r=await fetch(base+path,{method,headers:{
+              Authorization:'Bearer '+token,
+              ...(body?{'Content-Type':'application/json'}:{})
+            },...(body?{body:JSON.stringify(body)}:{})});
+            if(!r.ok)throw Error('REMOTE_D1_PREFLIGHT_UNAVAILABLE');
+            const v=await r.json();
+            if(v.success!==true)throw Error('REMOTE_D1_PREFLIGHT_ERROR');
+            return v.result;
+          }
+          const db=await call('GET','');
+          assert.equal(db.uuid,'421d0116-5c33-4782-a2b6-28f9684d3956');
+          assert.equal(db.name,'life-log-dev');
+          async function query(sql){
+            const v=await call('POST','/query',{sql,params:[]});
+            assert(v.length===1&&v[0].success===true);
+            assert(!v[0].meta?.changes&&!v[0].meta?.changed_db);
+            assert(Array.isArray(v[0].results));
+            return v[0].results;
+          }
+          const tables=await query("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('d1_migrations','eclear_enrichment_jobs','eclear_enrichment_row_audit','eclear_enrichment_cell_audit','eclear_enrichment_asserts')");
+          assert(tables.length===1&&tables[0].name==='d1_migrations','Unexpected audit-table/schema presence');
+          const ledger=await query('SELECT name FROM d1_migrations ORDER BY id');
+          assert(ledger.length===4,'Unexpected remote migration count');
+          const expected=['0001_initial.sql','0002_owner_auth.sql','0003_owner_passkey.sql','0004_drink_details.sql'];
+          assert.deepEqual(ledger.map(x=>x.name),expected,'Unexpected unapplied or nonmatching migrations');
+          console.log('PASS: remote D1 metadata verified; 0001-0004 applied, 0005 absent, 0/4 audit tables');
+          JS
+          # Wrangler applies the single remaining migration transactionally and
+          # captures its own D1 migration backup. No other SQL or D1 target.
+          npx --no-install wrangler d1 migrations apply DB --env uat --remote
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const token=process.env.CLOUDFLARE_API_TOKEN,acct=process.env.CLOUDFLARE_ACCOUNT_ID;
+          const base='https://api.cloudflare.com/client/v4/accounts/'+acct+'/d1/database/'+process.env.D1_UUID;
+          const query=async sql=>{
+            const r=await fetch(base+'/query',{method:'POST',headers:{
+              Authorization:'Bearer '+token,'Content-Type':'application/json'
+            },body:JSON.stringify({sql,params:[]})});
+            if(!r.ok)throw Error('REMOTE_D1_POSTCHECK_UNAVAILABLE');
+            const v=await r.json();
+            assert(v.success===true&&v.result?.[0]?.success===true);
+            assert(!v.result[0].meta?.changes&&!v.result[0].meta?.changed_db);
+            return v.result[0].results;
+          };
+          const names=(await query("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('eclear_enrichment_jobs','eclear_enrichment_row_audit','eclear_enrichment_cell_audit','eclear_enrichment_asserts') ORDER BY name")).map(x=>x.name);
+          const expected=['eclear_enrichment_asserts','eclear_enrichment_cell_audit','eclear_enrichment_jobs','eclear_enrichment_row_audit'];
+          assert.deepEqual(names,expected,'ECLEAR audit schema not complete');
+          const applied=await query("SELECT name FROM d1_migrations WHERE name='0005_eclear_enrichment_audit.sql' LIMIT 1");
+          assert(applied.length===1&&applied[0].name==='0005_eclear_enrichment_audit.sql');
+          console.log('PASS: remote UAT D1 Migration 0005 applied; four audit tables exist; personal rows untouched');
+          if(process.env.GITHUB_STEP_SUMMARY){
+            const {appendFileSync}=await import('node:fs');
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+              '### ECLEAR additive UAT D1 Migration 0005\n- Applied only migration 0005 to existing life-log-dev D1\n- Four audit tables and 0005 ledger verified\n- No personal measurements queried/modified\n- Worker feature remains disabled pending UAT rollout\n');
+          }
+          JS
