@@ -30,13 +30,13 @@ jobs:
     env:
       BASE_SHA: 39a7d2ab3a30356bdb902ce206dcb30a0fdb84ec
       FIX_SHA: 54f2b4732baafbeb143ac2943867535e5a6f3b99
-      TARGET_SHA: ${{ github.event.workflow_run.head_sha }
-      GH_TOKEN: ${{ github.token }
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v6
@@ -86,8 +86,8 @@ jobs:
       - name: One-shot guarded Worker-only deployment (preserve UAT auth, vars, D1 binding)
         shell: bash
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
