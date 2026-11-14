@@ -58,7 +58,7 @@ jobs:
       - name: Install pinned dependencies
         run: npm ci --no-audit --no-fund
       - name: Test fail-closed UAT guard with synthetic fixtures
-        run: node --test tests/uat-ui-release-guard.test.mjs
+        run: npx --no-install vitest run tests/uat-ui-release-guard.test.mjs
       - name: Build UI and Worker (no remote services)
         run: npm run build
       - name: Dry-run guarded UAT bundle, never access Cloudflare
@@ -113,7 +113,7 @@ jobs:
           trap 'rm -f "$cfg" "$before"' EXIT
           npm ci --no-audit --no-fund
           npm run build
-          node --test tests/uat-ui-release-guard.test.mjs
+          npx --no-install vitest run tests/uat-ui-release-guard.test.mjs
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
           # GET Worker settings metadata only. No remote D1 query or personal data.
           node scripts/uat-ui-release-guard.mjs snapshot "$before"

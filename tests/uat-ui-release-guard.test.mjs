@@ -1,4 +1,4 @@
-import {describe,it} from "node:test";
+import {describe,it} from "vitest";
 import assert from "node:assert/strict";
 import {prepareConfig,snapshotBindings,assertSameBindings,
   DATABASE,ORIGIN} from "../scripts/uat-ui-release-guard.mjs";
