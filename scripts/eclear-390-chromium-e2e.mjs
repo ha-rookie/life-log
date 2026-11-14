@@ -235,7 +235,23 @@ try{
  assert.equal(await js("document.body.innerText.includes('注文した杯数：お酒 0 杯 ／ ノンアル 0 杯')"),true,
   "historical browsing must not corrupt today's drink totals");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic old record listed");
- assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('過去30日の飲酒記録を確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
+ assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('飲酒履歴を期間指定して確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
+ // Select today's 30-day window: the older drink disappears, then reappears when returning.
+ const todayDay=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+ async function chooseHistoryEnd(day){
+  await js("(()=>{const e=document.querySelector('#drink-history-to');"+
+   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
+   "setter.call(e,"+JSON.stringify(day)+");"+
+   "e.dispatchEvent(new Event('input',{bubbles:true}));"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));return e.value})()");
+  await wait(()=>lastHistoryQuery?.to===day,"history GET end "+day);
+ }
+ await chooseHistoryEnd(todayDay);
+ await wait(()=>js("document.body.innerText.includes('選択した期間に飲酒記録はありません。')"),
+  "older drink not in today's window");
+ await chooseHistoryEnd(historicDay);
+ await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),
+  "historic drink restored after manually choosing a past date");
  await click("訂正");
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-edit'))"),"edit cup form");
  const editSettings=await js("(()=>{const x=document.querySelector('#drink-cups-edit');x.focus();x.click();return {type:x.type,keyboard:x.inputMode,value:x.value,selected:[x.selectionStart,x.selectionEnd]}})()");
