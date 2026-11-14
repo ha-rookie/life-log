@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 03092b1839d317ac349dffe98e1c0c502c8929c3
-      FIX_SHA: 03092b1839d317ac349dffe98e1c0c502c8929c3
+      BASE_SHA: fd9748e8d6f7f9851a9e691d99ea932c207ddfc6
+      FIX_SHA: fd9748e8d6f7f9851a9e691d99ea932c207ddfc6
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
@@ -59,8 +59,8 @@ jobs:
           # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
           git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
             src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
-          gh api "repos/$GITHUB_REPOSITORY/pulls/181" \
-            --jq '.merged_at != null and .merge_commit_sha == "03092b1839d317ac349dffe98e1c0c502c8929c3"' | grep -Fx true
+          gh api "repos/$GITHUB_REPOSITORY/pulls/184" \
+            --jq '.merged_at != null and .merge_commit_sha == "fd9748e8d6f7f9851a9e691d99ea932c207ddfc6"' | grep -Fx true
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
@@ -75,7 +75,7 @@ jobs:
             throw Error('UAT target identity changed; do not deploy');
           }
           JS
-          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged fix #181 and isolated UAT target"
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged fix #184 and isolated UAT target"
       - name: Install/build and validate existing UI release guard with offline fixtures
         shell: bash
         run: |
