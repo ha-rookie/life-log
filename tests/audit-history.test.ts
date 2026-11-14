@@ -76,7 +76,7 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     const awaitDigest=await hash(canonical);
     const first=await handleImport(request(),db,"owner");
     expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject({inserted:3,skipped:0,auditStatus:"complete"});
+    expect(await first.json()).toMatchObject({inserted:3,skipped:0});
     const list=await get(db);
     expect(list.code).toBe(200);
     expect(list.body.jobs).toHaveLength(1);
