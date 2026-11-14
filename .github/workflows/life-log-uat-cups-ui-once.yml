@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 9cc9f52083f2cb65ac4494436494ec9409974d44
+      BASE_SHA: 4574622a59bde12972ee1457d00b5d263602dd87
       FIX_SHA: 54f2b4732baafbeb143ac2943867535e5a6f3b99
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
@@ -96,10 +96,9 @@ jobs:
           # Exact-main recheck immediately before touching Cloudflare.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           umask 077
-          tmpdir="$(mktemp -d "$PWD/.uat-cups-ui-XXXXXXXX")"
-          trap 'rm -rf "$tmpdir"' EXIT
-          cfg="$tmpdir/uat-ui.jsonc"
-          before="$tmpdir/bindings-before.json"
+          cfg="$(mktemp -u "$PWD/.uat-cups-ui-XXXXXXXX.jsonc")"
+          before="$(mktemp -u "$RUNNER_TEMP/uat-cups-bindings-XXXXXXXX.json")"
+          trap 'rm -f "$cfg" "$before"' EXIT
           # Existing guard strips stale repo vars and retains active UAT auth/Secrets.
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
           npx --no-install wrangler deploy --config "$cfg" --env uat --keep-vars --dry-run
