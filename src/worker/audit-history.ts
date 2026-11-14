@@ -11,6 +11,10 @@ type Row = { source_row_number: number; result: string; error_code: string | nul
 type Cursor = { time: string; id: string } | { row: number };
 /** Only contract-approved public audit classification codes may leave the Worker. */
 const PUBLIC_AUDIT_ERRORS = new Set(["LIFESTYLE_CONFLICT_KEPT","AMBIGUOUS_ECLEAR_TIMESTAMP"]);
+const originalHashFromMarker=(marker:string):string|null=>{
+  const found=/^csv:audited-v2:(?:eclear|lifestyle|fit|weight_day):raw-utf8-sha256:([0-9a-f]{64})$/.exec(marker);
+  return found?.[1]??null;
+};
 const publicAuditError = (code:string|null):string|null =>
   code!==null && PUBLIC_AUDIT_ERRORS.has(code) ? code : null;
 const encode = (value: Cursor) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -100,7 +104,8 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
         const insertedRecords = await countDestinations(db,owner,job.id);
         jobs.push({ id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
           completedAt:job.completed_at,auditStatus:auditStatus(job,audit,insertedRecords),
-          auditCount:audit.total<0?0:audit.total,insertedRecords });
+          auditCount:audit.total<0?0:audit.total,insertedRecords,
+          originalSha256:originalHashFromMarker(job.source_id) });
       }
       const last=selected.at(-1);
       return reply({ jobs,nextCursor:rows.results.length>args.limit&&last
@@ -135,7 +140,8 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     const selected=rows.results.slice(0,args.limit);
     const last=selected.at(-1);
     return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
-      auditStatus:status,counts:status==="available"?stats.counts:null},
+      auditStatus:status,counts:status==="available"?stats.counts:null,
+      originalSha256:originalHashFromMarker(job.source_id)},
       rows:selected.map(r=>({line:r.source_row_number,
         result:r.result==="inserted"&&r.error_code==="UPDATED"?"updated":r.result,
         errorCode:publicAuditError(r.error_code),

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Synthetic-only real Chromium E2E. No Cloudflare access or personal records.
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {spawn} from "node:child_process";
 import {mkdtemp,readFile,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -19,7 +20,7 @@ await writeFile(jpLifestyleFixture,"\uFEFF日付,飲酒,歩数,体重_kg,測定�
 await writeFile(jpRejectedFixture,"日付,飲酒,歩数,体重_kg\n2026/01/05,1,0,75\n");
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
-let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null;
+let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null,lastNormalPost=null;
 const auditRequestLog=[];
 const syntheticManualDay=new Date(Date.now()+9*3600000-45*86400000).toISOString().slice(0,10);
 const pending=new Map();
@@ -62,7 +63,16 @@ async function intercept(p){
   if(mode==="stale"){code=409;data={error:"REVIEW_STALE"};}
   else if(mode==="timeout"){code=503;data={error:"SYNTHETIC_TIMEOUT"};}
   else{mode="readback";data={status:"applied",inserted:0,enriched:1,cells:5};}
- }else if(path==="/api/import/confirm"){normal++;data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};}
+ }else if(path==="/api/import/confirm"){
+   normal++;lastNormalPost=JSON.parse(p.request.postData||"{}");
+   assert.equal(typeof lastNormalPost.csv,"string");
+   if(lastNormalPost.originalBase64!==undefined){
+     const original=Buffer.from(lastNormalPost.originalBase64,"base64");
+     assert.equal(createHash("sha256").update(original).digest("hex"),lastNormalPost.originalSha256,
+       "original raw bytes digest is independently reproducible");
+   }
+   data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};
+ }
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
  else if(path==="/api/import/history"||path.startsWith("/api/import/history/")){
    const cursor=url.searchParams.get("cursor");
@@ -289,6 +299,11 @@ try{
  await click("確認して登録する");
  await wait(()=>normal===2,"Japanese lifestyle canonical explicit submit");
  assert(await contains("登録完了：追加 1件"),"synthetic Japanese import success");
+ assert.equal(typeof lastNormalPost?.originalBase64,"string","original bytes sent only upon explicit confirm");
+ assert.equal(lastNormalPost.originalSha256.length,64,"original digest attached");
+ const rawJP=Buffer.from(lastNormalPost.originalBase64,"base64");
+ assert.deepEqual([...rawJP.subarray(0,3)],[0xef,0xbb,0xbf],"UTF-8 BOM preserved");
+ assert(rawJP.includes(Buffer.from("\r\n")),"original CRLF retained in proof");
  await uploadSyntheticFile(jpRejectedFixture);
  await wait(()=>contains("CSVの形式・日時・数値・重複を確認できませんでした"),"second target safely rejected");
  assert.equal(normal,2,"rejected Japanese weight never sent to backend");
@@ -296,6 +311,7 @@ try{
   "rejected file cannot be confirmed");
  await uploadSyntheticFile(jpLifestyleFixture);
  await wait(()=>contains("判別した種類：生活記録"),"valid file recovers after rejection");
+ assert(await contains("元ファイルのSHA-256を照合します"),"one-chunk UTF-8 bounded proof");
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
    "Japanese CSV picker 390px overflow");
  assert.equal(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.textContent.includes('ログイン・パスキー設定'));if(!d)return false;d.open=true;return true})()"),true);
@@ -481,7 +497,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","original source bytes BOM/CRLF SHA256 explicit confirm","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

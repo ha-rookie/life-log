@@ -1,4 +1,4 @@
-import type { CsvSource } from "./csv-import";
+import { MAX_BYTES, type CsvSource } from "./csv-import";
 
 /** Browser-only normalization. Original files never enter GitHub or CI. */
 export type NormalizedSource = { parts:string[]; total:number; missingSteps:number; };
@@ -19,6 +19,26 @@ export function decodeOfficialCsv(bytes: Uint8Array):{text:string;encoding:"UTF-
       throw Error("CSV_ENCODING_UNSUPPORTED");
     }
   }
+}
+
+/**
+ * Attach the exact original bytes ONLY for a bounded, single-chunk UTF-8 CSV.
+ * The browser keeps the bytes transient; the Worker must revalidate them.
+ */
+export async function originalUtf8Proof(bytes:Uint8Array):Promise<{
+  originalBase64:string;originalSha256:string
+}>{
+  if(bytes.byteLength<1||bytes.byteLength>MAX_BYTES)throw Error("RAW_CSV_SIZE");
+  // Fatal UTF-8 validation rejects Shift_JIS and malformed sequences.
+  new TextDecoder("utf-8",{fatal:true}).decode(bytes);
+  const parts:string[]=[];
+  for(let i=0;i<bytes.length;i+=8192)
+    parts.push(String.fromCharCode(...bytes.subarray(i,i+8192)));
+  const sha=await crypto.subtle.digest("SHA-256",Uint8Array.from(bytes));
+  return {
+    originalBase64:btoa(parts.join("")),
+    originalSha256:[...new Uint8Array(sha)].map(n=>n.toString(16).padStart(2,"0")).join("")
+  };
 }
 
 const PART_ROWS=40;

@@ -6,7 +6,7 @@ import { handleAuditHistory } from "../src/worker/audit-history";
 import { handleImport } from "../src/worker/import";
 import type { ImportDb, Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
-import { normalizeOfficialCsv } from "../src/shared/source-adapter";
+import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 
 interface LocalStatement extends Statement { bind(...values:unknown[]):LocalStatement;run():Promise<unknown> }
 interface LocalDb extends ImportDb {prepare(sql:string):LocalStatement}
@@ -105,6 +105,32 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect((await get(db)).body.jobs[0]).toMatchObject({
       auditStatus:"incomplete",auditCount:2,insertedRecords:3
     });
+  },100_000);
+
+  it("shows the authenticated Owner the first verified raw-byte SHA without private CSV or owner cross-leak",async()=>{
+    const raw="\uFEFF日付,飲酒,歩数\r\n2026/01/08,1,0\r\n";
+    const canonical=normalizeOfficialCsv("lifestyle",raw).parts[0];
+    const proof=await originalUtf8Proof(new TextEncoder().encode(raw));
+    const req=new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle",csv:canonical,hash:await hash(canonical),
+        confirmed:true,...proof})
+    });
+    const res=await handleImport(req,db,"owner");
+    expect(res.status).toBe(200);
+    const list=await get(db);
+    expect(list.body.jobs).toHaveLength(1);
+    expect(list.body.jobs[0]).toMatchObject({originalSha256:proof.originalSha256,
+      auditStatus:"available",insertedRecords:1});
+    const detail=await get(db,"/"+list.body.jobs[0].id);
+    expect(detail.body.job).toMatchObject({originalSha256:proof.originalSha256,
+      auditStatus:"available",counts:{inserted:1}});
+    expect(JSON.stringify(detail.body)).not.toContain("raw-utf8-sha256");
+    expect(JSON.stringify(detail.body)).not.toContain("file_sha256");
+    expect(JSON.stringify(detail.body)).not.toContain("source_row_key");
+    expect(JSON.stringify(detail.body)).not.toContain("owner_id");
+    expect((await get(db,"","","other")).body.jobs).toHaveLength(0);
+    expect((await get(db,"/"+list.body.jobs[0].id,"","other")).code).toBe(404);
   },100_000);
 
   it("reports Fit CSV corrections separately and preserves prior job audit provenance",async()=>{

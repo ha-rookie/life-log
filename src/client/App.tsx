@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { WeightTrendPanel } from "./WeightTrend";
 import { ProgressCharts } from "./ProgressCharts";
 
-import { previewCsv, type CsvSource, type Preview } from "../shared/csv-import";
-import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, partitionOfficialEclearComposition } from "../shared/source-adapter";
+import { previewCsv, MAX_BYTES, type CsvSource, type Preview } from "../shared/csv-import";
+import { normalizeOfficialCsv, decodeOfficialCsv, detectOfficialCsvSource, partitionOfficialEclearComposition, originalUtf8Proof } from "../shared/source-adapter";
 import { EclearEnrichment } from "./EclearEnrichment";
 import { ManualEntry } from "./ManualEntry";
 import { PasskeySetup } from "./PasskeySetup";
@@ -34,10 +34,10 @@ type ImportResult = {
   auditStatus?: "legacy_unavailable" | "complete";
 };
 
-type HistoryJob = { id:string;source:string;status:string;startedAt:string;auditStatus:string;auditCount:number;insertedRecords:number };
+type HistoryJob = { id:string;source:string;status:string;startedAt:string;auditStatus:string;auditCount:number;insertedRecords:number;originalSha256?:string|null };
 type HistoryRow = {line:number;result:string;errorCode:string|null;values:null|Record<string,number|null>};
 type JobPage = {jobs:HistoryJob[];nextCursor:string|null};
-type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;counts:null|Record<string,number>};rows:HistoryRow[];nextCursor:string|null};
+type RowPage = {job:{id:string;source:string;status:string;auditStatus:string;counts:null|Record<string,number>;originalSha256?:string|null};rows:HistoryRow[];nextCursor:string|null};
 const showValue=(n:number|null)=>n===null?"欠測（NULL）":String(n);
 export function App() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
@@ -61,6 +61,7 @@ export function App() {
   const [compositionBusy,setCompositionBusy] = useState(false);
   const [missingFitSteps,setMissingFitSteps] = useState(0);
   const [csvEncoding,setCsvEncoding] = useState<"UTF-8"|"Shift_JIS"|null>(null);
+  const [originalProof,setOriginalProof]=useState<{originalBase64:string;originalSha256:string}|null>(null);
   const [csvPreview, setCsvPreview] = useState<Preview | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [reviewPartIndex,setReviewPartIndex] = useState<number|null>(null);
@@ -80,6 +81,7 @@ export function App() {
   const [auditPage,setAuditPage]=useState(0);
   const [auditStarts,setAuditStarts]=useState<(string|null)[]>([null]);
   const [auditState,setAuditState]=useState("");
+  const [auditOriginalHash,setAuditOriginalHash]=useState<string|null>(null);
   const [historyError,setHistoryError]=useState("");
   const [historyBusy,setHistoryBusy]=useState(false);
   const historyEpoch=useRef(0);
@@ -97,7 +99,7 @@ export function App() {
       setHistoryPage(pageIndex);
       setHistoryStarts(prev=>pageIndex===0?[null]:[...prev.slice(0,pageIndex),cursor]);
       setSelectedJob(null);setAuditRows([]);setRowCursor(null);
-      setAuditPage(0);setAuditStarts([null]);setAuditState("");
+      setAuditPage(0);setAuditStarts([null]);setAuditState("");setAuditOriginalHash(null);
     }catch{if(epoch===historyEpoch.current)setHistoryError("監査履歴を取得できません。認証と接続を確認してください。");}
     finally{if(epoch===historyEpoch.current)setHistoryBusy(false);}
   }
@@ -111,6 +113,7 @@ export function App() {
       const data=await res.json() as RowPage;
       if(epoch!==historyEpoch.current)return;
       setSelectedJob(job);setAuditState(data.job.auditStatus);
+      setAuditOriginalHash(data.job.originalSha256??null);
       setAuditRows(data.rows);setRowCursor(data.nextCursor);
       setAuditPage(pageIndex);
       setAuditStarts(prev=>pageIndex===0?[null]:[...prev.slice(0,pageIndex),cursor]);
@@ -131,18 +134,23 @@ export function App() {
     setReviewPartIndex(null);setReview(null);
     setCanonicalParts([]);setCanonicalTotal(0);
     setCompositionParts([]);setEclearMode("usual");
-    setMissingFitSteps(0);setCsvEncoding(null);setCsvPreview(null);
+    setMissingFitSteps(0);setCsvEncoding(null);setCsvPreview(null);setOriginalProof(null);
     setImportStatus("ファイルを読み込み、形式を確認しています…");
     if(file.size>2_000_000){
       setImportStatus("ファイルが大きすぎます。CSVは2MB以下にしてください。登録は行っていません。");
       return;
     }
     try{
-      const decoded=decodeOfficialCsv(new Uint8Array(await file.arrayBuffer()));
+      const bytes=new Uint8Array(await file.arrayBuffer());
+      const decoded=decodeOfficialCsv(bytes);
       const actualSource=detectOfficialCsvSource(decoded.text);
       if(!actualSource)throw Error("UNKNOWN_SOURCE");
       const normalized=normalizeOfficialCsv(actualSource,decoded.text);
       const composition=actualSource==="eclear"?partitionOfficialEclearComposition(decoded.text):null;
+      // Bounded single-chunk strict UTF-8 only. Multipart and CP932 remain
+      // canonical imports; never claim unverified source-byte provenance.
+      const raw=decoded.encoding==="UTF-8"&&bytes.byteLength<=MAX_BYTES&&
+        normalized.parts.length===1?await originalUtf8Proof(bytes):null;
       // Validate every chunk BEFORE exposing the confirm button. Lifestyle
       // remains bounded by the server limit and D1 conflict guard parameters.
       const checked=await Promise.all(normalized.parts.map(part=>previewCsv(actualSource,part)));
@@ -155,6 +163,7 @@ export function App() {
       setCanonicalTotal(normalized.total);
       setMissingFitSteps(normalized.missingSteps);
       setCsvEncoding(decoded.encoding);
+      setOriginalProof(raw);
       setCsvPreview(checked[0]);
       setImportStatus(actualSource==="eclear"
         ?"ECLEARの読み込みが完了しました。取込方法を選択してください。まだ登録していません。"
@@ -189,7 +198,8 @@ export function App() {
           body:JSON.stringify({
             source:csvSource,csv:part,hash:p.hash,confirmed:true,
             ...(applyReview&&pendingReview?
-              {resolution:{mode:"keep_existing",token:pendingReview.token}}:{})
+              {resolution:{mode:"keep_existing",token:pendingReview.token}}:{}),
+            ...(originalProof&&canonicalParts.length===1?originalProof:{})
           })
         });
         const data=await response.json() as ImportResult;
@@ -362,6 +372,9 @@ export function App() {
         </div>}
         {csvPreview&&(csvSource!=="eclear"||eclearMode==="usual") && <div aria-live="polite">
           <p>読み取り文字コード：{csvEncoding ?? "不明"}</p>
+          <p className="hint">{originalProof
+            ?"元ファイルのSHA-256を照合します（1分割のUTF-8 CSV）。"
+            :"元ファイルのバイト証跡は対象外です（分割取込またはUTF-8以外）。正規化したCSVのみ検証します。"}</p>
           <p>対象 {canonicalParts.length?canonicalTotal:csvPreview.total} 行 /
             有効 {canonicalParts.length?canonicalTotal:csvPreview.rows.length} 行 /
             異常 {csvPreview.errors.length} 行
@@ -412,12 +425,17 @@ export function App() {
         {history.length>0&&<p className="hint">取込履歴 {historyPage+1}ページ目（各ページ最大10件）</p>}
         <ul>{history.map(j=><li key={j.id}>
           {j.startedAt} · {j.source} · {j.status} · 監査 {j.auditStatus==="legacy_unavailable"?"旧形式・記録なし":j.auditStatus==="incomplete"?"不完全":j.auditCount+"件"}
+          {j.originalSha256&&" · 元CSVハッシュ記録あり"}
           <button type="button" disabled={historyBusy} onClick={()=>void loadAudit(j.id)}>行を表示</button>
         </li>)}</ul>
         {historyPage>0&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyStarts[historyPage-1],historyPage-1)}>前の取込10件</button>}
         {historyCursor&&<button type="button" disabled={historyBusy} onClick={()=>void loadHistory(historyCursor,historyPage+1)}>次の取込10件</button>}
         {selectedJob&&<div aria-live="polite">
           <h3>選択した取込の監査行</h3>
+          <p className="hint">{auditOriginalHash
+            ?<>元CSV SHA-256（最初に取込んだUTF-8ファイル）：
+              <code style={{overflowWrap:"anywhere"}}>{auditOriginalHash}</code></>
+            :"元CSVのバイト証跡は保存されていません。"}</p>
           <p className="hint">表示する保存済み数値は現在のDBの値です。当時の元CSVの数値ではありません。</p>
           {auditState==="legacy_unavailable"&&<p>旧形式のため行単位監査は存在しません。過去の結果は推定しません。</p>}
           {auditState==="incomplete"&&<p role="alert">監査記録が欠落しています。結果は確定できません。</p>}
