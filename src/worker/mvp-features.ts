@@ -131,7 +131,9 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
     from:p.from,to:p.to,calendarDays:p.days,
     weight:{
       startDay:start?.[0]??null,startKg:start?.[1].weight_kg??null,
+      startMeasuredAt:start?.[1].measured_at??null,startSource:start?.[1].source_id??null,
       endDay:end?.[0]??null,endKg:end?.[1].weight_kg??null,
+      endMeasuredAt:end?.[1].measured_at??null,endSource:end?.[1].source_id??null,
       deltaKg:start&&end&&observed.length>=2?Number((end[1].weight_kg!-start[1].weight_kg!).toFixed(2)):null,
       observedDays:observed.length,missingDays:p.days-observed.length,
     },

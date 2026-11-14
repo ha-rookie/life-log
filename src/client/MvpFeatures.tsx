@@ -13,7 +13,9 @@ const venueLabel={work:"会社・接待",bar:"居酒屋・バー",other:"その�
 type Experiment={id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;
   status:string;startsOn:string;endsOn:string;targetAction:string;outcomeText:string|null;decision:string|null};
 type Period={from:string;to:string;calendarDays:number;
-  weight:{startKg:number|null;endKg:number|null;deltaKg:number|null;observedDays:number;missingDays:number};
+  weight:{startDay:string|null;startKg:number|null;startMeasuredAt:string|null;startSource:string|null;
+    endDay:string|null;endKg:number|null;endMeasuredAt:string|null;endSource:string|null;
+    deltaKg:number|null;observedDays:number;missingDays:number};
   steps:{mean:number|null;observedDays:number;missingDays:number;zeroDays:number;sources:string[]};
   drinking:{observedDays:number;drinkingDays:number;nondrinkingDays:number;missingDays:number;
     recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number;
@@ -29,6 +31,11 @@ const isoDay=(daysAgo:number)=>new Date(Date.now()+9*3600000-daysAgo*86400000).t
 const localTime=(observed:string)=>new Date(Date.parse(observed)+9*3600000).toISOString().slice(0,16);
 const jstObserved=(local:string)=>local+":00+09:00";
 const render=(num:number|null,suffix="")=>num===null?"データ不足":num.toLocaleString("ja-JP")+suffix;
+// The source and timestamp refer to the representative stored measurement, not a
+// fabricated reading at the start/end of the requested calendar window.
+const weightEvidence=(day:string|null,kg:number|null,measuredAt:string|null,source:string|null)=>
+  day===null||kg===null?"実測記録なし":
+    day+" · "+render(kg," kg")+" · 測定日時 "+(measuredAt??"不明")+" · 出典 "+(source??"不明");
 async function jsonGet<T>(path:string):Promise<T>{
   const res=await fetch(path,{credentials:"same-origin",cache:"no-store"});
   if(!res.ok)throw Error("取得できません（HTTP "+res.status+"）");
@@ -100,6 +107,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [comparison,setComparison]=useState<CompareResult|null>(null);
   const [compareError,setCompareError]=useState("");
   const [compareBusy,setCompareBusy]=useState(false);
+  const compareEpoch=useRef(0);
   const [exportFrom,setExportFrom]=useState(isoDay(29));
   const [exportTo,setExportTo]=useState(jstDay);
   const [exportError,setExportError]=useState("");
@@ -283,14 +291,25 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     }catch(err){await loadOutings();setOutingError(err instanceof Error?err.message:"取り消せませんでした。");}
     finally{setOutingBusy(false);}
   }
+  function changeCompareDate(setter:(v:string)=>void,next:string){
+    // Invalidate both the displayed result and any in-flight response. A result
+    // for yesterday's selected range must never be shown under today's inputs.
+    compareEpoch.current+=1;
+    setter(next);setComparison(null);setCompareError("");setCompareBusy(false);
+  }
   async function compare(){
     if(compareBusy)return;
-    setCompareBusy(true);setCompareError("");
+    const epoch=++compareEpoch.current;
+    setCompareBusy(true);setCompareError("");setComparison(null);
     try{
       const q=new URLSearchParams({aFrom,aTo,bFrom,bTo});
-      setComparison(await jsonGet<CompareResult>("/api/mvp/compare?"+q));
-    }catch(e){setComparison(null);setCompareError(e instanceof Error?e.message:"期間を比較できません。");}
-    finally{setCompareBusy(false);}
+      const result=await jsonGet<CompareResult>("/api/mvp/compare?"+q);
+      if(epoch===compareEpoch.current)setComparison(result);
+    }catch(e){
+      if(epoch===compareEpoch.current){
+        setComparison(null);setCompareError(e instanceof Error?e.message:"期間を比較できません。");
+      }
+    }finally{if(epoch===compareEpoch.current)setCompareBusy(false);}
   }
   async function createPlan(e:React.FormEvent){
     e.preventDefault();if(planBusy)return;
@@ -495,12 +514,12 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       <p className="hint">両期間は重ならないよう指定してください。測定数が少ない場合、変化や原因を断定しません。</p>
       <div className="mvp-grid">
         <fieldset><legend>比較期間A</legend>
-          <label>開始<input type="date" value={aFrom} max={jstDay()} onChange={e=>setAFrom(e.target.value)}/></label>
-          <label>終了<input type="date" value={aTo} max={jstDay()} onChange={e=>setATo(e.target.value)}/></label>
+          <label>開始<input type="date" value={aFrom} max={jstDay()} onChange={e=>changeCompareDate(setAFrom,e.target.value)}/></label>
+          <label>終了<input type="date" value={aTo} max={jstDay()} onChange={e=>changeCompareDate(setATo,e.target.value)}/></label>
         </fieldset>
         <fieldset><legend>比較期間B</legend>
-          <label>開始<input type="date" value={bFrom} max={jstDay()} onChange={e=>setBFrom(e.target.value)}/></label>
-          <label>終了<input type="date" value={bTo} max={jstDay()} onChange={e=>setBTo(e.target.value)}/></label>
+          <label>開始<input type="date" value={bFrom} max={jstDay()} onChange={e=>changeCompareDate(setBFrom,e.target.value)}/></label>
+          <label>終了<input type="date" value={bTo} max={jstDay()} onChange={e=>changeCompareDate(setBTo,e.target.value)}/></label>
         </fieldset>
       </div>
       <button type="button" disabled={compareBusy} onClick={()=>void compare()}>期間を比較</button>
@@ -511,7 +530,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
           {([["A",comparison.a],["B",comparison.b]] as const).map(([name,p])=><section key={name}>
             <h3>期間{name}：{p.from} ～ {p.to}</h3>
             <dl>
-              <dt>体重の変化</dt><dd>{render(p.weight.deltaKg," kg")}（実測 {p.weight.observedDays}/{p.calendarDays}日）</dd>
+              <dt>期間内の最初の実測</dt><dd>{weightEvidence(p.weight.startDay,p.weight.startKg,p.weight.startMeasuredAt,p.weight.startSource)}</dd>
+              <dt>期間内の最後の実測</dt><dd>{weightEvidence(p.weight.endDay,p.weight.endKg,p.weight.endMeasuredAt,p.weight.endSource)}</dd>
+              <dt>体重の変化</dt><dd>{p.weight.deltaKg===null?"実測が2日未満のため算出不可":render(p.weight.deltaKg," kg")}</dd>
+              <dt>体重の観測・欠測</dt><dd>実測 {p.weight.observedDays}日／{p.calendarDays}日、欠測 {p.weight.missingDays}日</dd>
               <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日）</dd>
               <dt>飲酒した日</dt><dd>{p.drinking.drinkingDays}日／観測 {p.drinking.observedDays}日（欠測 {p.drinking.missingDays}日）</dd>
               <dt>実際に記録したお酒</dt><dd>{p.drinking.recordedAlcoholCups}杯（ノンアル {p.drinking.recordedNonAlcoholCups}杯）</dd>
