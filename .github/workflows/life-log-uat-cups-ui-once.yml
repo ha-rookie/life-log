@@ -24,12 +24,12 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.run_attempt <= 2 &&
       startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): ship drink cups UI to existing UAT (#')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 39a7d2ab3a30356bdb902ce206dcb30a0fdb84ec
+      BASE_SHA: 9cc9f52083f2cb65ac4494436494ec9409974d44
       FIX_SHA: 54f2b4732baafbeb143ac2943867535e5a6f3b99
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
