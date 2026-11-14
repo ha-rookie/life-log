@@ -34,7 +34,7 @@ export async function originalUtf8Proof(bytes:Uint8Array):Promise<{
   const parts:string[]=[];
   for(let i=0;i<bytes.length;i+=8192)
     parts.push(String.fromCharCode(...bytes.subarray(i,i+8192)));
-  const sha=await crypto.subtle.digest("SHA-256",bytes);
+  const sha=await crypto.subtle.digest("SHA-256",Uint8Array.from(bytes));
   return {
     originalBase64:btoa(parts.join("")),
     originalSha256:[...new Uint8Array(sha)].map(n=>n.toString(16).padStart(2,"0")).join("")
