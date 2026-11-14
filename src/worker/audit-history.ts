@@ -12,7 +12,7 @@ type Cursor = { time: string; id: string } | { row: number };
 /** Only contract-approved public audit classification codes may leave the Worker. */
 const PUBLIC_AUDIT_ERRORS = new Set(["LIFESTYLE_CONFLICT_KEPT","AMBIGUOUS_ECLEAR_TIMESTAMP"]);
 const originalHashFromMarker=(marker:string):string|null=>{
-  const found=/^csv:audited-v2:(?:eclear|lifestyle|fit|weight_day):raw-utf8-sha256:([0-9a-f]{64})$/.exec(marker);
+  const found=/^csv:audited-(?:v2:(?:eclear|lifestyle|fit|weight_day)|v3:lifestyle_weight):raw-utf8-sha256:([0-9a-f]{64})$/.exec(marker);
   return found?.[1]??null;
 };
 const publicAuditError = (code:string|null):string|null =>
@@ -56,6 +56,29 @@ async function countAudit(db: ImportDb, job: string) {
   }
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
+// V3 counts expected target outcomes independently from the original one-row audit.
+// Never confuse 2 destinations from one CSV row with an incomplete legacy audit.
+type TargetOutcome = {result:string;error_code:string|null;n:number};
+async function v3TargetStatus(db:ImportDb,job:string,sourceRows:number,insertedDestinations:number){
+  const manifest=await db.prepare(
+    "SELECT expected_source_rows AS rows,expected_target_rows AS targets,contract_version AS version"+
+    " FROM import_job_target_manifest WHERE import_job_id=?"
+  ).bind(job).first<{rows:number;targets:number;version:string}>();
+  if(!manifest||manifest.version!=="v3"||manifest.rows!==sourceRows)return null;
+  const outcomes=await db.prepare(
+    "SELECT result,error_code,COUNT(*) AS n FROM import_target_audit"+
+    " WHERE import_job_id=? GROUP BY result,error_code"
+  ).bind(job).all<TargetOutcome>();
+  const counts={inserted:0,skipped:0,conflict:0};
+  let total=0;
+  for(const item of outcomes.results){
+    if(!(item.result in counts))return null;
+    counts[item.result as keyof typeof counts]+=item.n;
+    total+=item.n;
+  }
+  return {complete:total===manifest.targets&&counts.inserted===insertedDestinations,
+    counts,expectedTargets:manifest.targets,auditCount:total};
+}
 // Compare persisted inserted destinations with their recorded audit outcomes.
 // Without an original expected-row count, missing skipped/conflict audits remain undetectable.
 async function countDestinations(db: ImportDb, owner: string, job: string): Promise<number> {
@@ -67,7 +90,10 @@ async function countDestinations(db: ImportDb, owner: string, job: string): Prom
   if (!result || !Number.isSafeInteger(result.n) || result.n < 0) throw Error("DESTINATION_COUNT_UNAVAILABLE");
   return result.n;
 }
-function auditStatus(job: Job, audit: Awaited<ReturnType<typeof countAudit>>, insertedRecords: number) {
+function auditStatus(job: Job, audit: Awaited<ReturnType<typeof countAudit>>, insertedRecords: number,
+  targetEvidence:Awaited<ReturnType<typeof v3TargetStatus>>|null=null) {
+  if(job.source_type==="lifestyle_weight")
+    return audit.total<=0||!targetEvidence?.complete?"incomplete":"available";
   if (audit.total === 0 && job.status === "confirmed" && job.source_id === "csv:" + job.source_type) {
     return "legacy_unavailable";
   }
@@ -102,9 +128,12 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       for (const job of selected) {
         const audit = await countAudit(db,job.id);
         const insertedRecords = await countDestinations(db,owner,job.id);
+        const v3=job.source_type==="lifestyle_weight"
+          ?await v3TargetStatus(db,job.id,audit.total,insertedRecords):null;
         jobs.push({ id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
-          completedAt:job.completed_at,auditStatus:auditStatus(job,audit,insertedRecords),
+          completedAt:job.completed_at,auditStatus:auditStatus(job,audit,insertedRecords,v3),
           auditCount:audit.total<0?0:audit.total,insertedRecords,
+          ...(v3?{targetAuditCount:v3.auditCount,expectedTargets:v3.expectedTargets}:{}),
           originalSha256:originalHashFromMarker(job.source_id) });
       }
       const last=selected.at(-1);
@@ -116,7 +145,9 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
     if (!job) return reply({error:"NOT_FOUND"},404);
     const stats=await countAudit(db,job.id);
     const insertedRecords=await countDestinations(db,owner,job.id);
-    const status=auditStatus(job,stats,insertedRecords);
+    const v3=job.source_type==="lifestyle_weight"
+      ?await v3TargetStatus(db,job.id,stats.total,insertedRecords):null;
+    const status=auditStatus(job,stats,insertedRecords,v3);
     const cursor=args.cursor as {row:number}|null;
     if (cursor) {
       const anchor=await db.prepare("SELECT source_row_number FROM import_row_audit WHERE import_job_id=? AND source_row_number=?")
@@ -129,7 +160,7 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       + "f.steps AS fit_steps "
       + "FROM import_row_audit a "
       + "LEFT JOIN lifestyle_days l ON l.owner_id=? AND l.import_job_id=a.import_job_id "
-      + "AND l.source_row_key=a.source_row_key AND a.result='inserted' AND ?='lifestyle' "
+      + "AND l.source_row_key=a.source_row_key AND a.result='inserted' AND ? IN ('lifestyle','lifestyle_weight') "
       + "LEFT JOIN body_measurements b ON b.owner_id=? AND b.import_job_id=a.import_job_id "
       + "AND b.source_row_key=a.source_row_key AND a.result='inserted' AND ?='eclear' "
       + "LEFT JOIN activity_daily f ON f.owner_id=? AND f.import_job_id=a.import_job_id "
@@ -138,16 +169,34 @@ export async function handleAuditHistory(request: Request, db: ImportDb, owner: 
       + " ORDER BY a.source_row_number ASC LIMIT ?"
     ).bind(owner,job.source_type,owner,job.source_type,owner,job.source_type,job.id,...(cursor?[cursor.row]:[]),args.limit+1).all<Row>();
     const selected=rows.results.slice(0,args.limit);
+    const targetByRow=new Map<number,{target:string;result:string;errorCode:string|null}[]>();
+    if(job.source_type==="lifestyle_weight"&&selected.length){
+      const markers=selected.map(() => "?").join(",");
+      const rows=await db.prepare(
+        "SELECT source_row_number,target_type,result,error_code FROM import_target_audit"+
+        " WHERE import_job_id=? AND source_row_number IN ("+markers+")"+
+        " ORDER BY source_row_number,target_type"
+      ).bind(job.id,...selected.map(r=>r.source_row_number))
+       .all<{source_row_number:number;target_type:string;result:string;error_code:string|null}>();
+      for(const row of rows.results){
+        const target=targetByRow.get(row.source_row_number)??[];
+        target.push({target:row.target_type,result:row.result,errorCode:publicAuditError(row.error_code)});
+        targetByRow.set(row.source_row_number,target);
+      }
+    }
     const last=selected.at(-1);
     return reply({job:{id:String(job.handle),source:job.source_type,status:job.status,startedAt:job.started_at,
       auditStatus:status,counts:status==="available"?stats.counts:null,
+      ...(v3?{targetCounts:status==="available"?v3.counts:null,
+        expectedTargets:v3.expectedTargets}:{}),
       originalSha256:originalHashFromMarker(job.source_id)},
       rows:selected.map(r=>({line:r.source_row_number,
         result:r.result==="inserted"&&r.error_code==="UPDATED"?"updated":r.result,
         errorCode:publicAuditError(r.error_code),
+        ...(job.source_type==="lifestyle_weight"?{targets:targetByRow.get(r.source_row_number)??[]}:{}),
         // Historic before/after values were never stored; do not manufacture
         // past readings by joining today's updated destination rows.
-        values:r.error_code==="UPDATED"||r.result!=="inserted"?null:job.source_type==="lifestyle"
+        values:r.error_code==="UPDATED"||r.result!=="inserted"?null:(job.source_type==="lifestyle"||job.source_type==="lifestyle_weight")
           ?{drinkingPresence:r.drinking_presence,drinkCups:r.drink_cups,steps:r.steps}
           :job.source_type==="fit"?{steps:r.fit_steps}
           :{weightKg:r.weight_kg,bodyFatPct:r.body_fat_pct}})),

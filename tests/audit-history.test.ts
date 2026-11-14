@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import schemaSql from "../migrations/0001_initial.sql?raw";
+import v3Sql from "../migrations/0006_csv_target_audit_v3.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { handleAuditHistory } from "../src/worker/audit-history";
 import { handleImport } from "../src/worker/import";
@@ -24,10 +25,14 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     db=platform.env.DB;
     const schema=schemaSql.split("\n").filter(line=>!line.trimStart().startsWith("--")).join("\n");
     for(const statement of schema.split(";").map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+    for(const statement of v3Sql.split("\n").filter(line=>!line.trimStart().startsWith("--"))
+      .join("\n").split(";").map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
   },100_000);
   afterAll(async()=>{await platform?.dispose();},60_000);
   beforeEach(async()=>{
-    await db.batch(["DELETE FROM import_row_audit","DELETE FROM body_measurements","DELETE FROM lifestyle_days","DELETE FROM activity_daily","DELETE FROM import_jobs","DELETE FROM owners"].map(sql=>db.prepare(sql)));
+    await db.batch(["DELETE FROM import_target_audit","DELETE FROM import_job_target_manifest",
+      "DELETE FROM import_row_audit","DELETE FROM body_measurements","DELETE FROM lifestyle_days",
+      "DELETE FROM activity_daily","DELETE FROM import_jobs","DELETE FROM owners"].map(sql=>db.prepare(sql)));
     for(const owner of ["owner","other"])await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)").bind(owner,"2026-01-01Z").run();
   });
   async function seed(owner:string,source:"lifestyle"|"eclear",status="confirmed",marker="csv:audited-v2:",day="2026-01-02",n=2){
@@ -131,6 +136,93 @@ describe("owner-only CSV audit history on ephemeral local D1",()=>{
     expect(JSON.stringify(detail.body)).not.toContain("owner_id");
     expect((await get(db,"","","other")).body.jobs).toHaveLength(0);
     expect((await get(db,"/"+list.body.jobs[0].id,"","other")).code).toBe(404);
+  },100_000);
+
+  it("v3: one CSV row may validly produce two inserted destinations without false incomplete",async()=>{
+    const canonical="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+      "2026-06-02,1,,0,75\n2026-06-03,0,0,,\n";
+    const req=new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle_weight",csv:canonical,hash:await hash(canonical),
+        confirmed:true})
+    });
+    const saved=await handleImport(req,db,"owner");
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({inserted:2,
+      targetCounts:{inserted:3,skipped:0}});
+    const list=await get(db);
+    expect(list.body.jobs).toHaveLength(1);
+    expect(list.body.jobs[0]).toMatchObject({source:"lifestyle_weight",
+      auditStatus:"available",auditCount:2,targetAuditCount:3,
+      expectedTargets:3,insertedRecords:3});
+    const job=list.body.jobs[0].id as string;
+    const detail=await get(db,"/"+job);
+    expect(detail.body.job).toMatchObject({auditStatus:"available",
+      counts:{inserted:2},targetCounts:{inserted:3,skipped:0},expectedTargets:3});
+    expect(detail.body.rows.map((r:{targets:{target:string;result:string}[]})=>
+      r.targets.map(t=>t.target+":"+t.result))).toEqual([
+      ["lifestyle:inserted","weight_day:inserted"],["lifestyle:inserted"]
+    ]);
+    expect(JSON.stringify(detail.body)).not.toContain("source_row_key");
+    expect((await get(db,"","","other")).body.jobs).toHaveLength(0);
+    // Even a skipped target audit is required for a complete target manifest.
+    await db.prepare("DELETE FROM import_target_audit WHERE import_job_id=? AND target_type='weight_day'")
+      .bind("owner:lifestyle_weight:"+await hash(canonical)).run();
+    const corrupt=await get(db,"/"+job);
+    expect(corrupt.body.job).toMatchObject({auditStatus:"incomplete",counts:null,targetCounts:null});
+    expect((await get(db)).body.jobs[0]).toMatchObject({
+      auditStatus:"incomplete",targetAuditCount:2,expectedTargets:3
+    });
+    const again=await handleImport(new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle_weight",csv:canonical,hash:await hash(canonical),
+        confirmed:true})
+    }),db,"owner");
+    expect(again.status).toBe(503);
+  },100_000);
+  it("v3: inserted destination removal is incomplete independently of intact 1-row audit",async()=>{
+    const canonical="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+      "2026-07-02,1,,0,75\n";
+    const req=new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle_weight",csv:canonical,hash:await hash(canonical),
+        confirmed:true})
+    });
+    expect((await handleImport(req,db,"owner")).status).toBe(200);
+    const list=await get(db);
+    const job=list.body.jobs[0].id as string;
+    expect((await get(db,"/"+job)).body.job.auditStatus).toBe("available");
+    await db.prepare("DELETE FROM body_measurements WHERE source_id='csv:lifestyle_weight'").run();
+    const after=await get(db,"/"+job);
+    expect(after.body.job).toMatchObject({auditStatus:"incomplete",counts:null,targetCounts:null});
+    expect((await get(db)).body.jobs[0]).toMatchObject({auditStatus:"incomplete",insertedRecords:1});
+  },100_000);
+  it("v3: a skipped weight due to existing ECLEAR still counts as a required audit target",async()=>{
+    const prior="measured_at,weight_kg,body_fat_pct\n2026-08-02T07:21:00+09:00,72.3,22\n";
+    const put=async(source:string,csv:string)=>{
+      const req=new Request("https://example.invalid/api/import/confirm",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({source,csv,hash:await hash(csv),confirmed:true})
+      });
+      return handleImport(req,db,"owner");
+    };
+    expect((await put("eclear",prior)).status).toBe(200);
+    const v3="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+      "2026-08-02,1,,0,99.8\n";
+    expect((await put("lifestyle_weight",v3)).status).toBe(200);
+    const list=await get(db);
+    const row=list.body.jobs.find((j:{source:string})=>j.source==="lifestyle_weight");
+    expect(row).toMatchObject({auditStatus:"available",auditCount:1,
+      targetAuditCount:2,insertedRecords:1});
+    const detail=await get(db,"/"+row.id);
+    expect(detail.body.job.targetCounts).toMatchObject({inserted:1,skipped:1});
+    expect(detail.body.rows[0].targets).toEqual([
+      {target:"lifestyle",result:"inserted",errorCode:null},
+      {target:"weight_day",result:"skipped",errorCode:null}
+    ]);
+    const before=await db.prepare("SELECT weight_kg FROM body_measurements WHERE source_id='csv:eclear'")
+      .first<{weight_kg:number}>();
+    expect(before?.weight_kg).toBe(72.3);
   },100_000);
 
   it("reports Fit CSV corrections separately and preserves prior job audit provenance",async()=>{

@@ -95,6 +95,7 @@ const isAlreadyNormalized=(source:CsvSource,header:string[])=>{
     ?["measured_at","weight_kg","body_fat_pct"]
     :source==="fit"?["local_day","steps"]
     :source==="weight_day"?["local_day","weight_kg"]
+    :source==="lifestyle_weight"?["local_day","drinking_presence","drink_cups","steps","weight_kg"]
     :["local_day","drinking_presence","drink_cups","steps"];
   return header.join("\x1f")===expected.join("\x1f");
 };
@@ -117,7 +118,14 @@ export function detectOfficialCsvSource(raw:string):CsvSource|null{
   if((header.length===28&&header[0]==="日付"&&header[16]==="歩数")||
     isAlreadyNormalized("fit",header))return "fit";
   if(isAlreadyNormalized("weight_day",header))return "weight_day";
-  if(isAlreadyNormalized("lifestyle",header)||isJapaneseLifestyleHeader(header))return "lifestyle";
+  if(isAlreadyNormalized("lifestyle",header))return "lifestyle";
+  if(isAlreadyNormalized("lifestyle_weight",header))return "lifestyle_weight";
+  if(isJapaneseLifestyleHeader(header)){
+    const at=header.indexOf("体重_kg");
+    if(at<0)return "lifestyle";
+    const data=cells(text).slice(1);
+    return data.some(row=>row[at]?.trim()!=="")?"lifestyle_weight":"lifestyle";
+  }
   return null;
 }
 
@@ -131,7 +139,10 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
   const officialFit=source==="fit"&&header[0]==="日付"&&header[16]==="歩数"&&
     header.length===28;
   const normalized=isAlreadyNormalized(source,header);
-  const japaneseLifestyle=source==="lifestyle"&&isJapaneseLifestyleHeader(header);
+  const japaneseLifestyle=(source==="lifestyle"||source==="lifestyle_weight")&&
+    isJapaneseLifestyleHeader(header);
+  if(source==="lifestyle_weight"&&japaneseLifestyle&&!header.includes("体重_kg"))
+    throw Error("LIFESTYLE_WEIGHT_REQUIRED");
   if(!officialEclear&&!officialFit&&!normalized&&!japaneseLifestyle)throw Error("CSV_HEADER_MISMATCH");
 
   const output:string[][]=[],seen=new Set<string>();
@@ -153,14 +164,20 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
         const at=header.indexOf(name);
         return at<0?"":row[at].trim();
       };
-      // No single source row may fan out into an unaudited second destination.
-      if(column("体重_kg")!==""||column("測定時刻")!=="")
-        throw Error("LIFESTYLE_MULTI_TARGET_NOT_SUPPORTED_AT_LINE_"+(index+2));
+      if(column("測定時刻")!=="")
+        throw Error("LIFESTYLE_TIMESTAMP_NOT_SUPPORTED_AT_LINE_"+(index+2));
+      if(source==="lifestyle"&&column("体重_kg")!=="")
+        throw Error("LIFESTYLE_WEIGHT_SOURCE_REQUIRED_AT_LINE_"+(index+2));
       const drink=column("飲酒");
       if(drink!==""&&drink!=="0"&&drink!=="1")
         throw Error("BAD_DRINKING_PRESENCE_AT_LINE_"+(index+2));
       const step=column("歩数");
-      values=[isoDay(column("日付")),drink,drink==="0"?"0":"",step===""?"":numeric(step,"steps")];
+      const day=isoDay(column("日付"));
+      values=[day,drink,drink==="0"?"0":"",step===""?"":numeric(step,"steps")];
+      if(source==="lifestyle_weight"){
+        const weight=column("体重_kg");
+        values.push(weight===""?"":numeric(weight,"weight"));
+      }
     }else {
       values=row.map(v=>v.trim());
     }
@@ -173,8 +190,9 @@ export function normalizeOfficialCsv(source:CsvSource,raw:string):NormalizedSour
   const chunks:string[]=[];
   const h=source==="eclear"?"measured_at,weight_kg,body_fat_pct":
     source==="fit"?"local_day,steps":source==="weight_day"?"local_day,weight_kg":
+    source==="lifestyle_weight"?"local_day,drinking_presence,drink_cups,steps,weight_kg":
     "local_day,drinking_presence,drink_cups,steps";
-  const partSize=source==="lifestyle"?LIFESTYLE_PART_ROWS:PART_ROWS;
+  const partSize=(source==="lifestyle"||source==="lifestyle_weight")?LIFESTYLE_PART_ROWS:PART_ROWS;
   for(let i=0;i<output.length;i+=partSize)
     chunks.push(h+"\n"+output.slice(i,i+partSize)
       .map(r=>r.map(quote).join(",")).join("\n")+"\n");

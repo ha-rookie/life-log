@@ -1,8 +1,8 @@
-export type CsvSource = "eclear" | "lifestyle" | "fit" | "weight_day";
-export type CsvRow = { line:number; key:string; timestamp?:string; weight?:number; fat?:number|null; day?:string; presence?:0|1|null; cups?:number|null; steps?:number|null; fingerprint?:string };
+export type CsvSource = "eclear" | "lifestyle" | "lifestyle_weight" | "fit" | "weight_day";
+export type CsvRow = { line:number; key:string; timestamp?:string; weight?:number|null; fat?:number|null; day?:string; presence?:0|1|null; cups?:number|null; steps?:number|null; fingerprint?:string };
 export type Preview = { source:CsvSource; hash:string; rows:CsvRow[]; errors:{line:number;code:string}[]; total:number };
 export const MAX_BYTES=65536,MAX_ROWS=100;
-const HEADERS={eclear:["measured_at","weight_kg","body_fat_pct"],lifestyle:["local_day","drinking_presence","drink_cups","steps"],fit:["local_day","steps"],weight_day:["local_day","weight_kg"]};
+const HEADERS={eclear:["measured_at","weight_kg","body_fat_pct"],lifestyle:["local_day","drinking_presence","drink_cups","steps"],lifestyle_weight:["local_day","drinking_presence","drink_cups","steps","weight_kg"],fit:["local_day","steps"],weight_day:["local_day","weight_kg"]};
 function cells(text:string):string[][] {
   const rows:string[][]=[];let row:string[]=[],value="",quoted=false,closed=false;
   for(let i=0;i<text.length;i++){
@@ -56,7 +56,10 @@ export async function previewCsv(source:CsvSource,text:string):Promise<Preview>{
         if(!validDay(day)||!["","0","1"].includes(raw))throw Error("DAY");
         const presence=raw===""?null:Number(raw) as 0|1;
         if((presence===null&&cups!==null)||(presence===0&&cups!==0)||(presence===1&&cups!==null&&cups<=0))throw Error("DRINK");
-        rows.push({line,key:digest+":"+line,day,presence,cups,steps});
+        const weight=source==="lifestyle_weight"?num(c[4].trim(),499.99):null;
+        if(weight!==null&&weight<=0)throw Error("WEIGHT");
+        rows.push({line,key:digest+":"+line,day,presence,cups,steps,
+          ...(source==="lifestyle_weight"?{weight}:{})});
       }
     }catch{errors.push({line,code:"VALUE"});}
   }

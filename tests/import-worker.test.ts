@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import schemaSql from "../migrations/0001_initial.sql?raw";
+import v3Sql from "../migrations/0006_csv_target_audit_v3.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { handleImport, type ImportDb, type Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
+import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 
 interface LocalStatement extends Statement {
@@ -20,7 +22,7 @@ const hdr = "local_day,drinking_presence,drink_cups,steps\n";
 const life = hdr+"2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
 const ec = "measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";
 async function send(db:ImportDb,csv:string,opts:{
-  source?:"lifestyle"|"eclear"|"fit"|"weight_day";owner?:string;confirmed?:boolean;
+  source?:"lifestyle"|"lifestyle_weight"|"eclear"|"fit"|"weight_day";owner?:string;confirmed?:boolean;
   resolution?:{mode:"keep_existing";token:string}
 }={}){
   const source=opts.source??"lifestyle",confirmed=opts.confirmed??true;
@@ -67,6 +69,8 @@ describe("real ephemeral local D1 audited import",()=>{
     db=platform.env.DB;
     const schema=schemaSql.split("\n").filter((line:string)=>!line.trimStart().startsWith("--")).join("\n");
     for(const sql of schema.split(";").map(x=>x.trim()).filter(Boolean))await db.prepare(sql).run();
+    for(const sql of v3Sql.split("\n").filter(line=>!line.trimStart().startsWith("--"))
+      .join("\n").split(";").map(x=>x.trim()).filter(Boolean))await db.prepare(sql).run();
   },100_000);
   afterAll(async()=>{await platform?.dispose();},60_000);
   beforeEach(async()=>{
@@ -111,6 +115,135 @@ describe("real ephemeral local D1 audited import",()=>{
     expect(await count(db,"import_row_audit")).toBe(2);
     expect(await count(db,"lifestyle_days")).toBe(2);
     expect(await count(db,"body_measurements")).toBe(0);
+  },100_000);
+
+  it("v3 schema migration contains additive DDL only and does not modify seeded measurement rows",async()=>{
+    const statements=v3Sql.split("\n").filter(line=>!line.trimStart().startsWith("--"))
+      .join("\n").split(";").map(x=>x.trim()).filter(Boolean);
+    expect(statements).toHaveLength(3);
+    expect(statements.every(sql=>/^CREATE (?:TABLE|INDEX) IF NOT EXISTS /i.test(sql))).toBe(true);
+    await db.prepare(
+      "INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind)"+
+      " VALUES(?,?,?,?,?,?,'measured')"
+    ).bind("prior","owner","2026-02-01T09:00:00+09:00",72.5,"csv:eclear","prior-row").run();
+    const before=await db.prepare(
+      "SELECT id,measured_at,weight_kg,source_id FROM body_measurements"
+    ).all<{id:string;measured_at:string;weight_kg:number;source_id:string}>();
+    for(const sql of statements)await db.prepare(sql).run();
+    const after=await db.prepare(
+      "SELECT id,measured_at,weight_kg,source_id FROM body_measurements"
+    ).all<{id:string;measured_at:string;weight_kg:number;source_id:string}>();
+    expect(after.results).toEqual(before.results);
+  },100_000);
+  it("v3: one source row writes two independently audited destinations atomically, other row just lifestyle",async()=>{
+    const original="\uFEFF日付,飲酒,歩数,体重_kg\r\n2026/02/08,1,0,75.2\r\n"+
+      "2026/02/09,0,,\r\n";
+    const canonical=normalizeOfficialCsv("lifestyle_weight",original).parts[0];
+    const proof=await originalUtf8Proof(new TextEncoder().encode(original));
+    const req=new Request("https://example.invalid/api/import/confirm",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source:"lifestyle_weight",csv:canonical,hash:await hash(canonical),
+        confirmed:true,...proof})
+    });
+    const replayReq=req.clone();
+    const confirmed=await handleImport(req,db,"owner");
+    expect(confirmed.status).toBe(200);
+    expect(await confirmed.json()).toMatchObject({status:"confirmed",inserted:2,
+      targetCounts:{inserted:3,skipped:0,conflicted:0},expectedTargets:3,
+      originalByteEvidence:"recorded_first_import"});
+    const manifest=await db.prepare(
+      "SELECT expected_source_rows AS sourceRows, expected_target_rows AS targets FROM import_job_target_manifest"
+    ).first<{sourceRows:number;targets:number}>();
+    expect(manifest).toEqual({sourceRows:2,targets:3});
+    const targets=await db.prepare(
+      "SELECT source_row_number,target_type,result FROM import_target_audit ORDER BY source_row_number,target_type"
+    ).all<{source_row_number:number;target_type:string;result:string}>();
+    expect(targets.results.map(x=>[x.source_row_number,x.target_type,x.result])).toEqual([
+      [2,"lifestyle","inserted"],[2,"weight_day","inserted"],[3,"lifestyle","inserted"]
+    ]);
+    const body=await db.prepare(
+      "SELECT measured_at,source_kind,source_timezone,source_id,weight_kg FROM body_measurements WHERE owner_id='owner'"
+    ).all<{measured_at:string;source_kind:string;source_timezone:string;source_id:string;weight_kg:number}>();
+    expect(body.results).toEqual([{measured_at:"2026-02-08",source_kind:"reported",
+      source_timezone:"Asia/Tokyo",source_id:"csv:lifestyle_weight",weight_kg:75.2}]);
+    const lifestyle=await db.prepare(
+      "SELECT local_day,drinking_presence,drink_cups,steps FROM lifestyle_days ORDER BY local_day"
+    ).all<{local_day:string;drinking_presence:number|null;drink_cups:number|null;steps:number|null}>();
+    expect(lifestyle.results).toEqual([
+      {local_day:"2026-02-08",drinking_presence:1,drink_cups:null,steps:0},
+      {local_day:"2026-02-09",drinking_presence:0,drink_cups:0,steps:null}
+    ]);
+    const replay=await handleImport(replayReq,db,"owner");
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      status:"already_imported",inserted:0,targetCounts:{inserted:3},
+      originalByteEvidence:"matches_first_import"
+    });
+    expect(await count(db,"body_measurements")).toBe(1);
+    expect(await count(db,"lifestyle_days")).toBe(2);
+    expect(await count(db,"import_jobs")).toBe(1);
+  },100_000);
+  it("v3: existing ECLEAR weight stays authoritative and the weight target is a genuine skip",async()=>{
+    const ecSource="measured_at,weight_kg,body_fat_pct\n2026-03-02T07:23:00+09:00,72.3,22\n";
+    expect((await send(db,ecSource,{source:"eclear"})).data.inserted).toBe(1);
+    const csv="local_day,drinking_presence,drink_cups,steps,weight_kg\n2026-03-02,1,,0,99.9\n";
+    const confirmed=await send(db,csv,{source:"lifestyle_weight"});
+    expect(confirmed).toMatchObject({code:200,data:{inserted:1,conflicted:0,
+      targetCounts:{inserted:1,skipped:1}}});
+    const body=await db.prepare(
+      "SELECT measured_at,source_id,weight_kg FROM body_measurements WHERE owner_id='owner'"
+    ).all<{measured_at:string;source_id:string;weight_kg:number}>();
+    expect(body.results).toEqual([{measured_at:"2026-03-02T07:23:00+09:00",
+      source_id:"csv:eclear",weight_kg:72.3}]);
+    const target=await db.prepare(
+      "SELECT target_type,result FROM import_target_audit ORDER BY target_type"
+    ).all<{target_type:string;result:string}>();
+    expect(target.results).toEqual([
+      {target_type:"lifestyle",result:"inserted"},{target_type:"weight_day",result:"skipped"}
+    ]);
+  },100_000);
+  it("v3: conflict requires review and keep-existing also skips the conflicted row's weight",async()=>{
+    const original="local_day,drinking_presence,drink_cups,steps\n2026-04-02,0,0,0\n";
+    expect((await send(db,original)).code).toBe(200);
+    const combined="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+      "2026-04-02,1,,0,75\n2026-04-03,0,0,0,74.5\n";
+    const blocked=await send(db,combined,{source:"lifestyle_weight"});
+    expect(blocked).toMatchObject({code:409,data:{error:"LIFESTYLE_CONFLICT"}});
+    expect(await count(db,"body_measurements")).toBe(0);
+    const confirmed=await send(db,combined,{source:"lifestyle_weight",
+      resolution:keep(blocked.data.reviewToken!)});
+    expect(confirmed).toMatchObject({code:200,data:{status:"partial",conflicted:1,
+      inserted:1,targetCounts:{inserted:2,skipped:1,conflicted:1}}});
+    const targets=await db.prepare("SELECT source_row_number,target_type,result FROM import_target_audit"+
+      " ORDER BY source_row_number,target_type")
+      .all<{source_row_number:number;target_type:string;result:string}>();
+    expect(targets.results.map(x=>[x.source_row_number,x.target_type,x.result])).toEqual([
+      [2,"lifestyle","conflict"],[2,"weight_day","skipped"],
+      [3,"lifestyle","inserted"],[3,"weight_day","inserted"]
+    ]);
+    const body=await db.prepare("SELECT measured_at,weight_kg FROM body_measurements")
+      .all<{measured_at:string;weight_kg:number}>();
+    expect(body.results).toEqual([{measured_at:"2026-04-03",weight_kg:74.5}]);
+  },100_000);
+  it("v3: injected target-audit SQL failure rolls back all source/target/job rows",async()=>{
+    const combined="local_day,drinking_presence,drink_cups,steps,weight_kg\n"+
+      "2026-05-02,0,0,0,74.1\n";
+    await db.prepare("CREATE TRIGGER v3_abort BEFORE INSERT ON import_target_audit "+
+      "WHEN NEW.target_type='weight_day' BEGIN SELECT RAISE(ABORT,'SYNTHETIC_FAIL'); END").run();
+    const failed=await send(db,combined,{source:"lifestyle_weight"});
+    expect(failed.code).toBe(503);
+    expect(await count(db,"import_jobs")).toBe(0);
+    expect(await count(db,"lifestyle_days")).toBe(0);
+    expect(await count(db,"body_measurements")).toBe(0);
+    expect(await count(db,"import_row_audit")).toBe(0);
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM import_target_audit")
+      .first<{n:number}>())?.n).toBe(0);
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM import_job_target_manifest")
+      .first<{n:number}>())?.n).toBe(0);
+    await db.prepare("DROP TRIGGER v3_abort").run();
+    expect((await send(db,combined,{source:"lifestyle_weight"})).data).toMatchObject({
+      inserted:1,targetCounts:{inserted:2}
+    });
   },100_000);
 
   it("weight_day: inserts only missing calendar days and preserves actual ECLEAR time",async()=>{
