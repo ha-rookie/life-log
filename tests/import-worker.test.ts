@@ -6,7 +6,6 @@ import { createHandler, type Env } from "../src/worker/index";
 import { handleImport, type ImportDb, type Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
 import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
-import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 
 interface LocalStatement extends Statement {
   bind(...values: unknown[]): LocalStatement;
