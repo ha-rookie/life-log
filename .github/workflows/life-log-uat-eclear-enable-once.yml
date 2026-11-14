@@ -1,0 +1,147 @@
+name: Life-log one-shot ECLEAR seven-field Owner UAT enablement
+
+# UAT Worker only. Migration 0005 must already be applied. No D1 writes.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-one-shot-eclear-uat-enable-195
+  cancel-in-progress: false
+
+jobs:
+  enable:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt <= 2 &&
+      github.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == 'ha-rookie/life-log' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): enable ECLEAR 7-field completion (#195)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      APPROVED_PARENT: 5efb88d633513f77eb676da89cca725401e85c05
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify exact main squash commit, UAT target and three-file scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REPOSITORY" = ha-rookie/life-log
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^)" = "$APPROVED_PARENT"
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): enable ECLEAR 7-field completion (#195)'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git diff-tree --no-commit-id --name-only -r HEAD | LC_ALL=C sort > "$RUNNER_TEMP/actual"
+          printf '%s\n' \
+            '.github/workflows/life-log-uat-eclear-enable-once.yml' \
+            'scripts/uat-eclear-release-guard.mjs' \
+            'tests/uat-eclear-release-guard.test.mjs' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          git diff --exit-code "$APPROVED_PARENT" "$TARGET_SHA" -- \
+            src/worker src/client src/shared migrations wrangler.jsonc package.json package-lock.json
+          node scripts/uat-eclear-release-guard.mjs config
+          echo "PASS: exact reviewed one-shot UAT-only release"
+      - name: Build and run isolated ECLEAR UAT deployment guard and application tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          npx --no-install vitest run tests/uat-ui-release-guard.test.mjs tests/uat-eclear-release-guard.test.mjs tests/eclear-enrichment-uat.test.ts
+          node --check scripts/uat-eclear-release-guard.mjs
+      - name: One-shot protected ECLEAR enablement on existing UAT Worker
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          umask 077
+          cfg="$(mktemp -u "$PWD/.uat-eclear-XXXXXXXX.jsonc")"
+          previous="$(mktemp -u "$RUNNER_TEMP/uat-eclear-before-XXXXXXXX.json")"
+          secrets="$(mktemp "$RUNNER_TEMP/uat-eclear-secret-XXXXXXXX.json")"
+          trap 'rm -f "$cfg" "$previous" "$secrets"' EXIT
+          node scripts/uat-ui-release-guard.mjs prepare "$cfg"
+          # Read-only remote UAT D1/schema/Worker preflight. NO user data rows.
+          # Unexpected existing ECLEAR flag or secret binding stops this job.
+          node scripts/uat-eclear-release-guard.mjs before "$previous"
+          # Generate in-runner only; value never logged, committed or uploaded
+          # as a GitHub artifact. Wrangler uploads the secret WITH the Worker.
+          node --input-type=module - "$secrets" <<'JS'
+          import {randomBytes} from 'node:crypto';
+          import {writeFileSync} from 'node:fs';
+          const filename=process.argv[2];
+          writeFileSync(filename,JSON.stringify({
+            ECLEAR_ENRICHMENT_REVIEW_KEY:randomBytes(48).toString('base64url')
+          }),{mode:0o600});
+          JS
+          npx --no-install wrangler deploy \
+            --config "$cfg" --env uat --keep-vars --dry-run \
+            --var "ECLEAR_ENRICHMENT_REMOTE_ENABLED:true" \
+            --var "ECLEAR_ENRICHMENT_REMOTE_TARGET:uat" \
+            --var "ECLEAR_ENRICHMENT_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev" \
+            --secrets-file "$secrets"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          npx --no-install wrangler deploy \
+            --config "$cfg" --env uat --keep-vars \
+            --var "ECLEAR_ENRICHMENT_REMOTE_ENABLED:true" \
+            --var "ECLEAR_ENRICHMENT_REMOTE_TARGET:uat" \
+            --var "ECLEAR_ENRICHMENT_REMOTE_ORIGIN:https://life-log-uat.ha-rookie.workers.dev" \
+            --secrets-file "$secrets"
+          node scripts/uat-eclear-release-guard.mjs after "$previous"
+          echo 'PASS: reviewed ECLEAR 7-field UAT Worker enabled; existing auth/D1/vars/secrets unchanged'
+      - name: Verify Owner passkey login and anonymous ECLEAR API protection (no data writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for i in $(seq 1 12); do
+            login="$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)"
+            root="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)"
+            dashboard="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/dashboard" || true)"
+            anonymous_eclear="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+              -X POST "$UAT_URL/api/eclear/enrichment/preview" \
+              -H "Content-Type: application/json" \
+              -H "Origin: $UAT_URL" \
+              -H "Sec-Fetch-Site: same-origin" \
+              -H "X-Life-Log-Intent: eclear-enrichment-v2" \
+              --data '{"csv":"synthetic-no-private-data"}' || true)"
+            if [[ "$login" = 200 && "$root" = 403 && "$dashboard" = 403 &&
+                  "$anonymous_eclear" = 403 ]] &&
+              grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then
+              ready=1
+              break
+            fi
+            if [[ "$root" = 200 || "$dashboard" = 200 || "$anonymous_eclear" = 200 ]]; then
+              echo "::error::Unauthorized UAT access permitted"; exit 1
+            fi
+            sleep 3
+          done
+          test "$ready" = 1
+          echo 'PASS: UAT passkey login 200; anonymous root/dashboard/ECLEAR enrichment API all 403'
