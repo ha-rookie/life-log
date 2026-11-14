@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { manualHistoryRange } from "../shared/manual-history";
 
 type Weight = { key: string; measuredAt: string; weightKg: number };
 type Steps = { day: string; steps: number };
@@ -8,6 +9,8 @@ const empty: Records = { from: "", to: "", weights: [], steps: [] };
 type Action = "weight" | "steps";
 export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   const [rows, setRows] = useState<Records>(empty);
+  const [historyTo,setHistoryTo]=useState(jstToday);
+  const historySequence=useRef(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -21,16 +24,34 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   const [oldSteps, setOldSteps] = useState<number | null>(null);
   const [stepEditing, setStepEditing] = useState(false);
   const load = useCallback(async () => {
+    const current=++historySequence.current;
+    const range=manualHistoryRange(historyTo,jstToday());
+    if(!range){
+      setRows(empty);setLoading(false);setMessage("履歴の終了日を確認してください。未来の日付は選べません。");return;
+    }
     setLoading(true);
     try {
-      const response = await fetch("/api/manual/records", { credentials: "same-origin", cache: "no-store" });
-      if (!response.ok) throw new Error("GET");
-      const data = await response.json() as Records;
-      setRows(data);
-    } catch { setMessage("手入力履歴を取得できません。認証と接続を確認してください。"); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
+      const response=await fetch("/api/manual/records?"+new URLSearchParams(range).toString(),
+        {credentials:"same-origin",cache:"no-store"});
+      if(!response.ok)throw new Error("GET");
+      const data=await response.json() as Records;
+      if(current===historySequence.current)setRows(data);
+    }catch{
+      if(current===historySequence.current){
+        setRows(empty);
+        setMessage("選択した期間の手入力履歴を取得できません。認証と接続を確認してください。");
+      }
+    }finally{if(current===historySequence.current)setLoading(false);}
+  },[historyTo]);
+  useEffect(()=>{
+    void load();
+    return ()=>{historySequence.current+=1;};
+  },[load]);
+  async function refreshHistory(day=historyTo){
+    if(day!==historyTo)setHistoryTo(day);
+    else await load();
+  }
+  const historyRange=manualHistoryRange(historyTo,jstToday());
 
   async function request(path: Action, method: string, payload: Record<string, unknown>) {
     const response = await fetch("/api/manual/" + path, {
@@ -73,7 +94,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       setMessage(weightKey ? "体重の訂正を保存しました。" : "体重を記録しました。");
       setWeightKey(null); setWeightOriginal(null);
       pendingKey.current = null; setWeightAt(""); setWeightKg("");
-      await load(); onSaved();
+      await refreshHistory(measuredAt.slice(0,10)); onSaved();
     } catch (err) {
       // An unknown network outcome may mean the write committed. Re-read
       // before the user retries; a POST reuses its stable UUID if needed.
@@ -93,7 +114,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       });
       setMessage(stepEditing ? "歩数を訂正しました。" : "歩数を記録しました。");
       setStepEditing(false); setOldSteps(null); setStepsValue("");
-      await load(); onSaved();
+      await refreshHistory(stepsDay); onSaved();
     } catch (err) {
       await load();
       setMessage(err instanceof Error ? err.message
@@ -110,7 +131,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       });
       setMessage("手入力の体重を取り消しました。");
       setWeightKey(null); setWeightOriginal(null); pendingKey.current = null;
-      await load(); onSaved();
+      await refreshHistory(); onSaved();
     } catch (err) {
       await load();
       setMessage(err instanceof Error ? err.message : "取消結果が不明です。履歴を確認してください。");
@@ -123,7 +144,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
       await request("steps", "DELETE", { day, expectedSteps });
       setMessage("手入力の歩数を取り消しました。");
       setStepEditing(false); setOldSteps(null);
-      await load(); onSaved();
+      await refreshHistory(); onSaved();
     } catch (err) {
       await load();
       setMessage(err instanceof Error ? err.message : "取消結果が不明です。履歴を確認してください。");
@@ -168,7 +189,20 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
     {message && <p role="status" aria-live="polite">{message}</p>}
     <details className="manual-records sub-details">
       <summary>手入力の履歴・訂正・取消</summary>
-      <h3>直近30日の履歴</h3>
+      <h3>過去の手入力履歴（30日単位）</h3>
+      <div className="manual-fields">
+        <label>履歴の終了日（日本時間）<input id="manual-history-to" type="date"
+          value={historyTo} max={jstToday()} disabled={busy}
+          aria-invalid={historyRange===null}
+          onChange={e=>{
+            setWeightKey(null);setWeightOriginal(null);setStepEditing(false);setOldSteps(null);
+            setHistoryTo(e.target.value);
+          }}/></label>
+        <button type="button" disabled={busy} onClick={()=>setHistoryTo(jstToday())}>
+          直近30日に戻る
+        </button>
+      </div>
+      {historyRange&&<p className="hint">表示期間：{historyRange.from} 〜 {historyRange.to}</p>}
       <button type="button" disabled={busy || loading} onClick={() => void load()}>履歴を更新</button>
       {loading && <p role="status">記録を読み込み中…</p>}
       {!loading && <div className="manual-history">

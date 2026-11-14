@@ -14,7 +14,8 @@ await writeFile(fixture,[
 ].join("\n"));
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
-let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null;
+let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null;
+const syntheticManualDay=new Date(Date.now()+9*3600000-45*86400000).toISOString().slice(0,10);
 const pending=new Map();
 const calls=[];
 const blockedRemoteOrigins=new Set();
@@ -57,6 +58,13 @@ async function intercept(p){
   else{mode="readback";data={status:"applied",inserted:0,enriched:1,cells:5};}
  }else if(path==="/api/import/confirm"){normal++;data={status:"confirmed",inserted:1,updated:0,skipped:0,conflicted:0};}
  else if(path==="/api/auth/passkey/status")data={registered:true,passwordEnabled:false,passkeySession:true};
+ else if(path==="/api/manual/records"){
+  const from=url.searchParams.get("from"),to=url.searchParams.get("to");
+  lastManualRange={from,to};
+  const visible=from!==null&&to!==null&&syntheticManualDay>=from&&syntheticManualDay<=to;
+  data={from,to,weights:visible?[{key:"synthetic-weight-1",measuredAt:syntheticManualDay+"T07:30:00+09:00",weightKg:75}]:[],
+    steps:visible?[{day:syntheticManualDay,steps:6543}]:[]};
+ }
  else if(path==="/api/mvp/drinks"){
   const method=p.request.method;
   if(method==="GET"){
@@ -266,6 +274,25 @@ try{
  await click("訂正を保存");
  await wait(()=>lastDrinkPatch?.cups===4,"PATCH numeric cups");
  assert.equal(typeof lastDrinkPatch.cups,"number");
+ // Synthetic 45-day-old manual measurements are discoverable by date-selected history.
+ assert(await js("(()=>{const d=document.querySelector('.manual-records');if(!d)return false;d.open=true;return true})()"),
+  "manual history section");
+ async function chooseManualHistory(day){
+  await js("(()=>{const e=document.querySelector('#manual-history-to');"+
+   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
+   "setter.call(e,"+JSON.stringify(day)+");"+
+   "e.dispatchEvent(new Event('input',{bubbles:true}));"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));return e.value})()");
+  await wait(()=>lastManualRange?.to===day,"manual range GET "+day);
+ }
+ await chooseManualHistory(syntheticManualDay);
+ await wait(()=>js("document.querySelector('.manual-records')?.innerText.includes('6,543歩')"),
+  "historical steps visible");
+ assert.equal(await js("document.querySelector('.manual-records')?.innerText.includes('75.0kg')"),true,
+  "historical weight visible");
+ await chooseManualHistory(new Date(Date.now()+9*3600000).toISOString().slice(0,10));
+ await wait(()=>js("document.querySelector('.manual-records')?.innerText.includes('手入力なし')"),
+  "current month has no old manual entries");
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"drink form 390px overflow");
  assert.equal(await js("window.innerWidth"),390);
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
@@ -274,7 +301,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
