@@ -73,7 +73,7 @@ async function verifyOriginalBytes(p:Payload):Promise<string|null>{
     if(btoa(binary)!==encoded||binary.length<1||binary.length>MAX_BYTES)throw Error("CANONICAL_BASE64");
     bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
   }catch{throw Error("ORIGINAL_BASE64");}
-  const sha=await crypto.subtle.digest("SHA-256",bytes);
+  const sha=await crypto.subtle.digest("SHA-256",Uint8Array.from(bytes));
   const verified=[...new Uint8Array(sha)].map(v=>v.toString(16).padStart(2,"0")).join("");
   if(verified!==p.originalSha256)throw Error("ORIGINAL_HASH");
   let text:string;
