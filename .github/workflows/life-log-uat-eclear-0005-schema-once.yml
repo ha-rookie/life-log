@@ -1,0 +1,133 @@
+name: Life-log one-shot ECLEAR 0005 UAT D1 schema presence check
+
+# No D1 data rows, schema changes, secret changes or Worker deploy.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-one-shot-eclear-0005-schema-191
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt <= 2 &&
+      github.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == 'ha-rookie/life-log' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(d1): read ECLEAR 0005 schema for UAT (#191)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      APPROVED_PARENT: e56b9094b86452855f8a7b1328ac33272be9a74c
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      DB_ID: 421d0116-5c33-4782-a2b6-28f9684d3956
+      DB_NAME: life-log-dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify exact one-file main squash, CI event and immutable D1 identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ha-rookie/life-log'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_EVENT_NAME" = 'workflow_run'
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^)" = "$APPROVED_PARENT"
+          test "$(git show -s --format=%s HEAD)" = 'ci(d1): read ECLEAR 0005 schema for UAT (#191)'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git diff-tree --no-commit-id --name-only -r HEAD > "$RUNNER_TEMP/changed-files"
+          printf '%s\n' '.github/workflows/life-log-uat-eclear-0005-schema-once.yml' > "$RUNNER_TEMP/allowed-files"
+          diff -u "$RUNNER_TEMP/allowed-files" "$RUNNER_TEMP/changed-files"
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          const config=JSON.parse(readFileSync('wrangler.jsonc','utf8').split(/\r?\n/)
+            .filter(x=>!x.trimStart().startsWith('//')).join('\n'));
+          const check=bindings=>Array.isArray(bindings)&&bindings.length===1 &&
+            bindings[0].binding==='DB'&&bindings[0].database_name==='life-log-dev' &&
+            bindings[0].database_id==='421d0116-5c33-4782-a2b6-28f9684d3956';
+          if(config.name!=='life-log-dev'||config.env?.uat?.name!=='life-log-uat'||
+             !check(config.d1_databases)||!check(config.env?.uat?.d1_databases))
+            throw Error('Fixed UAT identity mismatch; no remote query');
+          console.log('PASS: exact main commit, scope and UAT D1 identity');
+          JS
+      - name: Query only schema table names and Migration 0005 ledger (no personal rows)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const token=process.env.CLOUDFLARE_API_TOKEN,acct=process.env.CLOUDFLARE_ACCOUNT_ID;
+          const id=process.env.DB_ID;
+          assert(token?.length>=12 && /^[a-f0-9]{32}$/i.test(acct||''));
+          assert.equal(id,'421d0116-5c33-4782-a2b6-28f9684d3956');
+          const base='https://api.cloudflare.com/client/v4/accounts/'+acct+'/d1/database/'+id;
+          const call=async(method,path,body)=>{
+            const result=await fetch(base+path,{
+              method,headers:{Authorization:'Bearer '+token,
+                ...(body?{'Content-Type':'application/json'}:{})},
+              ...(body?{body:JSON.stringify(body)}:{})
+            });
+            if(!result.ok)throw Error('CLOUDFLARE_METADATA_REQUEST_FAILED');
+            const v=await result.json();
+            if(v.success!==true)throw Error('CLOUDFLARE_METADATA_RESPONSE_FAILED');
+            return v.result;
+          };
+          const database=await call('GET','');
+          assert.equal(database.uuid,id);
+          assert.equal(database.name,process.env.DB_NAME);
+          const query=async(sql)=>{
+            const result=await call('POST','/query',{sql,params:[]});
+            assert(Array.isArray(result)&&result.length===1&&result[0].success===true);
+            const meta=result[0].meta||{};
+            assert(meta.changes===undefined||meta.changes===0);
+            assert(meta.changed_db===undefined||meta.changed_db===false);
+            assert(Array.isArray(result[0].results));
+            return result[0].results;
+          };
+          // EXACT allowlist: metadata only, never SELECT from personal tables.
+          const tableSql="SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('d1_migrations','eclear_enrichment_jobs','eclear_enrichment_row_audit','eclear_enrichment_cell_audit','eclear_enrichment_asserts') ORDER BY name";
+          const migrationSql="SELECT name FROM d1_migrations WHERE name='0005_eclear_enrichment_audit.sql' LIMIT 1";
+          const present=await query(tableSql);
+          assert(present.length<=5&&present.every(row=>Object.keys(row).length===1&&typeof row.name==='string'));
+          const names=new Set(present.map(x=>x.name));
+          const expected=['eclear_enrichment_jobs','eclear_enrichment_row_audit','eclear_enrichment_cell_audit','eclear_enrichment_asserts'];
+          const count=expected.filter(x=>names.has(x)).length;
+          let applied=null;
+          if(names.has('d1_migrations')){
+            const rows=await query(migrationSql);
+            assert(rows.length<=1&&rows.every(x=>Object.keys(x).length===1&&x.name==='0005_eclear_enrichment_audit.sql'));
+            applied=rows.length===1;
+          }
+          console.log('UAT D1 schema: 0005 applied='+String(applied)+'; ECLEAR audit tables='+count+'/4; metadata-only.');
+          if(process.env.GITHUB_STEP_SUMMARY){
+            const {appendFileSync}=await import('node:fs');
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+              '### UAT D1 metadata-only ECLEAR preflight\n' +
+              '- Migration 0005 ledger applied: '+String(applied)+'\n' +
+              '- ECLEAR audit tables present: '+count+'/4\n' +
+              '- No user data rows, write, migration, secrets or deployment performed\n');
+          }
+          if(count>0&&count<4)throw Error('PARTIALLY_APPLIED_ECLEAR_SCHEMA');
+          if(applied===true&&count!==4)throw Error('INCONSISTENT_MIGRATION_LEDGER');
+          JS
