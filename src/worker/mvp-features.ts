@@ -97,6 +97,13 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   }
   const observed=[...measures.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
   const start=observed[0],end=observed.at(-1);
+  // Qualified trailing 7-day weight mean: at least four separate observed JST days,
+  // never a fabricated zero or a '7-day mean' from a shorter partial window.
+  const lastSevenWindowDays=Math.min(7,p.days);
+  const lastSevenFrom=new Date(millis(p.to)-(lastSevenWindowDays-1)*dayMs).toISOString().slice(0,10);
+  const lastSevenValues=observed.filter(([d])=>d>=lastSevenFrom).map(([,w])=>w.weight_kg!);
+  const lastSevenMeanKg=lastSevenWindowDays===7&&lastSevenValues.length>=4
+    ?Number((lastSevenValues.reduce((a,b)=>a+b,0)/lastSevenValues.length).toFixed(2)):null;
   const days=new Map<string,S>();
   for(const s of steps.results){
     // Google Fit is the canonical step record, never sum duplicate sources.
@@ -136,6 +143,8 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
       endMeasuredAt:end?.[1].measured_at??null,endSource:end?.[1].source_id??null,
       deltaKg:start&&end&&observed.length>=2?Number((end[1].weight_kg!-start[1].weight_kg!).toFixed(2)):null,
       observedDays:observed.length,missingDays:p.days-observed.length,
+      lastSevenMeanKg,lastSevenObservedDays:lastSevenValues.length,
+      lastSevenWindowDays,
     },
     steps:{mean:stepValues.length?Math.round(stepValues.reduce((a,b)=>a+b,0)/stepValues.length):null,
       observedDays:stepValues.length,missingDays:p.days-stepValues.length,zeroDays:stepValues.filter(x=>x===0).length,
@@ -169,6 +178,38 @@ async function compare(req:Request,db:MvpDb,owner:string){
   return json({a:await comparePeriod(db,owner,a),b:await comparePeriod(db,owner,b),
     disclaimer:"観測データの比較です。欠測を0とせず、体重変化の原因や飲酒の効果は断定しません。"});
 }
+// Read-only evidence tied to a saved Owner experiment, not an AI outcome verdict.
+async function experimentEvidence(req:Request,db:MvpDb,owner:string){
+  const q=new URL(req.url).searchParams;
+  const id=q.get("id");
+  if(q.size!==1||typeof id!=="string"||!uuid.test(id))return fail("PAYLOAD",400);
+  const experiment=await db.prepare(
+    "SELECT starts_on AS startsOn,ends_on AS endsOn FROM behavior_experiments "+
+    "WHERE owner_id=? AND id=? LIMIT 1")
+    .bind(owner,id.toLowerCase()).first<{startsOn:string;endsOn:string}>();
+  if(!experiment)return fail("NOT_FOUND",404);
+  const {startsOn,endsOn}=experiment;
+  const currentDay=today();
+  if(!validCalendarDay(startsOn)||!validCalendarDay(endsOn)||startsOn>endsOn||
+    (millis(endsOn)-millis(startsOn))/dayMs>90)return fail("RANGE",422);
+  if(startsOn>currentDay)return json({
+    id:id.toLowerCase(),status:"not_started",asOf:currentDay,plannedFrom:startsOn,
+    plannedTo:endsOn,before:null,during:null,
+    disclaimer:"開始前の計測値は作成しません。実測データだけを比較します。"
+  });
+  const through=endsOn<currentDay?endsOn:currentDay;
+  const n=Math.round((millis(through)-millis(startsOn))/dayMs)+1;
+  if(n<1||n>91)return fail("RANGE",422);
+  const baselineFrom=new Date(millis(startsOn)-n*dayMs).toISOString().slice(0,10);
+  const baselineTo=new Date(millis(startsOn)-dayMs).toISOString().slice(0,10);
+  if(!validDay(baselineFrom)||!validDay(baselineTo))return fail("RANGE",422);
+  const before=await comparePeriod(db,owner,{from:baselineFrom,to:baselineTo,days:n});
+  const during=await comparePeriod(db,owner,{from:startsOn,to:through,days:n});
+  return json({id:id.toLowerCase(),status:endsOn<=currentDay?"finished":"in_progress",
+    asOf:currentDay,plannedFrom:startsOn,plannedTo:endsOn,before,during,
+    disclaimer:"同日数の実測記録を並べた観察結果です。記録なし≠0、飲酒有無≠杯数。因果効果や継続・修正・終了の本人判定は自動で決めません。"});
+}
+
 async function listDrinks(req:Request,db:MvpDb,owner:string){
   const q=new URL(req.url).searchParams;
   if([...q.keys()].some(k=>!["from","to"].includes(k)))return fail("RANGE",400);
@@ -485,7 +526,7 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
   const method=req.method;
   const pathMethods:Record<string,string[]>={
     "/api/mvp/compare":["GET"],"/api/mvp/drinks":["GET","POST","PATCH","DELETE"],
-    "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/export":["GET"],
+    "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/experiments/evidence":["GET"],"/api/mvp/export":["GET"],
     "/api/mvp/meals":["GET","PUT","DELETE"],"/api/mvp/outings":["GET","POST","PATCH","DELETE"]
   };
   if(!pathMethods[path])return fail("NOT_FOUND",404);
@@ -497,6 +538,7 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
       ?await listDrinks(req,db,owner)
       :await writeDrink(req,db,owner,(await body(req))??{});
     if(path==="/api/mvp/experiments")return await experiments(req,db,owner);
+    if(path==="/api/mvp/experiments/evidence")return await experimentEvidence(req,db,owner);
     if(path==="/api/mvp/meals")return await meals(req,db,owner);
     if(path==="/api/mvp/outings")return await outings(req,db,owner);
     return await exportCsv(req,db,owner);
