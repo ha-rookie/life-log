@@ -24,6 +24,7 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt == 1 &&
       startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): ship drink cups UI to existing UAT (#')
     runs-on: ubuntu-latest
     timeout-minutes: 18
@@ -95,7 +96,7 @@ jobs:
           # Exact-main recheck immediately before touching Cloudflare.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           umask 077
-          tmpdir="$(mktemp -d)"
+          tmpdir="$(mktemp -d "$PWD/.uat-cups-ui-XXXXXXXX")"
           trap 'rm -rf "$tmpdir"' EXIT
           cfg="$tmpdir/uat-ui.jsonc"
           before="$tmpdir/bindings-before.json"
