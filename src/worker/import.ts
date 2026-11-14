@@ -1,4 +1,5 @@
 import { hash, previewCsv, MAX_BYTES, type CsvRow, type CsvSource } from "../shared/csv-import";
+import { normalizeOfficialCsv, detectOfficialCsvSource } from "../shared/source-adapter";
 
 // Defense in depth for the ONLY mutating import route. The trusted runtime flag
 // must never be configured on any remote Worker. Host/Origin can be forged by
@@ -29,7 +30,8 @@ const privateHeaders = { "Cache-Control": "private, no-store", "X-Content-Type-O
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: privateHeaders });
 const reject = (error: string, status = 422) => json({ error }, status);
 type Resolution = { mode: "keep_existing"; token: string };
-type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string; resolution?: Resolution };
+type Payload = { source: CsvSource; csv: string; confirmed?: boolean; hash?: string; resolution?: Resolution;
+  originalBase64?: string; originalSha256?: string };
 type LifestyleRow = CsvRow & { day: string; presence: 0 | 1 | null; cups: number | null; steps: number | null };
 type StoredDay = {
   source_id: string; source_row_key: string;
@@ -45,6 +47,11 @@ function valid(x: unknown): x is Payload {
   const p = x as Record<string, unknown>;
   if (p.source !== "eclear" && p.source !== "lifestyle" && p.source !== "fit" && p.source !== "weight_day") return false;
   if (typeof p.csv !== "string" || new TextEncoder().encode(p.csv).length > MAX_BYTES) return false;
+  const hasRaw=p.originalBase64!==undefined||p.originalSha256!==undefined;
+  if(hasRaw&&(
+    typeof p.originalBase64!=="string"||p.originalBase64.length>4*Math.ceil(MAX_BYTES/3)||
+    typeof p.originalSha256!=="string"||!/^[a-f0-9]{64}$/.test(p.originalSha256)
+  ))return false;
   if (p.confirmed !== undefined && typeof p.confirmed !== "boolean") return false;
   if (p.hash !== undefined && typeof p.hash !== "string") return false;
   if (p.resolution !== undefined) {
@@ -55,6 +62,31 @@ function valid(x: unknown): x is Payload {
   return true;
 }
 function lifestyle(rows: CsvRow[]): LifestyleRow[] { return rows as LifestyleRow[]; }
+/** Verify original UTF-8 bytes and the exact canonical content, before D1 access. */
+async function verifyOriginalBytes(p:Payload):Promise<string|null>{
+  if(p.originalBase64===undefined)return null;
+  const encoded=p.originalBase64;
+  if(!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))throw Error("ORIGINAL_BASE64");
+  let bytes:Uint8Array;
+  try{
+    const binary=atob(encoded);
+    if(btoa(binary)!==encoded||binary.length<1||binary.length>MAX_BYTES)throw Error("CANONICAL_BASE64");
+    bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
+  }catch{throw Error("ORIGINAL_BASE64");}
+  const sha=await crypto.subtle.digest("SHA-256",bytes);
+  const verified=[...new Uint8Array(sha)].map(v=>v.toString(16).padStart(2,"0")).join("");
+  if(verified!==p.originalSha256)throw Error("ORIGINAL_HASH");
+  let text:string;
+  try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}
+  catch{throw Error("ORIGINAL_UTF8");}
+  if(detectOfficialCsvSource(text)!==p.source)throw Error("ORIGINAL_SOURCE");
+  let parts:string[];
+  try{parts=normalizeOfficialCsv(p.source,text).parts;}
+  catch{throw Error("ORIGINAL_CSV");}
+  if(parts.length!==1||parts[0]!==p.csv)throw Error("ORIGINAL_CANONICAL");
+  return verified;
+}
+
 
 async function snapshotDays(db: ImportDb, owner: string, rows: LifestyleRow[]): Promise<SnapshotDay[]> {
   const out: SnapshotDay[] = [];
@@ -100,6 +132,7 @@ async function reviewToken(owner: string, fileHash: string, snapshots: SnapshotD
 function jobStatement(
   db: ImportDb, owner: string, source: CsvSource, fileHash: string,
   job: string, now: string, snapshots: SnapshotDay[], status: "confirmed" | "partial",
+  originalSha256: string|null,
 ): Statement {
   const checks: string[] = [];
   const params: unknown[] = [];
@@ -125,7 +158,8 @@ function jobStatement(
     + " VALUES (?,?,?,?,?," + statusSql + ",?,?)";
   // The job source marker differentiates audited-v2 jobs from confirmed pre-audit jobs.
   // Destination row source_id remains the same, preserving existing deduplication.
-  return db.prepare(sql).bind(job, owner, source, "csv:audited-v2:" + source, fileHash,
+  return db.prepare(sql).bind(job, owner, source,
+    "csv:audited-v2:" + source + (originalSha256===null?"":":raw-utf8-sha256:"+originalSha256), fileHash,
     ...(source === "lifestyle" ? params : []), status, now, now);
 }
 // Every import job runs in a single atomic D1.batch: audit the previous
@@ -257,8 +291,13 @@ function counts(rows:AuditCount[]):Summary{
 // have NO import_row_audit rows. Modern jobs carry "csv:audited-v2:<source>".
 // This deliberately does not guess historical inserted/skipped/conflict counts.
 type ExistingJob = { status: string; source_id: string };
+const originalProofState=(stored:string,source:CsvSource,raw:string|null)=>
+  raw===null?"not_submitted":stored==="csv:audited-v2:"+source+":raw-utf8-sha256:"+raw
+    ?"matches_first_import":stored.startsWith("csv:audited-v2:"+source+":raw-utf8-sha256:")
+      ?"different_original_same_canonical":"not_recorded_for_existing_job";
 async function existingJobResponse(
   db: ImportDb, job: string, rows: number, existing: ExistingJob, source: CsvSource,
+  originalSha256:string|null=null,
 ): Promise<Response> {
   const result = await db.prepare(
     "SELECT result,error_code,COUNT(*) AS n FROM import_row_audit WHERE import_job_id=? GROUP BY result,error_code"
@@ -269,6 +308,7 @@ async function existingJobResponse(
     return json({
       status: "already_imported", inserted: 0, updated: 0, skipped: rows, conflicted: 0,
       auditStatus: "legacy_unavailable", original: null,
+      originalByteEvidence:originalProofState(existing.source_id,source,originalSha256),
     });
   }
   // An audited job with missing records, a partially missing audit, or a
@@ -278,7 +318,8 @@ async function existingJobResponse(
     return reject("INCOMPLETE_AUDIT", 503);
   }
   return json({ status: "already_imported", inserted: 0, updated: 0, skipped: rows,
-    conflicted: 0, auditStatus: "complete", original });
+    conflicted: 0, auditStatus: "complete", original,
+    originalByteEvidence:originalProofState(existing.source_id,source,originalSha256) });
 }
 
 export async function handleImport(request: Request, db: ImportDb, owner: string): Promise<Response> {
@@ -286,19 +327,23 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
   if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
     return reject("CONTENT_TYPE", 415);
   }
-  if (Number(request.headers.get("Content-Length") || 0) > MAX_BYTES * 2) return reject("SIZE", 413);
+  if (Number(request.headers.get("Content-Length") || 0) > MAX_BYTES * 4) return reject("SIZE", 413);
   let payload: unknown;
   try {
     const text = await request.text();
-    if (new TextEncoder().encode(text).length > MAX_BYTES * 2) return reject("SIZE", 413);
+    if (new TextEncoder().encode(text).length > MAX_BYTES * 4) return reject("SIZE", 413);
     payload = JSON.parse(text);
   } catch { return reject("JSON", 400); }
   if (!valid(payload)) return reject("PAYLOAD", 400);
+  let originalSha256:string|null;
+  try{originalSha256=await verifyOriginalBytes(payload);}
+  catch{return reject("ORIGINAL_BYTES_INVALID");}
   let preview;
   try { preview = await previewCsv(payload.source, payload.csv); }
   catch { return reject("CSV"); }
 
-  if (new URL(request.url).pathname === "/api/import/preview") return json(preview);
+  if (new URL(request.url).pathname === "/api/import/preview")
+    return json({...preview,originalByteEvidence:originalSha256===null?"not_submitted":"verified_only_not_saved"});
   if (payload.confirmed !== true || payload.hash !== preview.hash) return reject("CONFIRM_REQUIRED", 409);
   if (preview.errors.length || preview.rows.length === 0) return reject("INVALID_ROWS");
   const distinct = new Set<string>();
@@ -316,7 +361,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
     if (existing) {
       if (existing.status === "confirmed" || existing.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length, existing, payload.source);
+        return existingJobResponse(db, job, preview.rows.length, existing, payload.source,originalSha256);
       }
       return reject("JOB_CONFLICT", 409);
     }
@@ -338,7 +383,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     const now = new Date().toISOString();
     const ops: Statement[] = [
       db.prepare("INSERT OR IGNORE INTO owners(id,created_at) VALUES (?,?)").bind(owner, now),
-      jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status),
+      jobStatement(db, owner, payload.source, preview.hash, job, now, snapshots, status,originalSha256),
     ];
     for (const row of preview.rows) {
       // Canonical source updates must classify the pre-update row atomically.
@@ -361,7 +406,8 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
     if (summary.inserted + summary.updated + summary.skipped + summary.conflicted !== preview.rows.length) {
       return reject("INCOMPLETE_AUDIT", 503);
     }
-    return json({ status, ...summary });
+    return json({ status, ...summary,
+      originalByteEvidence:originalSha256===null?"not_submitted":"recorded_first_import" });
   } catch {
     // If a concurrent change invalidated our in-batch snapshot guard, the
     // entire D1 batch (including audit) was rolled back. Require fresh review.
@@ -384,7 +430,7 @@ export async function handleImport(request: Request, db: ImportDb, owner: string
         "SELECT status,source_id FROM import_jobs WHERE owner_id=? AND source_type=? AND file_sha256=?"
       ).bind(owner, payload.source, preview.hash).first<ExistingJob>();
       if (winner?.status === "confirmed" || winner?.status === "partial") {
-        return existingJobResponse(db, job, preview.rows.length, winner, payload.source);
+        return existingJobResponse(db, job, preview.rows.length, winner, payload.source,originalSha256);
       }
     } catch { /* fail closed */ }
     return reject("IMPORT_FAILED", 503);

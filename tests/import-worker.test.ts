@@ -4,6 +4,7 @@ import schemaSql from "../migrations/0001_initial.sql?raw";
 import { createHandler, type Env } from "../src/worker/index";
 import { handleImport, type ImportDb, type Statement } from "../src/worker/import";
 import { hash } from "../src/shared/csv-import";
+import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 
 interface LocalStatement extends Statement {
   bind(...values: unknown[]): LocalStatement;
@@ -75,6 +76,42 @@ describe("real ephemeral local D1 audited import",()=>{
     await db.prepare("INSERT INTO owners(id,created_at) VALUES (?,?)")
       .bind("owner","2026-01-01T00:00:00Z").run();
   });
+
+  it("persists only the first verified original-byte SHA while canonical replay remains deduplicated",async()=>{
+    const original="\uFEFF日付,飲酒,歩数\r\n2026/02/04,1,0\r\n2026/02/05,0,\r\n";
+    const canonical=normalizeOfficialCsv("lifestyle",original).parts[0];
+    const raw=await originalUtf8Proof(new TextEncoder().encode(original));
+    const sendRaw=async(text:string)=>{
+      const evidence=await originalUtf8Proof(new TextEncoder().encode(text));
+      const res=await handleImport(new Request("https://example.invalid/api/import/confirm",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({source:"lifestyle",csv:canonical,hash:await hash(canonical),
+          confirmed:true,...evidence})
+      }),db,"owner");
+      return {status:res.status,body:await res.json() as {inserted:number;
+        originalByteEvidence:string}};
+    };
+    expect(await sendRaw(original)).toMatchObject({status:200,
+      body:{inserted:2,originalByteEvidence:"recorded_first_import"}});
+    const first=await db.prepare(
+      "SELECT source_id,file_sha256 FROM import_jobs WHERE owner_id=? AND source_type=?"
+    ).bind("owner","lifestyle").first<{source_id:string;file_sha256:string}>();
+    expect(first).toEqual({source_id:"csv:audited-v2:lifestyle:raw-utf8-sha256:"+raw.originalSha256,
+      file_sha256:await hash(canonical)});
+    expect(await sendRaw(original)).toMatchObject({status:200,
+      body:{inserted:0,originalByteEvidence:"matches_first_import"}});
+    const different=original.replace("\uFEFF","").replaceAll("\r\n","\n");
+    expect(normalizeOfficialCsv("lifestyle",different).parts[0]).toBe(canonical);
+    expect(await sendRaw(different)).toMatchObject({status:200,
+      body:{inserted:0,originalByteEvidence:"different_original_same_canonical"}});
+    const again=await db.prepare("SELECT source_id FROM import_jobs WHERE owner_id='owner'")
+      .first<{source_id:string}>();
+    expect(again?.source_id).toBe(first?.source_id);
+    expect(await count(db,"import_jobs")).toBe(1);
+    expect(await count(db,"import_row_audit")).toBe(2);
+    expect(await count(db,"lifestyle_days")).toBe(2);
+    expect(await count(db,"body_measurements")).toBe(0);
+  },100_000);
 
   it("weight_day: inserts only missing calendar days and preserves actual ECLEAR time",async()=>{
     const original="measured_at,weight_kg,body_fat_pct\n2026-01-02T07:00:00+09:00,72.2,22.5\n";

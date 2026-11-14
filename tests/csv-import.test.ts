@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { previewCsv, hash } from "../src/shared/csv-import";
 import { handleImport, type ImportDb } from "../src/worker/import";
+import { normalizeOfficialCsv, originalUtf8Proof } from "../src/shared/source-adapter";
 
 const life = "local_day,drinking_presence,drink_cups,steps\n"
   + "2026-01-02,1,,\n2026-01-03,0,0,0\n2026-01-04,,,\n";
@@ -81,6 +82,69 @@ describe("synthetic canonical CSV mapping", () => {
     await expect(previewCsv("lifestyle", "x".repeat(65537))).rejects.toThrow();
     await expect(previewCsv("lifestyle", "\uFEFF" + life)).rejects.toThrow();
     await expect(previewCsv("lifestyle", life + "\0")).rejects.toThrow();
+  });
+});
+
+describe("bounded UTF-8 original-byte provenance before D1 access (#209)",()=>{
+  const original="\uFEFF日付,飲酒,歩数\r\n2026/01/02,1,0\r\n2026/01/03,0,\r\n";
+  it("verifies original BOM and CRLF, independently re-normalizes, and leaves preview read-only",async()=>{
+    const proof=await originalUtf8Proof(new TextEncoder().encode(original));
+    const canonical=normalizeOfficialCsv("lifestyle",original).parts[0];
+    const db=blockedDb();
+    const res=await handleImport(request("preview",{
+      source:"lifestyle",csv:canonical,hash:await hash(canonical),...proof
+    }),db.db,"owner");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({source:"lifestyle",total:2,
+      originalByteEvidence:"verified_only_not_saved"});
+    const lf=await originalUtf8Proof(new TextEncoder().encode(original.replaceAll("\r\n","\n")));
+    const noBom=await originalUtf8Proof(new TextEncoder().encode(original.replace("\uFEFF","")));
+    expect(proof.originalSha256).not.toBe(lf.originalSha256);
+    expect(proof.originalSha256).not.toBe(noBom.originalSha256);
+    expect(normalizeOfficialCsv("lifestyle",original.replaceAll("\r\n","\n")).parts[0])
+      .toBe(canonical);
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(db.batch).not.toHaveBeenCalled();
+  });
+  it("rejects unverified raw hashes, false matching canonical payloads, invalid base64/UTF-8 and multipart before D1",async()=>{
+    const proof=await originalUtf8Proof(new TextEncoder().encode(original));
+    const canonical=normalizeOfficialCsv("lifestyle",original).parts[0];
+    const normalized=normalizeOfficialCsv("lifestyle",
+      "日付,飲酒,歩数\n"+Array.from({length:9},(_,i)=>
+        "2026/02/"+String(i+1).padStart(2,"0")+",0,0").join("\n")+"\n");
+    const many="日付,飲酒,歩数\n"+Array.from({length:9},(_,i)=>
+      "2026/02/"+String(i+1).padStart(2,"0")+",0,0").join("\n")+"\n";
+    const multipart=await originalUtf8Proof(new TextEncoder().encode(many));
+    expect(normalized.parts).toHaveLength(2);
+    const garbage=Uint8Array.of(0x81,0xff,0x20);
+    const rawSha=[...new Uint8Array(await crypto.subtle.digest("SHA-256",garbage))]
+      .map(n=>n.toString(16).padStart(2,"0")).join("");
+    const cases=[
+      {...proof,originalSha256:"0".repeat(64)},
+      {...proof,originalBase64:proof.originalBase64+"="},
+      {...proof,originalBase64:proof.originalBase64.slice(0,-2)+"_="},
+      {...proof,csv:canonical+"2026-01-05,1,,0\n"},
+      {originalBase64:btoa(String.fromCharCode(...garbage)),originalSha256:rawSha},
+      {...multipart,csv:normalized.parts[0]},
+    ];
+    const db=blockedDb();
+    for(const item of cases){
+      const res=await handleImport(request("confirm",{
+        source:"lifestyle",csv:canonical,confirmed:true,hash:await hash(canonical),...item
+      }),db.db,"owner");
+      expect(res.ok).toBe(false);
+    }
+    expect((await handleImport(request("confirm",{
+      source:"lifestyle",csv:canonical,hash:await hash(canonical),confirmed:true,
+      originalBase64:proof.originalBase64
+    }),db.db,"owner")).status).toBe(400);
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(db.batch).not.toHaveBeenCalled();
+  });
+  it("rejects original Shift_JIS and UTF-16 bytes rather than fabricating UTF-8 proof",async()=>{
+    await expect(originalUtf8Proof(Uint8Array.of(0x81,0x30))).rejects.toThrow();
+    await expect(originalUtf8Proof(Uint8Array.of(0xff,0xfe,0x61,0x00))).rejects.toThrow();
+    await expect(originalUtf8Proof(new Uint8Array())).rejects.toThrow();
   });
 });
 
