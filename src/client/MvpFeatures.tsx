@@ -534,15 +534,18 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
               <dt>期間内の最後の実測</dt><dd>{weightEvidence(p.weight.endDay,p.weight.endKg,p.weight.endMeasuredAt,p.weight.endSource)}</dd>
               <dt>体重の変化</dt><dd>{p.weight.deltaKg===null?"実測が2日未満のため算出不可":render(p.weight.deltaKg," kg")}</dd>
               <dt>体重の観測・欠測</dt><dd>実測 {p.weight.observedDays}日／{p.calendarDays}日、欠測 {p.weight.missingDays}日</dd>
-              <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日）</dd>
-              <dt>飲酒した日</dt><dd>{p.drinking.drinkingDays}日／観測 {p.drinking.observedDays}日（欠測 {p.drinking.missingDays}日）</dd>
+              <dt>平均歩数</dt><dd>{render(p.steps.mean," 歩")}（観測 {p.steps.observedDays}日／{p.calendarDays}日、欠測 {p.steps.missingDays}日、実測0歩 {p.steps.zeroDays}日）</dd>
+              <dt>歩数の出典</dt><dd>{p.steps.sources.length?p.steps.sources.join("・"):"観測なし"}</dd>
+              <dt>飲酒日数（あり・なし・不明）</dt><dd>飲酒あり {p.drinking.drinkingDays}日／飲酒なし {p.drinking.nondrinkingDays}日／不明 {p.drinking.missingDays}日（観測 {p.drinking.observedDays}日／{p.calendarDays}日）</dd>
               <dt>実際に記録したお酒</dt><dd>{p.drinking.recordedAlcoholCups}杯（ノンアル {p.drinking.recordedNonAlcoholCups}杯）</dd>
               <dt>参考純アルコール（度数・容量が分かる分）</dt>
               <dd>{p.drinking.knownAlcoholG}g
                 {p.drinking.unknownAlcoholCups>0?` ／ 未算出 ${p.drinking.unknownAlcoholCups}杯`:""}
               </dd>
-              <dt>外食（昼・夜）</dt><dd>{p.meals.restaurantLunchDays}昼／{p.meals.restaurantDinnerDays}夜（観測 {p.meals.observedLunchDays}昼・{p.meals.observedDinnerDays}夜）</dd>
-              <dt>夜食</dt><dd>あり {p.meals.lateMealDays}日／観測 {p.meals.lateMealObservedDays}日</dd>
+              <dt>外食（昼・夜）</dt><dd>{p.meals.restaurantLunchDays}昼／{p.meals.restaurantDinnerDays}夜</dd>
+              <dt>中食（昼・夜）</dt><dd>{p.meals.takeoutLunchDays}昼／{p.meals.takeoutDinnerDays}夜</dd>
+              <dt>食事区分の観測・不明</dt><dd>昼：観測 {p.meals.observedLunchDays}日・不明 {p.calendarDays-p.meals.observedLunchDays}日 ／ 夜：観測 {p.meals.observedDinnerDays}日・不明 {p.calendarDays-p.meals.observedDinnerDays}日</dd>
+              <dt>夜食</dt><dd>あり {p.meals.lateMealDays}日／観測 {p.meals.lateMealObservedDays}日（不明 {p.calendarDays-p.meals.lateMealObservedDays}日）</dd>
               <dt>飲みの場への参加</dt><dd>{p.outings.visits}回（会社 {p.outings.work}・居酒屋/バー {p.outings.bar}・その他 {p.outings.other}）</dd>
             </dl>
           </section>)}

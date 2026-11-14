@@ -125,12 +125,20 @@ async function intercept(p){
        endDay:null,endKg:null,endMeasuredAt:null,endSource:null,
        deltaKg:null,observedDays:0,missingDays:15
      },
-     steps:{mean:null,observedDays:0,missingDays:15,zeroDays:0,sources:[]},
-     drinking:{observedDays:0,drinkingDays:0,nondrinkingDays:0,missingDays:15,
-       recordedAlcoholCups:0,recordedNonAlcoholCups:0,cupEntryCount:0,knownAlcoholG:0,unknownAlcoholCups:0},
+     steps:observed
+       ?{mean:2500,observedDays:2,missingDays:13,zeroDays:1,sources:["google_fit"]}
+       :{mean:null,observedDays:0,missingDays:15,zeroDays:0,sources:[]},
+     drinking:observed
+       ?{observedDays:2,drinkingDays:1,nondrinkingDays:1,missingDays:13,
+         recordedAlcoholCups:4,recordedNonAlcoholCups:0,cupEntryCount:1,knownAlcoholG:0,unknownAlcoholCups:4}
+       :{observedDays:0,drinkingDays:0,nondrinkingDays:0,missingDays:15,
+         recordedAlcoholCups:0,recordedNonAlcoholCups:0,cupEntryCount:0,knownAlcoholG:0,unknownAlcoholCups:0},
      outings:{visits:0,work:0,bar:0,other:0},
-     meals:{lateMealDays:0,lateMealObservedDays:0,observedLunchDays:0,observedDinnerDays:0,
-       restaurantLunchDays:0,restaurantDinnerDays:0,takeoutLunchDays:0,takeoutDinnerDays:0}
+     meals:observed
+       ?{lateMealDays:0,lateMealObservedDays:1,observedLunchDays:2,observedDinnerDays:1,
+         restaurantLunchDays:1,restaurantDinnerDays:0,takeoutLunchDays:1,takeoutDinnerDays:1}
+       :{lateMealDays:0,lateMealObservedDays:0,observedLunchDays:0,observedDinnerDays:0,
+         restaurantLunchDays:0,restaurantDinnerDays:0,takeoutLunchDays:0,takeoutDinnerDays:0}
    });
    data={a:summary(q.get("aFrom"),q.get("aTo"),true),
      b:summary(q.get("bFrom"),q.get("bTo"),false),
@@ -365,6 +373,19 @@ try{
  assert(await contains("欠測 13日"),"missing weight days displayed");
  assert(await contains("実測が2日未満のため算出不可"),"empty range cannot yield a false delta");
  assert(await contains("実測記録なし"),"empty period does not fabricate a reading");
+ // M03 evidence: distinguish explicit 0, absent Fit steps, drank/did-not-drink/unknown,
+ // observed vs missing lunch/dinner and takeaway; never equate missing with 0.
+ assert(await contains("観測 2日／15日、欠測 13日、実測0歩 1日"),"step zero distinct from missing");
+ assert(await contains("歩数の出典"),"step source visibly identified");
+ assert(await contains("google_fit"),"canonical Fit source label shown");
+ assert(await contains("飲酒あり 1日／飲酒なし 1日／不明 13日"),"all three drink states visible");
+ assert(await contains("飲酒あり 0日／飲酒なし 0日／不明 15日"),"unknown not fabricated as nondrinking");
+ assert(await contains("中食（昼・夜）"),"takeout not silently omitted");
+ assert(await contains("食事区分の観測・不明"),"lunch and dinner coverage labeled");
+ assert(await contains("昼：観測 2日・不明 13日"),"observed and missing lunch");
+ assert(await contains("夜：観測 1日・不明 14日"),"observed and missing dinner");
+ assert(await js("(()=>{const b=document.querySelector('.mvp-periods section:nth-child(2)');return Boolean(b&&b.innerText.includes('観測なし')&&b.innerText.includes('不明 15日'))})()"),
+   "empty period has no fabricated Fit source or nondrinking days");
  // Editing a date must immediately hide stale evidence until re-comparing.
  await js("(()=>{const el=document.querySelector('#compare-title').closest('section').querySelector('input[type=date]');"+
   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
@@ -381,7 +402,7 @@ try{
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","stale compare cleared","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","stale compare cleared","no overflow"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
