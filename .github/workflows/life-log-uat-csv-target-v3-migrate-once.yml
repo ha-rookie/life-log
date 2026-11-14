@@ -1,0 +1,180 @@
+name: Life-log one-shot CSV target audit v3 UAT additive Migration 0006
+
+# Metadata-only preflight, exact additive-only DDL and unchanged existing schema.
+# No user table SELECT/UPDATE/DELETE, data backfill, secrets or Worker deploy.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: life-log-csv-v3-uat-migration-once-213
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt <= 2 &&
+      github.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == 'ha-rookie/life-log' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(d1): apply CSV v3 additive schema to UAT (#213)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    env:
+      APPROVED_PARENT: 72874ffe2734d3cedc5cd72e144e08837f901f7e
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }
+      GH_TOKEN: ${{ github.token }
+      D1_UUID: 421d0116-5c33-4782-a2b6-28f9684d3956
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Verify exact main, immutable v3 DDL and single-file approved UAT target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REPOSITORY" = ha-rookie/life-log
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^)" = "$APPROVED_PARENT"
+          test "$(git show -s --format=%s HEAD)" = 'ci(d1): apply CSV v3 additive schema to UAT (#213)'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          git diff-tree --no-commit-id --name-only -r HEAD > "$RUNNER_TEMP/actual-files"
+          printf '%s\n' '.github/workflows/life-log-uat-csv-target-v3-migrate-once.yml' > "$RUNNER_TEMP/approved-files"
+          diff -u "$RUNNER_TEMP/approved-files" "$RUNNER_TEMP/actual-files"
+          test "$(git hash-object migrations/0006_csv_target_audit_v3.sql)" = 8dbdd979f5c9d9d0be8aa6d965a6de8c31e58bf9
+          test "$(find migrations -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort | sed 's|^migrations/||')" = "$(printf '%s\n' 0001_initial.sql 0002_owner_auth.sql 0003_owner_passkey.sql 0004_drink_details.sql 0005_eclear_enrichment_audit.sql 0006_csv_target_audit_v3.sql)"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/212" --jq '.merged_at != null and .merge_commit_sha == "72874ffe2734d3cedc5cd72e144e08837f901f7e"' | grep -Fx true
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {readFileSync} from 'node:fs';
+          const cfg=JSON.parse(readFileSync('wrangler.jsonc','utf8')
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith('//')).join('\n'));
+          const d=arr=>Array.isArray(arr)&&arr.length===1&&
+            arr[0].binding==='DB'&&arr[0].database_name==='life-log-dev'&&
+            arr[0].database_id==='421d0116-5c33-4782-a2b6-28f9684d3956';
+          assert.equal(cfg.name,'life-log-dev');
+          assert.equal(cfg.env?.uat?.name,'life-log-uat');
+          assert(d(cfg.d1_databases)&&d(cfg.env?.uat?.d1_databases));
+          const text=readFileSync('migrations/0006_csv_target_audit_v3.sql','utf8');
+          const sql=text.split(/\r?\n/).filter(x=>!x.trimStart().startsWith('--')).join('\n');
+          assert(!/\b(?:DROP|ALTER|UPDATE|DELETE|INSERT|REPLACE|TRUNCATE|PRAGMA|VACUUM)\b/i.test(sql),
+            'Existing-data modification in schema-only migration');
+          const clauses=sql.split(';').map(x=>x.trim()).filter(Boolean);
+          assert.equal(clauses.length,3,'Only three additive objects allowed');
+          assert(/^CREATE TABLE IF NOT EXISTS import_job_target_manifest\s*\(/i.test(clauses[0]));
+          assert(/^CREATE TABLE IF NOT EXISTS import_target_audit\s*\(/i.test(clauses[1]));
+          assert(/^CREATE INDEX IF NOT EXISTS idx_import_target_audit_job_row\s+ON import_target_audit\s*\(/i.test(clauses[2]));
+          assert(!clauses.some(x=>/CREATE\s+(?:TRIGGER|VIEW)|CREATE\s+TABLE\s+(?!IF NOT EXISTS)/i.test(x)));
+          console.log('PASS: immutable 0006 pure-CREATE DDL, exact UAT D1, merged #212 and one-file approved main');
+          JS
+      - name: Install pinned Wrangler without Cloudflare access
+        run: npm ci --no-audit --no-fund
+      - name: Verify remote ledger and unchanged-old-schema snapshot, apply 0006, prove no existing schema drift
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          umask 077
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {writeFileSync} from 'node:fs';
+          const token=process.env.CLOUDFLARE_API_TOKEN,acct=process.env.CLOUDFLARE_ACCOUNT_ID;
+          assert(token?.length>=12&&/^[0-9a-f]{32}$/i.test(acct||''));
+          const id=process.env.D1_UUID;
+          assert.equal(id,'421d0116-5c33-4782-a2b6-28f9684d3956');
+          const api=async(method,path,body)=>{
+            const response=await fetch('https://api.cloudflare.com/client/v4/accounts/'+acct+'/d1/database/'+id+path,{
+              method,headers:{Authorization:'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},
+              ...(body?{body:JSON.stringify(body)}:{})
+            });
+            if(!response.ok)throw Error('D1_REMOTE_METADATA_UNAVAILABLE');
+            const value=await response.json();
+            assert.equal(value.success,true);
+            return value.result;
+          };
+          const db=await api('GET','');
+          assert.equal(db.uuid,id);
+          assert.equal(db.name,'life-log-dev');
+          const query=async sql=>{
+            const result=await api('POST','/query',{sql,params:[]});
+            assert(Array.isArray(result)&&result.length===1&&result[0].success===true);
+            assert(!result[0].meta?.changes&&!result[0].meta?.changed_db);
+            assert(Array.isArray(result[0].results));
+            return result[0].results;
+          };
+          const old=['0001_initial.sql','0002_owner_auth.sql','0003_owner_passkey.sql',
+            '0004_drink_details.sql','0005_eclear_enrichment_audit.sql'];
+          const migrations=await query('SELECT name FROM d1_migrations ORDER BY id');
+          assert.deepEqual(migrations.map(x=>x.name),old,'Migration ledger differs from approved 0001-0005');
+          const names=await query("SELECT name FROM sqlite_schema WHERE name IN ('import_job_target_manifest','import_target_audit','idx_import_target_audit_job_row') ORDER BY name");
+          assert.equal(names.length,0,'v3 tables/index already present or inconsistent');
+          const oldSql="SELECT type,name,tbl_name,sql FROM sqlite_schema "+
+            "WHERE type IN ('table','index','view','trigger') AND name NOT LIKE 'sqlite_%' "+
+            "AND name NOT IN ('import_job_target_manifest','import_target_audit','idx_import_target_audit_job_row') "+
+            "ORDER BY type,name";
+          const before=await query(oldSql);
+          assert(before.length>=12&&before.length<=250,'Unexpected existing-schema inventory size');
+          assert(before.every(x=>typeof x.name==='string'&&typeof x.type==='string'));
+          writeFileSync(process.env.RUNNER_TEMP+'/csv-v3-old-schema.json',
+            JSON.stringify(before),{mode:0o600,flag:'wx'});
+          console.log('PASS: Remote D1 ledger 0001-0005, 0/3 v3 objects, all existing schema saved as metadata only');
+          JS
+          # The only unapplied DDL is the reviewed CREATE-only 0006; Wrangler records its migration ledger.
+          # No personal table data is queried or updated; abort before this point on any drift.
+          npx --no-install wrangler d1 migrations apply DB --env uat --remote
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {readFileSync} from 'node:fs';
+          const token=process.env.CLOUDFLARE_API_TOKEN,acct=process.env.CLOUDFLARE_ACCOUNT_ID,id=process.env.D1_UUID;
+          const base='https://api.cloudflare.com/client/v4/accounts/'+acct+'/d1/database/'+id;
+          const query=async sql=>{
+            const response=await fetch(base+'/query',{method:'POST',headers:{
+              Authorization:'Bearer '+token,'Content-Type':'application/json'
+            },body:JSON.stringify({sql,params:[]})});
+            if(!response.ok)throw Error('D1_REMOTE_POSTCHECK_UNAVAILABLE');
+            const value=await response.json();
+            assert.equal(value.success,true);
+            assert(value.result?.length===1&&value.result[0].success===true);
+            assert(!value.result[0].meta?.changes&&!value.result[0].meta?.changed_db);
+            return value.result[0].results;
+          };
+          const old=['0001_initial.sql','0002_owner_auth.sql','0003_owner_passkey.sql',
+            '0004_drink_details.sql','0005_eclear_enrichment_audit.sql'];
+          const names=(await query('SELECT name FROM d1_migrations ORDER BY id')).map(x=>x.name);
+          assert.deepEqual(names,[...old,'0006_csv_target_audit_v3.sql'],'Exact 0006 only');
+          const oldSql="SELECT type,name,tbl_name,sql FROM sqlite_schema "+
+            "WHERE type IN ('table','index','view','trigger') AND name NOT LIKE 'sqlite_%' "+
+            "AND name NOT IN ('import_job_target_manifest','import_target_audit','idx_import_target_audit_job_row') "+
+            "ORDER BY type,name";
+          const before=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/csv-v3-old-schema.json','utf8'));
+          const after=await query(oldSql);
+          assert.deepEqual(after,before,'Existing schema definition drift; fail closed');
+          const fresh=await query("SELECT type,name,tbl_name FROM sqlite_schema "+
+            "WHERE name IN ('import_job_target_manifest','import_target_audit','idx_import_target_audit_job_row') ORDER BY name");
+          assert.deepEqual(fresh,[
+            {type:'index',name:'idx_import_target_audit_job_row',tbl_name:'import_target_audit'},
+            {type:'table',name:'import_job_target_manifest',tbl_name:'import_job_target_manifest'},
+            {type:'table',name:'import_target_audit',tbl_name:'import_target_audit'}
+          ]);
+          console.log('PASS: v3 0006 applied, exactly two new tables and one index; all preexisting schema identical');
+          console.log('PASS: SQL is CREATE-only, existing personal measurement rows cannot be modified');
+          JS
