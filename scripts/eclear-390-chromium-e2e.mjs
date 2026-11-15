@@ -25,6 +25,7 @@ await writeFile(jpWeightFixture,"\uFEFF日付,飲酒,歩数,体重_kg\r\n2026/01
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null,lastNormalPost=null;
+let expiredInterceptions=0;
 const auditRequestLog=[];
 const syntheticManualDay=new Date(Date.now()+9*3600000-45*86400000).toISOString().slice(0,10);
 const pending=new Map();
@@ -247,7 +248,12 @@ try{
  ws.addEventListener("message",event=>{
   const msg=JSON.parse(event.data);
   if(msg.id){const p=pending.get(msg.id);if(!p)return;pending.delete(msg.id);msg.error?p.reject(Error(JSON.stringify(msg.error))):p.resolve(msg.result||{});}
-  else if(msg.method==="Fetch.requestPaused")void intercept(msg.params).catch(e=>{console.error(e);process.exitCode=1;});
+  else if(msg.method==="Fetch.requestPaused")void intercept(msg.params).catch(e=>{
+    // CDP can invalidate an already-paused request while navigating locally.
+    // Bound only that exact browser race; external requests remain fatal via blockedRemoteOrigins.
+    if(String(e).includes("Invalid InterceptionId.")&&++expiredInterceptions<=3)return;
+    console.error(e);process.exitCode=1;
+   });
  });
  await cmd("Page.enable");await cmd("Runtime.enable");
  await cmd("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:2,mobile:true});
