@@ -162,11 +162,46 @@ export function buildAnalysisMetrics(input:MetricInput,asOf:string){
       }
     };
   });
+  // The canonical maps are reused for bounded Owner-only 28-day paired comparisons.
+  // Missing alcohol evidence is not 0g, even when a lifestyle row says "drank".
+  const daily=Array.from({length:28},(_,index)=>{
+    const localDay=dayBefore(asOf,27-index);
+    const body=bodies.get(localDay),step=steps.get(localDay),statedDrinks=stated.get(localDay);
+    const entries=drinks.get(localDay)??[];
+    const alcoholEntries=entries.filter(r=>r.alcohol===1);
+    const assessed=alcoholEntries.map(r=>{
+      const kind=publicDrinkKind(r.drink_kind,r.drink_variant,r.source_id);
+      return isDrinkKind(kind)?assessDrinkAlcohol({kind,cups:r.cups,
+        volumeMl:r.volume_ml,abvPct:r.abv_pct,alcohol:r.alcohol}):null;
+    });
+    const unknownCups=assessed.reduce((n,a,i)=>n+(a?.unknownCups??
+      (Number.isInteger(alcoholEntries[i].cups)?alcoholEntries[i].cups:0)),0);
+    const drinkingStatus=(alcoholEntries.length>0||statedDrinks?.drinking_presence===1
+      ?"yes":statedDrinks?.drinking_presence===0||
+        (entries.length>0&&entries.every(r=>r.alcohol===0))?"no":"unknown") as
+        "yes"|"no"|"unknown";
+    const fullyQuantified=alcoholEntries.length>0&&unknownCups===0&&
+      assessed.every(a=>a!==null&&typeof a.grams==="number"&&Number.isFinite(a.grams));
+    const alcoholG=drinkingStatus==="no"?0:
+      drinkingStatus==="yes"&&fullyQuantified
+        ?rounded(assessed.reduce((n,a)=>n+(a?.grams??0),0)):null;
+    const bodyValues=body?composition(body):null;
+    return {
+      day:localDay,
+      weightKg:bodyValues?.weight_kg??null,
+      weightSource:body?.source_id??null,
+      steps:step?.steps??null,
+      stepsSource:step?.source_id??null,
+      estimatedFatMassKg:bodyValues?.estimatedFatMassKg??null,
+      estimatedSkeletalMuscleKg:bodyValues?.estimatedSkeletalMuscleKg??null,
+      drinkingStatus,alcoholG,unknownCups
+    };
+  });
   return {
     asOf,timezone:"Asia/Tokyo" as const,ruleVersion:"metrics-2026-11-15-v1" as const,
     sourcePriority:{weight:"ECLEAR_then_manual",steps:"Google_Fit_then_manual"},
     excluded:{anomalyRows:excludedAnomalies,unsupportedBodyRows:excludedUnsupported},
-    windows,
+    windows,daily,
     disclaimer:"欠測は0ではありません。体組成は家庭用計測器の推定値、アルコール量は入力値または個人用の簡易推定です。原因・将来の体重を断定しません。"
   };
 }
