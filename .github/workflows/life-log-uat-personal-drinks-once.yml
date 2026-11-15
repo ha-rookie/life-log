@@ -2,6 +2,7 @@ name: Life-log one-shot personal drinks UAT Worker release
 
 # Run once after reviewed one-file PR is squash-merged and required main CI passes.
 # No UAT/D1 mutation on PR. Separate from all existing deployment workflows.
+# The release is gated by the successful push CI of the exact one-file squash commit.
 on:
   workflow_run:
     workflows: ["Life-log local app and D1 CI"]
