@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 926bca5dd83bfe2cacc8eacf62457fcf5c363591
+      BASE_SHA: 80b9ed9fd2703933538011340e1c8c77c06ad239
       FIX_SHA: 1f20649af4a650b9a377d7927d0044ac22fc4135
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
