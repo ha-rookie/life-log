@@ -4,7 +4,7 @@ import schema from "../migrations/0001_initial.sql?raw";
 import drinkDetails from "../migrations/0004_drink_details.sql?raw";
 import { buildAnalysisMetrics, type MetricBodyRow } from "../src/shared/analysis-metrics";
 import { handleMvpFeatures } from "../src/worker/mvp-features";
-type Stmt={bind(...a:unknown[]):Stmt;run():Promise<unknown>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}>};
+type Stmt={bind(...a:unknown[]):Stmt;run():Promise<{meta?:{changes?:number}}>;first<T>():Promise<T|null>;all<T>():Promise<{results:T[]}>};
 type DB={prepare(sql:string):Stmt};
 const site="http://127.0.0.1:8787";
 const day=(n:number)=>new Date(Date.now()+9*3600000-n*86400000).toISOString().slice(0,10);
