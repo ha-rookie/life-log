@@ -36,7 +36,7 @@ describe("Issue #219: one-shot UAT audit-v3 workflow static contract (no externa
     expect(workflow).toContain("printf '%s\\n' '.github/workflows/life-log-uat-csv-target-v3-migrate-once.yml'");
     expect(workflow).toContain('diff -u "$RUNNER_TEMP/approved-files" "$RUNNER_TEMP/actual-files"');
     expect(workflow).toContain('test "$GITHUB_RUN_ATTEMPT" = 1');
-    expect(workflow).toContain("gh api \\"repos/$GITHUB_REPOSITORY/pulls/212\\"");
+    expect(workflow).toContain('gh api "repos/$GITHUB_REPOSITORY/pulls/212"');
     expect(workflow).toContain("test \"$(git rev-parse HEAD^)\" = \"$APPROVED_PARENT\"");
     expect(workflow).toContain("421d0116-5c33-4782-a2b6-28f9684d3956");
     expect(workflow).toContain("8dbdd979f5c9d9d0be8aa6d965a6de8c31e58bf9");
