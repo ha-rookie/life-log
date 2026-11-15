@@ -20,12 +20,9 @@ await writeFile(jpLifestyleFixture,"\uFEFF日付,飲酒,歩数,体重_kg,測定�
  "2026/01/02,1,0,,\r\n2026/01/03,0,,,\r\n2026/01/04,,6500,,\r\n");
 await writeFile(jpRejectedFixture,"日付,飲酒,歩数,体重_kg,測定時刻\n2026/01/05,1,0,75,07:00\n");
 await writeFile(jpWeightFixture,"\uFEFF日付,飲酒,歩数,体重_kg\r\n2026/01/06,1,0,75.2\r\n");
-const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{
- stdio:["ignore","pipe","pipe"]
-});
-let viteOutput="";
-for(const stream of [vite.stdout,vite.stderr])
- stream?.on("data",chunk=>{viteOutput=(viteOutput+String(chunk)).slice(-3200);});
+// Do not pipe npm/Vite's stdio: inherited grandchild pipes can keep this
+// standalone Node E2E process alive after its browser assertions finish.
+const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null,lastNormalPost=null;
 const auditRequestLog=[];
@@ -218,7 +215,7 @@ async function wait(check,label,limit=14000){
  while(Date.now()-started<limit){if(await check())return;await sleep(150);}
  const context=ws?.readyState===WebSocket.OPEN
   ?String(await js("document.body?.innerText")).slice(-450)
-  :"PRE_BROWSER_STARTUP "+viteOutput.slice(-1400);
+  : "PRE_BROWSER_STARTUP (Vite did not become reachable)";
  throw Error("Timeout "+label+" "+context);
 }
 const contains=t=>js("document.body?.innerText.includes("+JSON.stringify(t)+")");
@@ -235,7 +232,7 @@ async function upload(){
 }
 try{
  await wait(async()=>{
-  if(vite.exitCode!==null)throw Error("VITE_PROCESS_EXIT:"+vite.exitCode+" "+viteOutput.slice(-1400));
+  if(vite.exitCode!==null)throw Error("VITE_PROCESS_EXIT:"+vite.exitCode);
   try{return (await fetch("http://127.0.0.1:5187/")).ok;}catch{return false;}
  },"Vite startup",45000);
  chrome=spawn(process.env.CHROME_BIN||"google-chrome",[
