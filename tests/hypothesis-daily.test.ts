@@ -52,6 +52,24 @@ describe("#255 observed-only daily hypothesis evidence",()=>{
     values[14].estimatedFatMassKg=null;
     expect(buildDailyHypotheses(values).h4.fatDeltaKg).toBeNull();
   });
+  it("#259 protects composite evidence behind four sufficiently populated observed groups",()=>{
+    const values=rows();
+    for(let i=0;i<28;i++){
+      const kind=i%4;
+      values[i].steps=kind>=2?10000:1000;
+      values[i].drinkingStatus=kind%2===1?"yes":"no";
+      values[i].alcoholG=kind%2===1?20:0;
+    }
+    const result=buildDailyHypotheses(values).h5;
+    expect(result).toMatchObject({verdict:"判定保留",qualified:true,observedPairs:27,
+      medianSteps:1000,medianAlcoholG:0});
+    expect(result.strata).toHaveLength(4);
+    expect(result.strata.every(x=>x.observedPairs>=6&&x.meanNextWeightChangeKg===0)).toBe(true);
+    for(let i=0;i<22;i++)values[i].alcoholG=null;
+    const missing=buildDailyHypotheses(values).h5;
+    expect(missing.qualified).toBe(false);
+    expect(missing.strata.every(x=>x.meanNextWeightChangeKg===null)).toBe(true);
+  });
   it("rejects unsorted and oversized input rather than analyzing ambiguous dates",()=>{
     const values=rows();
     values.reverse();
