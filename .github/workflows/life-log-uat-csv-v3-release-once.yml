@@ -26,11 +26,11 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): ship CSV v3 audit to existing UAT (#225)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): rearm CSV v3 Worker release to existing UAT (#232)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 5e76e8c6360285027cc0e5098a0ec0f8b3e4617b
+      BASE_SHA: a7c46fff70618fb9924d3727f9b09fd7c5622694
       FIX_SHA: 72874ffe2734d3cedc5cd72e144e08837f901f7e
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
@@ -52,7 +52,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          git show -s --format=%s HEAD | grep -Eq '^ci\(uat\): ship Japanese lifestyle adapter to existing UAT \(#207\)$'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): rearm CSV v3 Worker release to existing UAT (#232)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-csv-v3-release-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
