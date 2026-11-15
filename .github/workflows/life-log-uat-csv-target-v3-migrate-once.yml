@@ -25,11 +25,11 @@ jobs:
       github.event.workflow_run.run_attempt <= 2 &&
       github.run_attempt == 1 &&
       github.event.workflow_run.head_repository.full_name == 'ha-rookie/life-log' &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(d1): repair CSV v3 additive schema to UAT (#219)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(d1): rearm CSV v3 additive schema to UAT (#223)')
     runs-on: ubuntu-latest
     timeout-minutes: 14
     env:
-      APPROVED_PARENT: f9dee9e9f1b5b93192d978ef25dda1b3009a0fb5
+      APPROVED_PARENT: 4903f899eb335224c1ff74159372f42cc144cf9a
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       D1_UUID: 421d0116-5c33-4782-a2b6-28f9684d3956
@@ -52,7 +52,7 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$APPROVED_PARENT"
-          test "$(git show -s --format=%s HEAD)" = 'ci(d1): repair CSV v3 additive schema to UAT (#219)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(d1): rearm CSV v3 additive schema to UAT (#223)'
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           git diff-tree --no-commit-id --name-only -r HEAD > "$RUNNER_TEMP/actual-files"
           printf '%s\n' '.github/workflows/life-log-uat-csv-target-v3-migrate-once.yml' > "$RUNNER_TEMP/approved-files"
