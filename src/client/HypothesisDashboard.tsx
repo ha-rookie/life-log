@@ -139,7 +139,23 @@ export function HypothesisDashboard(){
             骨格筋量 {displayObserved(current.composition.latest?.estimatedSkeletalMuscleKg," kg")}。
             {dailyEvidence?.h4.caution}</p></article>
         <article><h4>H5 歩数・飲酒の複合関係</h4>
-          <p><strong>判定保留</strong> — {dailyEvidence?.h5.reason??"食事・睡眠等の交絡情報が不足しています"}</p></article>
+          <p><strong>判定保留</strong> — 比較可能な日 {dailyEvidence?.h5.observedPairs??0}組。
+            4群それぞれ3組以上、合計12組以上の観測がない場合は差を表示しません。</p>
+          {dailyEvidence?.h5.qualified&&<div className="hypothesis-table-wrap">
+            <p className="hint">本人の観測中央値：歩数 {displayObserved(dailyEvidence.h5.medianSteps," 歩",0)}、
+              純アルコール {displayObserved(dailyEvidence.h5.medianAlcoholG," g")}。
+              高・低はこの28日間の中央値を基準にしています。</p>
+            <table><thead><tr><th>歩数</th><th>飲酒量</th><th>観測組数</th><th>翌日体重差の平均</th></tr></thead>
+              <tbody>{dailyEvidence.h5.strata.map(x=><tr key={x.stepGroup+x.drinkGroup}>
+                <td>{x.stepGroup==="high"?"高":"低"}</td>
+                <td>{x.drinkGroup==="high"?"多":"少"}</td>
+                <td>{x.observedPairs}</td><td>{displayObserved(x.meanNextWeightChangeKg," kg")}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>}
+          <p className="hint">{dailyEvidence?.h5.reason??"食事・睡眠等の交絡情報が不足しています"}</p>
+          <p><a href="#experiment-title">気になる仮説を行動実験で検討する</a></p>
+        </article>
       </div>
       <p className="hint">{snapshot.lag.disclaimer} {snapshot.metrics.disclaimer}</p>
     </>}
