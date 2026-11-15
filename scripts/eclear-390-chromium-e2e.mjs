@@ -312,7 +312,7 @@ try{
  assert.equal(normal,1,"picker does not auto-confirm Japanese file");
  await click("確認して登録する");
  await wait(()=>normal===2,"Japanese lifestyle canonical explicit submit");
- assert(await contains("登録完了：追加 1件"),"synthetic Japanese import success");
+ await wait(()=>contains("登録完了：追加 1件"),"synthetic Japanese import success");
  assert.equal(typeof lastNormalPost?.originalBase64,"string","original bytes sent only upon explicit confirm");
  assert.equal(lastNormalPost.originalSha256.length,64,"original digest attached");
  const rawJP=Buffer.from(lastNormalPost.originalBase64,"base64");
