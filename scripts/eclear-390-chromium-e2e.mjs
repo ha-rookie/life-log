@@ -542,6 +542,10 @@ try{
  assert(await contains("同曜日の観測比較"),"H3 matched weekday evidence displayed");
  assert(await contains("体組成を同日に測定した"),"H4 BIA comparison count shown");
  assert(await contains("比較可能な場合の機器推定差"),"BIA deltas are not treated as measured fat mass");
+ assert(await contains("4群それぞれ3組以上"),"H5 completeness guard visible");
+ await wait(()=>contains("本人の観測中央値"),"qualified 4-strata descriptive evidence shown");
+ assert(await contains("気になる仮説を行動実験で検討する"),"M07 experiment link shown");
+
 
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
   "390px hypothesis dashboard does not overflow");
