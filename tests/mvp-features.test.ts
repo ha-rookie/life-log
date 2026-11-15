@@ -179,7 +179,7 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
     expectedCups:2,expectedSize:"custom",expectedVolumeMl:null,expectedAbvPct:null};
   expect((await call(db,"/api/mvp/drinks","PATCH",patch)).status).toBe(200);
   expect((await call(db,"/api/mvp/drinks","PATCH",patch)).status).toBe(409);
-  expect((await db.prepare("SELECT id,source_id,drink_variant FROM drink_entries WHERE owner_id=? AND source_row_key=?")
+  expect(await db.prepare("SELECT id,source_id,drink_variant FROM drink_entries WHERE owner_id=? AND source_row_key=?")
     .bind("owner",one).first()).toMatchObject({id:"manual:drink:"+one,source_id:"manual:drink",drink_variant:"beer"});
   expect((await call(db,"/api/mvp/drinks","PATCH",{...patch,kind:"tequila_shot",expectedKind:"beer"})).status).toBe(200);
   expect((await call(db,"/api/mvp/drinks","DELETE",{key:one,expectedObservedAt:at,expectedKind:"beer"})).status).toBe(409);
