@@ -270,3 +270,10 @@ A future normalized drink-kind schema may replace this bounded compatibility enc
 - H3 compares observed next-day steps to the non-drinking next-day baseline for the **same weekday** only, requiring two control observations per weekday and at least four valid pairs before even a descriptive sign tendency. Missing days are never controls.
 - H4 shows only changes in *consumer BIA estimated* fat/muscle mass where at least three fully measured days span >=14 days. Its verdict remains pending because home-device fluctuations do not prove actual tissue changes.
 - H5 remains pending because food energy intake and sleep are unmeasured confounders. The UI never labels this a fitted multivariate model. All observations, sources and uncertainty remain owner-scoped read-only; local synthetic D1 + 390px Chromium test without any Remote D1 record processing.
+
+
+## #259 Phase 3 — guarded H5 two-exposure descriptive groups
+- H5 is computed entirely from the already Owner-scoped, read-only canonical 28-day array. It requires both today's observed Fit steps and calculable alcohol grams (explicit drinking/no-drinking; unknown status or unquantified cups excluded), plus today's and the next contiguous JST day's observed weight.
+- Split complete pairs into four groups via within-window medians: steps above vs at/below median, alcohol above vs at/below median. Require at least 12 paired days and >=3 observations in **each** of four groups. If any group is undersized, hide group mean weight changes rather than extrapolating a relationship; never regard missing as 0.
+- If qualified, display the four group counts and mean *next-day* observed weight difference as descriptive evidence only. No regression, health score, treatment suggestion, p-value, causality or future-weight estimate. H5's status remains **判定保留** because dietary intake, sleep, time trend, hydration and day-to-day autocorrelation are uncontrolled.
+- The read-only dashboard links to the pre-existing M07 user-directed behavior experiment section without creating or saving experiments on its own. All validations use synthetic local fixtures and the 390px browser with zero external data writes.
