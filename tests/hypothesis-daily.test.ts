@@ -31,7 +31,7 @@ describe("#255 observed-only daily hypothesis evidence",()=>{
   });
   it("reports same weekday evidence only if controls exist, without causality",()=>{
     const values=rows();
-    values.forEach((row,i)=>{row.drinkingStatus=i%7===0?"yes":"no";});
+    values.forEach((row,i)=>{row.drinkingStatus=(i===0||i===7)?"yes":"no";});
     const v=buildDailyHypotheses(values);
     expect(v.h3.sameWeekdayPairs).toBeGreaterThan(0);
     expect(v.h3.sameWeekdayPairs).toBeLessThanOrEqual(4);
