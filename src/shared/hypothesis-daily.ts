@@ -76,11 +76,16 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
   };
   const medianSteps=median(pairedComposite.map(x=>x.steps));
   const medianAlcoholG=median(pairedComposite.map(x=>x.alcoholG));
+  // Tied medians must not arbitrarily empty a high or low group.
+  const highSteps=(v:number)=>medianSteps!==null&&
+    (pairedComposite.some(x=>x.steps<medianSteps)?v>=medianSteps:v>medianSteps);
+  const highAlcohol=(v:number)=>medianAlcoholG!==null&&
+    (pairedComposite.some(x=>x.alcoholG<medianAlcoholG)?v>=medianAlcoholG:v>medianAlcoholG);
   const strata=([["low","low"],["low","high"],["high","low"],["high","high"]] as const)
     .map(([stepGroup,drinkGroup])=>{
       const matches=pairedComposite.filter(x=>medianSteps!==null&&medianAlcoholG!==null&&
-        (x.steps>medianSteps?"high":"low")===stepGroup&&
-        (x.alcoholG>medianAlcoholG?"high":"low")===drinkGroup);
+        (highSteps(x.steps)?"high":"low")===stepGroup&&
+        (highAlcohol(x.alcoholG)?"high":"low")===drinkGroup);
       return {stepGroup,drinkGroup,observedPairs:matches.length,
         meanNextWeightChangeKg:mean(matches.map(x=>x.nextWeightChangeKg))};
     });
