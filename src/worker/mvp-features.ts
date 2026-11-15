@@ -1,3 +1,4 @@
+import { handleAnalysisMetrics } from "./analysis-metrics";
 import { isSafeLocalManual, isSafeRemoteManual, type RemoteWriteConfig } from "./manual-entry";
 import { isEclearWeightSource } from "../shared/weight-trend";
 import { drinkVariant, isDrinkKind, isDrinkSize, pureAlcoholGrams, storedDrinkKind,
@@ -558,7 +559,7 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
   const path=new URL(req.url).pathname;
   const method=req.method;
   const pathMethods:Record<string,string[]>={
-    "/api/mvp/compare":["GET"],"/api/mvp/drinks":["GET","POST","PATCH","DELETE"],
+    "/api/mvp/compare":["GET"],"/api/mvp/metrics":["GET"],"/api/mvp/drinks":["GET","POST","PATCH","DELETE"],
     "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/experiments/evidence":["GET"],"/api/mvp/export":["GET"],
     "/api/mvp/meals":["GET","PUT","DELETE"],"/api/mvp/outings":["GET","POST","PATCH","DELETE"]
   };
@@ -566,6 +567,7 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
   if(!pathMethods[path].includes(method))return fail("METHOD",405);
   if(method!=="GET"&&!allowWrite(req,config))return fail("WRITE_DISABLED",403);
   try{
+    if(path==="/api/mvp/metrics")return await handleAnalysisMetrics(req,db,owner);
     if(path==="/api/mvp/compare")return await compare(req,db,owner);
     if(path==="/api/mvp/drinks")return method==="GET"
       ?await listDrinks(req,db,owner)
