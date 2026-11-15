@@ -15,7 +15,8 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
     const yes:number[]=[],no:number[]=[];
     for(let i=0;i+after<daily.length;i++){
       const a=daily[i],b=daily[i+after];
-      if(a.drinkingStatus==="unknown"||!measured(a.weightKg)||!measured(b.weightKg))continue;
+      if(a.drinkingStatus==="unknown"||!measured(a.weightKg)||!measured(b.weightKg)||
+        Date.parse(b.day+"T00:00:00Z")-Date.parse(a.day+"T00:00:00Z")!==after*86400000)continue;
       const delta=round(b.weightKg-a.weightKg);
       (a.drinkingStatus==="yes"?yes:no).push(delta);
     }
@@ -34,7 +35,8 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
   const nextSteps:number[]=[];
   for(let i=0;i+1<daily.length;i++){
     const source=daily[i],observed=daily[i+1];
-    if(source.drinkingStatus!=="yes"||!measured(observed.steps))continue;
+    if(source.drinkingStatus!=="yes"||!measured(observed.steps)||
+      Date.parse(observed.day+"T00:00:00Z")-Date.parse(source.day+"T00:00:00Z")!==86400000)continue;
     const weekday=new Date(observed.day+"T00:00:00Z").getUTCDay();
     const controls:number[]=[];
     for(let j=0;j+1<daily.length;j++){
@@ -55,6 +57,37 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
   const span=first&&last?Math.round((Date.parse(last.day+"T00:00:00Z")-
     Date.parse(first.day+"T00:00:00Z"))/86400000):0;
   const adequate=!!first&&!!last&&bia.length>=3&&span>=14;
+  // H5: four complete *descriptive* strata, never a regression or safety verdict.
+  const pairedComposite:{steps:number;alcoholG:number;nextWeightChangeKg:number}[]=[];
+  for(let i=0;i+1<daily.length;i++){
+    const observed=daily[i],next=daily[i+1];
+    if(observed.drinkingStatus==="unknown"||observed.unknownCups>0||
+      !measured(observed.alcoholG)||!measured(observed.steps)||
+      !measured(observed.weightKg)||!measured(next.weightKg)||
+      Date.parse(next.day+"T00:00:00Z")-Date.parse(observed.day+"T00:00:00Z")!==86400000)
+      continue;
+    pairedComposite.push({steps:observed.steps,alcoholG:observed.alcoholG,
+      nextWeightChangeKg:round(next.weightKg-observed.weightKg)});
+  }
+  const median=(values:number[]):number|null=>{
+    if(!values.length)return null;
+    const sorted=[...values].sort((a,b)=>a-b),mid=Math.floor(sorted.length/2);
+    return sorted.length%2?sorted[mid]:round((sorted[mid-1]+sorted[mid])/2);
+  };
+  const medianSteps=median(pairedComposite.map(x=>x.steps));
+  const medianAlcoholG=median(pairedComposite.map(x=>x.alcoholG));
+  const strata=([["low","low"],["low","high"],["high","low"],["high","high"]] as const)
+    .map(([stepGroup,drinkGroup])=>{
+      const matches=pairedComposite.filter(x=>medianSteps!==null&&medianAlcoholG!==null&&
+        (x.steps>=medianSteps?"high":"low")===stepGroup&&
+        (x.alcoholG>=medianAlcoholG?"high":"low")===drinkGroup);
+      return {stepGroup,drinkGroup,observedPairs:matches.length,
+        meanNextWeightChangeKg:mean(matches.map(x=>x.nextWeightChangeKg))};
+    });
+  const sufficientComposite=pairedComposite.length>=12&&
+    new Set(pairedComposite.map(x=>x.steps)).size>1&&
+    new Set(pairedComposite.map(x=>x.alcoholG)).size>1&&
+    strata.every(x=>x.observedPairs>=3);
   return {
     h2:{verdict:h2,next1,next2,relativeDifferenceKg:deltas,
       caution:"水分・塩分・食事などは未調整。0.2kgは表示用の探索的閾値で因果・有意差ではありません。"},
@@ -67,7 +100,9 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
       fatDeltaKg:adequate?round(last!.estimatedFatMassKg!-first!.estimatedFatMassKg!):null,
       muscleDeltaKg:adequate?round(last!.estimatedSkeletalMuscleKg!-first!.estimatedSkeletalMuscleKg!):null,
       caution:"家庭用BIAの推定値であり、観測変化は脂肪・筋肉の実際の増減を確定しません。"},
-    h5:{verdict:"判定保留" as Trend,
-      reason:"摂取エネルギーや睡眠などの交絡因子が未記録のため、多変量因果分析を行いません。"}
+    h5:{verdict:"判定保留" as Trend,qualified:sufficientComposite,
+      observedPairs:pairedComposite.length,medianSteps,medianAlcoholG,
+      strata:sufficientComposite?strata:strata.map(x=>({...x,meanNextWeightChangeKg:null})),
+      reason:"日次の4群比較は記述的な観測に限ります。摂取エネルギー・睡眠・水分など未測定の交絡があり、多変量因果分析や体重予測は行いません。"}
   };
 }
