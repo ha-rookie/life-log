@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
-  pureAlcoholGrams, validDrinkAmounts, parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, type DrinkKind, type DrinkRecord,
+  pureAlcoholGrams, assessDrinkAlcohol, personalAlcoholRule, validDrinkAmounts,
+  parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, type DrinkKind, type DrinkRecord,
   type DrinkSize } from "../shared/drink-measures";
 
 type Kind=DrinkKind;
@@ -20,7 +21,8 @@ type Period={from:string;to:string;calendarDays:number;
   steps:{mean:number|null;observedDays:number;missingDays:number;zeroDays:number;sources:string[]};
   drinking:{observedDays:number;drinkingDays:number;nondrinkingDays:number;missingDays:number;
     recordedAlcoholCups:number;recordedNonAlcoholCups:number;cupEntryCount:number;
-  knownAlcoholG:number;unknownAlcoholCups:number};
+  knownAlcoholG:number;estimatedAlcoholG:number;estimatedAlcoholCups:number;
+    unknownAlcoholCups:number;assumptionVersion:string};
   outings:{visits:number;work:number;bar:number;other:number};
   meals:{lateMealDays:number;lateMealObservedDays:number;observedLunchDays:number;observedDinnerDays:number;
     restaurantLunchDays:number;restaurantDinnerDays:number;takeoutLunchDays:number;takeoutDinnerDays:number}};
@@ -65,10 +67,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [drinksBusy,setDrinksBusy]=useState(false);
   const pending=useRef<(Record<string,unknown>&{key:string})|null>(null);
   const [drinkKind,setDrinkKind]=useState<Kind>("highball");
-  const [drinkSize,setDrinkSize]=useState<DrinkSize>("regular");
+  const [drinkSize,setDrinkSize]=useState<DrinkSize>("custom");
   const [drinkCups,setDrinkCups]=useState("1");
   const [drinkTime,setDrinkTime]=useState(jstNow);
-  const [drinkVolume,setDrinkVolume]=useState("350");
+  const [drinkVolume,setDrinkVolume]=useState("");
   const [drinkAbv,setDrinkAbv]=useState("");
   const [editSize,setEditSize]=useState<DrinkSize>("custom");
   const [editCups,setEditCups]=useState("1");
@@ -181,8 +183,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
   const todayKnownG=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>
     n+(pureAlcoholGrams(d)??0),0);
-  const todayUnknownCups=todayDrinks.filter(d=>d.alcohol===1&&pureAlcoholGrams(d)===null)
-    .reduce((n,d)=>n+d.cups,0);
+  const todayAssessed=todayDrinks.map(d=>assessDrinkAlcohol(d));
+  const todayEstimatedG=todayAssessed.reduce((n,d)=>n+(d.basis==="estimated"?(d.grams??0):0),0);
+  const todayUnknownCups=todayAssessed.reduce((n,d)=>n+d.unknownCups,0);
   const asOptionalNumber=(value:string):number|null=>value.trim()===""?null:Number(value);
   const draftVolume=asOptionalNumber(drinkVolume),draftAbv=asOptionalNumber(drinkAbv);
   const drinkCupCount=parseDrinkCupsInput(drinkCups);
@@ -191,7 +194,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const drinkAmountValid=drinkCupCount!==null&&validDrinkAmounts(drinkKind,drinkCupCount,draftVolume,draftAbv);
   const drinkDraftValid=drinkAmountValid&&drinkTimeObserved!==null;
   const draftAlcohol=drinkKind==="non_alcohol"?0:1;
-  const draftG=pureAlcoholGrams({cups:drinkCupCount??0,volumeMl:draftVolume,abvPct:draftAbv,alcohol:draftAlcohol});
+  const draftAssessment=assessDrinkAlcohol({
+    kind:drinkKind,cups:drinkCupCount??0,volumeMl:draftVolume,abvPct:draftAbv,alcohol:draftAlcohol
+  });
   const draftEquivalent=equivalentNormalServings({cups:drinkCupCount??0,volumeMl:draftVolume});
   const editVolumeMl=asOptionalNumber(editVolume),editAbvPct=asOptionalNumber(editAbv);
   const editDraftValid=editCupCount!==null&&validDrinkAmounts(editKind,editCupCount,editVolumeMl,editAbvPct);
@@ -371,8 +376,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
       <p className="metric" aria-live="polite">注文した杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
-      <p className="hint" aria-live="polite">参考純アルコール量（算出可能分）：{Math.round(todayKnownG*10)/10}g
-        {todayUnknownCups>0?`（度数・容量が不明な ${todayUnknownCups}杯は含めず）`:""}
+      <p className="hint" aria-live="polite">参考純アルコール量：入力値からの計算 {Math.round(todayKnownG*10)/10}g
+        ／ 簡易推定 約{Math.round(todayEstimatedG*10)/10}g
+        {todayUnknownCups>0?` ／ 推定できないお酒 ${todayUnknownCups}杯`:""}。
+        推定は個人用の仮定値で、実測値や安全量ではありません。
       </p>
       <div className="mvp-grid" aria-label="飲酒の種類と量">
         <label>お酒の種類<select value={drinkKind} disabled={drinksBusy}
@@ -380,11 +387,6 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             if(kind==="non_alcohol")setDrinkAbv("");}}>
           {Object.entries(names).map(([kind,label])=>
             <option key={kind} value={kind}>{label}</option>)}
-        </select></label>
-        <label>サイズ<select value={drinkSize} disabled={drinksBusy}
-          onChange={e=>setPresetSize(e.target.value as DrinkSize)}>
-          {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
-            <option key={size} value={size}>{label}</option>)}
         </select></label>
         <label>飲んだ日時（日本時間）<input id="drink-time-new" type="datetime-local"
           value={drinkTime} max={jstNow()} disabled={drinksBusy}
@@ -403,6 +405,11 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       <details className="sub-details">
         <summary>容量・度数を確認／変更（任意）</summary>
         <div className="mvp-grid">
+          <label>サイズ（分かる場合）<select value={drinkSize} disabled={drinksBusy}
+            onChange={e=>setPresetSize(e.target.value as DrinkSize)}>
+            {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
+              <option key={size} value={size}>{label}</option>)}
+          </select></label>
           <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
             value={drinkVolume} disabled={drinksBusy}
             onChange={e=>setDrinkVolume(e.target.value)}/></label>
@@ -410,12 +417,15 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             value={drinkAbv} disabled={drinksBusy||drinkKind==="non_alcohol"}
             placeholder="不明なら空欄" onChange={e=>setDrinkAbv(e.target.value)}/></label>
         </div>
-        <p className="hint">容量は仮の目安（普通350ml・大500ml・メガ700ml）です。
-          店によって異なります。正確な容量が分かれば修正してください。
-          度数が不明なら空欄のまま保存し、純アルコール量は未算出にします。</p>
+        <p className="hint">入力欄が空なら酒類別の個人用仮定（例：サーバーハイボール250ml・5%、テキーラ30ml・40%）で簡易推定します。
+          実際の容量・度数が分かる場合のみ入力してください。入力済みの数値は元データとして保存し、推定値は保存しません。</p>
       </details>
-      <p aria-live="polite">参考：普通350ml換算 <strong>{draftEquivalent===null?"不明":draftEquivalent+"杯分"}</strong>
-        ／ 参考純アルコール量 <strong>{draftG===null?"不明（未算出）":draftG+"g"}</strong>
+      <p aria-live="polite">参考純アルコール量：
+        <strong>{draftAssessment.grams===null?"不明":
+          (draftAssessment.basis==="estimated"?"簡易推定 約":"")+draftAssessment.grams+"g"}</strong>
+        {draftAssessment.basis==="entered"?"（入力された容量・度数から計算）":""}
+        {draftAssessment.basis==="estimated"?"（個人用の暫定仮定・"+personalAlcoholRule+"）":""}
+        {draftEquivalent!==null?" ／ 入力された容量の普通350ml換算 "+draftEquivalent+"杯分":""}
       </p>
       <button type="button" disabled={drinksBusy||!drinkDraftValid} onClick={()=>void addDrink()}>
         {drinksBusy?"登録中…":drinkCupCount===null?"杯数を入力":names[drinkKind]+"を"+drinkCupCount+"杯記録"}
@@ -442,7 +452,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
           <span>{localTime(d.observedAt).replace("T"," ")} · {names[d.kind]} {d.cups}杯
             {d.size?" · "+sizeNames[d.size]:""}
             {d.volumeMl===null?" · 容量不明":" · "+d.volumeMl+"ml/杯"}
-            {pureAlcoholGrams(d)===null?" · アルコール量不明":" · "+pureAlcoholGrams(d)+"g"}
+            {" · "+(assessDrinkAlcohol(d).grams===null?"アルコール量不明":
+              (assessDrinkAlcohol(d).basis==="estimated"?"簡易推定 約":"")+
+              assessDrinkAlcohol(d).grams+"g")}
           </span>
           <button type="button" disabled={drinksBusy} onClick={()=>startEdit(d)}>訂正</button>
           <button type="button" disabled={drinksBusy} onClick={()=>void removeDrink(d)}>取消</button>
@@ -454,22 +466,33 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             {Object.entries(names).map(([kind,label])=>
               <option key={kind} value={kind}>{label}</option>)}
           </select></label>
-          <label>サイズ<select value={editSize}
-            onChange={e=>setPresetSize(e.target.value as DrinkSize,true)}>
-            {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
-              <option key={size} value={size}>{label}</option>)}
-          </select></label>
+          <details className="sub-details"><summary>容量・度数（任意）</summary>
+            <label>サイズ<select value={editSize}
+              onChange={e=>setPresetSize(e.target.value as DrinkSize,true)}>
+              {(Object.entries(sizeNames) as [DrinkSize,string][]).map(([size,label])=>
+                <option key={size} value={size}>{label}</option>)}
+            </select></label>
+            <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
+              value={editVolume} onChange={e=>setEditVolume(e.target.value)}/></label>
+            <label>度数（%）<input type="number" min="0" max="100" step="0.1"
+              disabled={editKind==="non_alcohol"} value={editAbv}
+              onChange={e=>setEditAbv(e.target.value)}/></label>
+          </details>
           <label>杯数（1〜50）<input id="drink-cups-edit" className="drink-cups-input"
             type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} autoComplete="off"
             value={editCups} aria-invalid={editCupCount===null}
             onFocus={e=>e.currentTarget.select()}
             onClick={e=>e.currentTarget.select()}
             onChange={e=>setEditCups(e.target.value)}/></label>
-          <label>1杯の容量（ml）<input type="number" min="1" max="3000" step="1"
-            value={editVolume} onChange={e=>setEditVolume(e.target.value)}/></label>
-          <label>度数（%）<input type="number" min="0" max="100" step="0.1"
-            disabled={editKind==="non_alcohol"} value={editAbv}
-            onChange={e=>setEditAbv(e.target.value)}/></label>
+          <p className="hint">参考純アルコール：
+            {assessDrinkAlcohol({kind:editKind,cups:editCupCount??0,volumeMl:editVolumeMl,
+              abvPct:editAbvPct,alcohol:editKind==="non_alcohol"?0:1}).grams===null
+              ?"不明"
+              :(assessDrinkAlcohol({kind:editKind,cups:editCupCount??0,volumeMl:editVolumeMl,
+                abvPct:editAbvPct,alcohol:editKind==="non_alcohol"?0:1}).basis==="estimated"?"簡易推定 約":"")+
+                assessDrinkAlcohol({kind:editKind,cups:editCupCount??0,volumeMl:editVolumeMl,
+                  abvPct:editAbvPct,alcohol:editKind==="non_alcohol"?0:1}).grams+"g"}
+          </p>
           <label>実際の日時（JST）<input type="datetime-local" value={editTime}
             max={jstNow()} onChange={e=>setEditTime(e.target.value)}/></label>
           <button type="button" disabled={drinksBusy||!editTime||!editDraftValid}
