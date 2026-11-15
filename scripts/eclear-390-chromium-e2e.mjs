@@ -359,7 +359,7 @@ try{
   await cmd("Input.dispatchKeyEvent",{type:"keyUp",key:"Backspace",code:"Backspace",windowsVirtualKeyCode:8});
  }
  async function cupInput(id,value){
-  await js("document.querySelector("+JSON.stringify(id)+").select()");
+  await js("(()=>{const e=document.querySelector("+JSON.stringify(id)+");e.focus();e.select()})()");
   await cmd("Input.insertText",{text:value});
   await wait(()=>js("document.querySelector("+JSON.stringify(id)+").value==="+JSON.stringify(value)),
     "cup text "+id+"="+value);
