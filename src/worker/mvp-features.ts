@@ -1,7 +1,8 @@
 import { isSafeLocalManual, isSafeRemoteManual, type RemoteWriteConfig } from "./manual-entry";
 import { isEclearWeightSource } from "../shared/weight-trend";
 import { drinkVariant, isDrinkKind, isDrinkSize, pureAlcoholGrams, storedDrinkKind,
-  validDrinkAmounts, type DrinkKind, type DrinkSize } from "../shared/drink-measures";
+  assessDrinkAlcohol, publicDrinkKind, drinkSourceId, manualDrinkSources, personalAlcoholRule,
+  validDrinkAmounts, type DrinkKind, type DrinkSize, type StoredDrinkKind } from "../shared/drink-measures";
 
 type Stmt={bind(...args:unknown[]):{
   first<T>():Promise<T|null>;
@@ -48,7 +49,7 @@ const allowWrite=(req:Request,config:MvpConfig)=>
 type W={id:string;measured_at:string;weight_kg:number|null;source_id:string;anomaly_flag:number};
 type S={local_day:string;steps:number|null;source_id:string};
 type L={local_day:string;drinking_presence:number|null;drink_cups:number|null;lunch_kind:string|null;dinner_kind:string|null;late_meal:number|null;source_id:string};
-type D={id:string;observed_at:string;drink_kind:Exclude<Kind,"beer">;alcohol:number;cups:number;
+type D={id:string;observed_at:string;drink_kind:StoredDrinkKind;source_id:string;alcohol:number;cups:number;
   volume_ml:number|null;abv_pct:number|null;drink_variant:string|null;size_label:string|null;
   source_row_key:string};
 const priority=(source:string)=>source.startsWith("manual:")?0:source.startsWith("eclear")?1:2;
@@ -75,7 +76,7 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   const lifestyles=await db.prepare("SELECT local_day,drinking_presence,drink_cups,lunch_kind,dinner_kind,late_meal,source_id FROM lifestyle_days "+
     "WHERE owner_id=? AND local_day>=? AND local_day<=? ORDER BY local_day,source_id LIMIT 10001")
     .bind(owner,p.from,p.to).all<L>();
-  const drinks=await db.prepare("SELECT id,observed_at,drink_kind,alcohol,cups,volume_ml,abv_pct,drink_variant,size_label,source_row_key FROM drink_entries "+
+  const drinks=await db.prepare("SELECT id,observed_at,drink_kind,source_id,alcohol,cups,volume_ml,abv_pct,drink_variant,size_label,source_row_key FROM drink_entries "+
     "WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? LIMIT 10001")
     .bind(owner,fromSec,toSec).all<D>();
   const visitRows=await db.prepare("SELECT local_day,category FROM outings "+
@@ -131,9 +132,13 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
   const nonAlcoholCups=drinks.results.filter(x=>x.alcohol===0).reduce((a,x)=>a+x.cups,0);
   const knownAlcoholG=drinks.results.filter(x=>x.alcohol===1).reduce((a,x)=>
     a+(pureAlcoholGrams({cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol})??0),0);
-  const unknownAlcoholCups=drinks.results.filter(x=>x.alcohol===1&&
-    pureAlcoholGrams({cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol})===null)
-    .reduce((a,x)=>a+x.cups,0);
+  const drinkAssessments=drinks.results.map(x=>assessDrinkAlcohol({
+    kind:publicDrinkKind(x.drink_kind,x.drink_variant,x.source_id),
+    cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol
+  }));
+  const estimatedAlcoholG=drinkAssessments.reduce((a,x)=>a+(x.basis==="estimated"?(x.grams??0):0),0);
+  const estimatedAlcoholCups=drinkAssessments.reduce((a,x)=>a+x.estimatedCups,0);
+  const unknownAlcoholCups=drinkAssessments.reduce((a,x)=>a+x.unknownCups,0);
   return {
     from:p.from,to:p.to,calendarDays:p.days,
     weight:{
@@ -155,7 +160,9 @@ async function comparePeriod(db:MvpDb,owner:string,p:{from:string;to:string;days
       missingDays:p.days-known.length,
       recordedAlcoholCups:alcoholCups,recordedNonAlcoholCups:nonAlcoholCups,
       cupEntryCount:drinks.results.length,
-      knownAlcoholG:Math.round(knownAlcoholG*10)/10,unknownAlcoholCups},
+      knownAlcoholG:Math.round(knownAlcoholG*10)/10,
+      estimatedAlcoholG:Math.round(estimatedAlcoholG*10)/10,estimatedAlcoholCups,
+      unknownAlcoholCups,assumptionVersion:personalAlcoholRule},
     meals:{observedLunchDays:lunch.length,observedDinnerDays:dinner.length,
       restaurantLunchDays:lunch.filter(x=>x.lunch_kind==="restaurant").length,
       restaurantDinnerDays:dinner.filter(x=>x.dinner_kind==="restaurant").length,
@@ -210,6 +217,7 @@ async function experimentEvidence(req:Request,db:MvpDb,owner:string){
     disclaimer:"同日数の実測記録を並べた観察結果です。記録なし≠0、飲酒有無≠杯数。因果効果や継続・修正・終了の本人判定は自動で決めません。"});
 }
 
+const manualSourcesSql=manualDrinkSources.map(()=>"?").join(",");
 async function listDrinks(req:Request,db:MvpDb,owner:string){
   const q=new URL(req.url).searchParams;
   if([...q.keys()].some(k=>!["from","to"].includes(k)))return fail("RANGE",400);
@@ -218,46 +226,58 @@ async function listDrinks(req:Request,db:MvpDb,owner:string){
   if(!p)return fail("RANGE",400);
   const [a,b]=dateBounds(p);
   const rows=await db.prepare("SELECT source_row_key AS key,observed_at AS observedAt,"+
-    " CASE WHEN drink_variant='beer' THEN 'beer' ELSE drink_kind END AS kind,"+
+    " drink_kind AS storedKind,drink_variant AS variant,source_id AS sourceId,"+
     " alcohol,cups,volume_ml AS volumeMl,abv_pct AS abvPct,size_label AS size"+
-    " FROM drink_entries WHERE owner_id=? AND source_id='manual:drink'"+
+    " FROM drink_entries WHERE owner_id=? AND source_id IN ("+manualSourcesSql+")"+
     " AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<?"+
-    " ORDER BY unixepoch(observed_at) DESC,id DESC LIMIT 501")
-    .bind(owner,a,b).all<{
-      key:string;observedAt:string;kind:Kind;alcohol:number;cups:number;
-      volumeMl:number|null;abvPct:number|null;size:DrinkSize|null
-    }>();
+    " ORDER BY unixepoch(observed_at) DESC,id DESC LIMIT 501"
+  ).bind(owner,...manualDrinkSources,a,b).all<{
+    key:string;observedAt:string;storedKind:StoredDrinkKind;variant:string|null;sourceId:string;
+    alcohol:number;cups:number;volumeMl:number|null;abvPct:number|null;size:DrinkSize|null
+  }>();
   if(rows.results.length>500)return fail("TOO_MANY",422);
-  return json({from:p.from,to:p.to,entries:rows.results});
+  return json({from:p.from,to:p.to,entries:rows.results.map(row=>({
+    key:row.key,observedAt:row.observedAt,
+    kind:publicDrinkKind(row.storedKind,row.variant,row.sourceId),
+    alcohol:row.alcohol,cups:row.cups,volumeMl:row.volumeMl,abvPct:row.abvPct,size:row.size
+  }))});
 }
 type StoredDrink={
-  observedAt:string;storedKind:Exclude<Kind,"beer">;variant:"beer"|null;
+  observedAt:string;storedKind:StoredDrinkKind;variant:"beer"|null;sourceId:string;
   cups:number;volumeMl:number|null;abvPct:number|null;size:DrinkSize|null;
 };
-const publicKind=(record:StoredDrink):Kind=>record.variant==="beer"?"beer":record.storedKind;
+const publicKind=(record:StoredDrink):Kind=>
+  publicDrinkKind(record.storedKind,record.variant,record.sourceId);
 const validSize=(s:unknown):s is DrinkSize|null=>s===null||isDrinkSize(s);
 const optionalAmount=(p:Record<string,unknown>,key:string,otherwise:unknown):unknown=>
   Object.prototype.hasOwnProperty.call(p,key)?p[key]:otherwise;
 async function writeDrink(req:Request,db:MvpDb,owner:string,p:Record<string,unknown>){
   if(typeof p.key!=="string"||!uuid.test(p.key))return fail("KEY");
   const key=p.key.toLowerCase();
-  const old=await db.prepare(
+  // Fixed allowlist avoids conflating arbitrary source records with manually
+  // created drink entries. A duplicated key across subtypes fails closed.
+  const oldRows=await db.prepare(
     "SELECT observed_at AS observedAt,drink_kind AS storedKind,drink_variant AS variant,"+
-    " cups,volume_ml AS volumeMl,abv_pct AS abvPct,size_label AS size"+
-    " FROM drink_entries WHERE owner_id=? AND source_id='manual:drink' AND source_row_key=?"
-  ).bind(owner,key).first<StoredDrink>();
+    " source_id AS sourceId,cups,volume_ml AS volumeMl,abv_pct AS abvPct,size_label AS size"+
+    " FROM drink_entries WHERE owner_id=? AND source_row_key=?"+
+    " AND source_id IN ("+manualSourcesSql+") LIMIT 2"
+  ).bind(owner,key,...manualDrinkSources).all<StoredDrink>();
+  if(oldRows.results.length>1)return fail("CONFLICT",409);
+  const old=oldRows.results[0]??null;
   if(req.method==="DELETE"){
     if(!old)return fail("NOT_FOUND",404);
     if(p.expectedObservedAt!==old.observedAt||p.expectedKind!==publicKind(old))return fail("CONFLICT",409);
-    const change=await db.prepare("DELETE FROM drink_entries WHERE owner_id=? AND source_id='manual:drink'"+
+    const change=await db.prepare("DELETE FROM drink_entries WHERE owner_id=? AND source_id=?"+
       " AND source_row_key=? AND observed_at=? AND drink_kind=? AND drink_variant IS ?"+
       " AND cups=? AND size_label IS ? AND volume_ml IS ? AND abv_pct IS ?")
-      .bind(owner,key,old.observedAt,old.storedKind,old.variant,old.cups,old.size,old.volumeMl,old.abvPct).run();
+      .bind(owner,old.sourceId,key,old.observedAt,old.storedKind,old.variant,old.cups,
+        old.size,old.volumeMl,old.abvPct).run();
     return change.meta?.changes===1?json({status:"deleted",key}):fail("CONFLICT",409);
   }
   if(!isDrinkKind(p.kind)||!validObserved(p.observedAt))return fail("DRINK");
   const kind=p.kind,at=p.observedAt,alcohol=kind==="non_alcohol"?0:1;
   const storedKind=storedDrinkKind(kind),variant=drinkVariant(kind);
+  const sourceId=drinkSourceId(kind);
   const cups=optionalAmount(p,"cups",old&&req.method==="PATCH"?old.cups:1);
   const volumeMl=optionalAmount(p,"volumeMl",old&&req.method==="PATCH"?old.volumeMl:null);
   const abvPct=optionalAmount(p,"abvPct",
@@ -265,15 +285,20 @@ async function writeDrink(req:Request,db:MvpDb,owner:string,p:Record<string,unkn
   const size=optionalAmount(p,"size",old&&req.method==="PATCH"?old.size:null);
   if(!validSize(size)||!validDrinkAmounts(kind,cups,volumeMl,abvPct))return fail("DRINK_AMOUNT");
   if(req.method==="POST"){
+    if(old){
+      return old.observedAt===at&&publicKind(old)===kind&&old.cups===cups&&
+        old.volumeMl===volumeMl&&old.abvPct===abvPct&&old.size===size
+        ?json({status:"saved",key}):fail("CONFLICT",409);
+    }
     await db.prepare("INSERT OR IGNORE INTO drink_entries"+
       "(id,owner_id,observed_at,drink_kind,drink_variant,alcohol,cups,volume_ml,abv_pct,size_label,source_id,source_row_key)"+
-      " VALUES (?,?,?,?,?,?,?,?,?,?,'manual:drink',?)")
-      .bind("manual:drink:"+key,owner,at,storedKind,variant,alcohol,cups,volumeMl,abvPct,size,key).run();
+      " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind("manual:drink:"+key,owner,at,storedKind,variant,alcohol,cups,volumeMl,abvPct,size,sourceId,key).run();
     const current=await db.prepare(
       "SELECT observed_at AS observedAt,drink_kind AS storedKind,drink_variant AS variant,"+
-      " cups,volume_ml AS volumeMl,abv_pct AS abvPct,size_label AS size"+
-      " FROM drink_entries WHERE owner_id=? AND source_id='manual:drink' AND source_row_key=?"
-    ).bind(owner,key).first<StoredDrink>();
+      " source_id AS sourceId,cups,volume_ml AS volumeMl,abv_pct AS abvPct,size_label AS size"+
+      " FROM drink_entries WHERE owner_id=? AND source_id=? AND source_row_key=?"
+    ).bind(owner,sourceId,key).first<StoredDrink>();
     return current?.observedAt===at && current.storedKind===storedKind &&
       current.variant===variant && current.cups===cups &&
       current.volumeMl===volumeMl && current.abvPct===abvPct && current.size===size
@@ -288,12 +313,13 @@ async function writeDrink(req:Request,db:MvpDb,owner:string,p:Record<string,unkn
        (p.expectedSize!==undefined&&p.expectedSize!==old.size))return fail("CONFLICT",409);
     const changed=await db.prepare(
       "UPDATE drink_entries SET observed_at=?,drink_kind=?,drink_variant=?,alcohol=?,cups=?,"+
-      " volume_ml=?,abv_pct=?,size_label=?"+
-      " WHERE owner_id=? AND source_id='manual:drink' AND source_row_key=?"+
+      " volume_ml=?,abv_pct=?,size_label=?,source_id=?"+
+      " WHERE owner_id=? AND source_id=? AND source_row_key=?"+
       " AND observed_at=? AND drink_kind=? AND drink_variant IS ?"+
       " AND cups=? AND volume_ml IS ? AND abv_pct IS ? AND size_label IS ?"
-    ).bind(at,storedKind,variant,alcohol,cups,volumeMl,abvPct,size,
-      owner,key,old.observedAt,old.storedKind,old.variant,old.cups,old.volumeMl,old.abvPct,old.size).run();
+    ).bind(at,storedKind,variant,alcohol,cups,volumeMl,abvPct,size,sourceId,
+      owner,old.sourceId,key,old.observedAt,old.storedKind,old.variant,old.cups,
+      old.volumeMl,old.abvPct,old.size).run();
     return changed.meta?.changes===1?json({status:"updated",key}):fail("CONFLICT",409);
   }
   return fail("METHOD",405);
@@ -503,7 +529,10 @@ async function exportCsv(req:Request,db:MvpDb,owner:string):Promise<Response>{
     "WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? LIMIT 10001"
   ).bind(owner,a,b).all<D&{source_id:string}>();
   for(const x of drinks.results){
-    const label=x.drink_variant==="beer"?"beer":x.drink_kind;
+    const label=publicDrinkKind(x.drink_kind,x.drink_variant,x.source_id);
+    const assessment=assessDrinkAlcohol({
+      kind:label,cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol
+    });
     parts.push(["drink",x.observed_at,x.cups,"ordered_cups",x.source_id,label]);
     parts.push(["drink_size",x.observed_at,x.size_label,"size",x.source_id,label]);
     parts.push(["drink_volume_per_cup",x.observed_at,x.volume_ml,"ml",x.source_id,label]);
@@ -511,6 +540,10 @@ async function exportCsv(req:Request,db:MvpDb,owner:string):Promise<Response>{
     parts.push(["drink_pure_alcohol",x.observed_at,
       pureAlcoholGrams({cups:x.cups,volumeMl:x.volume_ml,abvPct:x.abv_pct,alcohol:x.alcohol}),
       "g",x.source_id,label]);
+    parts.push(["drink_estimated_pure_alcohol",x.observed_at,
+      assessment.basis==="estimated"?assessment.grams:null,"g",x.source_id,label]);
+    parts.push(["drink_alcohol_basis",x.observed_at,assessment.basis,"basis",x.source_id,label]);
+    parts.push(["drink_estimate_rule",x.observed_at,assessment.ruleVersion,"version",x.source_id,label]);
   }
   const outings=await db.prepare("SELECT local_day,category,source_id FROM outings "+
     "WHERE owner_id=? AND local_day>=? AND local_day<=? LIMIT 10001").bind(owner,p.from,p.to)

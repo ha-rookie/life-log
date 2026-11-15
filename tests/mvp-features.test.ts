@@ -123,8 +123,8 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   const period=await call(db,"/api/mvp/compare?"+
     new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:day(0),bTo:day(0)}));
   expect((await period.json() as {b:any}).b.drinking).toMatchObject({
-    recordedAlcoholCups:1,knownAlcoholG:0,unknownAlcoholCups:1,
-    recordedNonAlcoholCups:1
+    recordedAlcoholCups:1,knownAlcoholG:0,estimatedAlcoholG:10,
+    estimatedAlcoholCups:1,unknownAlcoholCups:0,recordedNonAlcoholCups:1
   });
   for(const payload of [
     {...legacy,cups:0},
@@ -150,6 +150,54 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
     key:one,expectedKind:"beer",expectedObservedAt:time})).status).toBe(200);
   expect((await call(db,"/api/mvp/drinks","DELETE",{
     key:two,expectedKind:"non_alcohol",expectedObservedAt:time})).status).toBe(200);
+ });
+ it("roundtrips tequila shots and mixed drinks through exact Owner D1 records, replay, edit, CSV and cancel",async()=>{
+  const at=new Date().toISOString();
+  const tequila={key:one,observedAt:at,kind:"tequila_shot",cups:2,size:"custom",volumeMl:null,abvPct:null};
+  const sour={...tequila,key:two,kind:"lemon_sour",cups:1};
+  for(const row of [tequila,tequila,sour])expect((await call(db,"/api/mvp/drinks","POST",row)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","POST",{...tequila,kind:"wine"})).status).toBe(409);
+  const stored=await db.prepare("SELECT id,source_id,drink_kind,drink_variant,cups,volume_ml,abv_pct FROM drink_entries WHERE owner_id=? AND source_row_key=?")
+    .bind("owner",one).first();
+  expect(stored).toMatchObject({id:"manual:drink:"+one,source_id:"manual:drink:tequila_shot",
+    drink_kind:"other_alcohol",drink_variant:null,cups:2,volume_ml:null,abv_pct:null});
+  const entries=(await (await call(db,"/api/mvp/drinks")).json() as {entries:{key:string;kind:string}[]}).entries;
+  expect(entries.find(x=>x.key===one)?.kind).toBe("tequila_shot");
+  expect(entries.find(x=>x.key===two)?.kind).toBe("lemon_sour");
+  const period=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:day(0),bTo:day(0)}));
+  expect((await period.json() as {b:{drinking:unknown}}).b.drinking).toMatchObject({
+    recordedAlcoholCups:3,knownAlcoholG:0,estimatedAlcoholG:29.2,
+    estimatedAlcoholCups:3,unknownAlcoholCups:0,assumptionVersion:"personal-2026-11-15-v1"
+  });
+  const csv=await (await call(db,"/api/mvp/export?from="+day(0)+"&to="+day(0))).text();
+  expect(csv).toContain('"drink","'+at+'","2","ordered_cups","manual:drink:tequila_shot","tequila_shot"');
+  expect(csv).toContain('"drink_estimated_pure_alcohol","'+at+'","19.2","g","manual:drink:tequila_shot","tequila_shot"');
+  expect(csv).toContain('"drink_alcohol_basis","'+at+'","estimated","basis","manual:drink:tequila_shot","tequila_shot"');
+  expect(csv).toContain('"drink_estimate_rule","'+at+'","personal-2026-11-15-v1"');
+  const patch={...tequila,kind:"beer",expectedKind:"tequila_shot",expectedObservedAt:at,
+    expectedCups:2,expectedSize:"custom",expectedVolumeMl:null,expectedAbvPct:null};
+  expect((await call(db,"/api/mvp/drinks","PATCH",patch)).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","PATCH",patch)).status).toBe(409);
+  expect(await db.prepare("SELECT id,source_id,drink_variant FROM drink_entries WHERE owner_id=? AND source_row_key=?")
+    .bind("owner",one).first()).toMatchObject({id:"manual:drink:"+one,source_id:"manual:drink",drink_variant:"beer"});
+  expect((await call(db,"/api/mvp/drinks","PATCH",{...patch,kind:"tequila_shot",expectedKind:"beer"})).status).toBe(200);
+  expect((await call(db,"/api/mvp/drinks","DELETE",{key:one,expectedObservedAt:at,expectedKind:"beer"})).status).toBe(409);
+  expect((await call(db,"/api/mvp/drinks","DELETE",{key:one,expectedObservedAt:at,expectedKind:"tequila_shot"})).status).toBe(200);
+  expect((await db.prepare("SELECT COUNT(*) AS n FROM drink_entries WHERE owner_id='owner'").first<{n:number}>())?.n).toBe(1);
+ });
+ it("separates unknown alcoholic drinks, estimated shots and known zero non-alcohol",async()=>{
+  const observedAt=new Date().toISOString();
+  for(const row of [{key:one,kind:"other_alcohol",cups:3,observedAt},
+    {key:two,kind:"non_alcohol",cups:2,observedAt},
+    {key:crypto.randomUUID(),kind:"tequila_shot",cups:2,observedAt}])
+    expect((await call(db,"/api/mvp/drinks","POST",row)).status).toBe(200);
+  const period=await call(db,"/api/mvp/compare?"+
+    new URLSearchParams({aFrom:day(2),aTo:day(1),bFrom:day(0),bTo:day(0)}));
+  expect((await period.json() as {b:{drinking:unknown}}).b.drinking).toMatchObject({
+    recordedAlcoholCups:5,recordedNonAlcoholCups:2,knownAlcoholG:0,
+    estimatedAlcoholG:19.2,estimatedAlcoholCups:2,unknownAlcoholCups:3
+  });
  });
  it("compares weight, steps, drinking presence and coverage without fabricating 0",async()=>{
   for(const [d,kg] of [[28,78],[27,77.5],[10,76],[9,75]] as const)

@@ -350,6 +350,18 @@ try{
  // the current value without immediately replacing it with "0".
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#record"});
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-new'))"),"drink form mounted");
+ // A fresh one-cup tequila shot is estimated as 9.6g; no ml/ABV entered.
+ await js("(()=>{const e=document.querySelector('.drinks-panel select');e.value='tequila_shot';"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await wait(()=>js("document.querySelector('.drinks-panel').innerText.includes('簡易推定 約9.6g')"),
+   "tequila in new input labeled personal estimate");
+ assert.equal(await js("document.querySelector('.drinks-panel details input[type=number]').value"),"",
+   "new drink leaves actual ml unknown");
+ await js("(()=>{const e=document.querySelector('.drinks-panel select');e.value='highball';"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await wait(()=>js("document.querySelector('.drinks-panel').innerText.includes('簡易推定 約10g')"),
+   "server highball uses the 250ml 5% personal assumption");
+
  const cupSettings=await js("(()=>{const x=document.querySelector('#drink-cups-new');return {type:x.type,keyboard:x.inputMode,size:Math.round(x.getBoundingClientRect().height),font:getComputedStyle(x).fontSize,value:x.value}})()");
  assert.deepEqual(cupSettings,{type:"text",keyboard:"numeric",size:48,font:"16px",value:"1"});
  const selected=await js("(()=>{const x=document.querySelector('#drink-cups-new');x.focus();x.click();return [x.selectionStart,x.selectionEnd]})()");
@@ -359,7 +371,7 @@ try{
   await cmd("Input.dispatchKeyEvent",{type:"keyUp",key:"Backspace",code:"Backspace",windowsVirtualKeyCode:8});
  }
  async function cupInput(id,value){
-  await js("document.querySelector("+JSON.stringify(id)+").select()");
+  await js("(()=>{const e=document.querySelector("+JSON.stringify(id)+");e.focus();e.select()})()");
   await cmd("Input.insertText",{text:value});
   await wait(()=>js("document.querySelector("+JSON.stringify(id)+").value==="+JSON.stringify(value)),
     "cup text "+id+"="+value);
@@ -434,9 +446,16 @@ try{
  assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),false);
  await cupInput("#drink-cups-edit","4");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),"edit cups valid");
+ // All existing inputs remain usable; tequila can be selected in a past record.
+ await js("(()=>{const e=document.querySelector('.mvp-edit select');e.value='tequila_shot';"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await wait(()=>js("document.querySelector('.mvp-edit select').value==='tequila_shot'"),"edit tequila kind");
+ await wait(()=>js("document.querySelector('.mvp-edit').innerText.includes('簡易推定')"),
+   "tequila past-record edit clearly labeled estimated");
  await click("訂正を保存");
  await wait(()=>lastDrinkPatch?.cups===4,"PATCH numeric cups");
  assert.equal(typeof lastDrinkPatch.cups,"number");
+ assert.equal(lastDrinkPatch.kind,"tequila_shot","past drink PATCH retains tequila subtype");
  // Synthetic 45-day-old manual measurements are discoverable by date-selected history.
  assert(await js("(()=>{const d=document.querySelector('.manual-records');if(!d)return false;d.open=true;return true})()"),
   "manual history section");
