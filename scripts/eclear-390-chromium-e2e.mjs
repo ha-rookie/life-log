@@ -316,7 +316,7 @@ try{
  await click("確認して登録する");
  await wait(()=>normal===3,"v3 explicit synthetic confirm");
  assert.equal(lastNormalPost.source,"lifestyle_weight","v3 canonical target used");
- assert(await contains("保存先別：追加 2件"),"v3 result displays per-target count");
+ await wait(()=>contains("保存先別：追加 2件"),"v3 result displays per-target count");
  await uploadSyntheticFile(jpRejectedFixture);
  await wait(()=>contains("CSVの形式・日時・数値・重複を確認できませんでした"),"invented-time row rejected");
  assert.equal(normal,3,"rejected invented time never sent to backend");
