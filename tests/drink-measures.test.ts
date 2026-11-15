@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  drinkVariant, storedDrinkKind, equivalentNormalServings, pureAlcoholGrams,
+  drinkVariant, storedDrinkKind, equivalentNormalServings, pureAlcoholGrams, assessDrinkAlcohol,
+  drinkSourceId, publicDrinkKind, manualDrinkSources, personalAlcoholRule,
   isDrinkKind, isDrinkSize, parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, referenceMl, validDrinkAmounts,
 } from "../src/shared/drink-measures";
 
@@ -55,6 +56,58 @@ describe("drink volume and pure alcohol quantity (synthetic only)",()=>{
     expect(storedDrinkKind("beer")).toBe("other_alcohol");
     expect(drinkVariant("beer")).toBe("beer");
     expect(drinkVariant("highball")).toBeNull();
+  });
+});
+
+describe("Issue #227: personal low-precision estimates and lossless tequila kind",()=>{
+  const assessment=(kind:import("../src/shared/drink-measures").DrinkKind,cups:number,
+    ml:number|null=null,abv:number|null=null)=>assessDrinkAlcohol({
+    kind,cups,volumeMl:ml,abvPct:abv,alcohol:kind==="non_alcohol"?0:1
+  });
+  it("uses the consented personal defaults and labels them estimated, not observed",()=>{
+    for(const kind of ["highball","green_tea_high","lemon_sour"] as const){
+      expect(assessment(kind,5)).toMatchObject({
+        grams:50,basis:"estimated",estimatedCups:5,unknownCups:0,ruleVersion:personalAlcoholRule
+      });
+    }
+    expect(assessment("beer",1).grams).toBe(14);
+    expect(assessment("tequila_shot",2)).toMatchObject({
+      grams:19.2,basis:"estimated",estimatedCups:2
+    });
+    expect(assessment("sake",1).grams).toBe(12);
+    expect(assessment("wine",1).grams).toBe(11.52);
+    expect(assessment("shochu",1).grams).toBe(12);
+  });
+  it("preserves entered numbers, partial entered estimates, missing and actual zero separately",()=>{
+    expect(assessment("highball",5,300,7)).toMatchObject({
+      grams:84,basis:"entered",estimatedCups:0,ruleVersion:null
+    });
+    expect(assessment("highball",2,300,null)).toMatchObject({
+      grams:24,basis:"estimated",estimatedCups:2,ruleVersion:personalAlcoholRule
+    });
+    expect(assessment("other_alcohol",3)).toMatchObject({
+      grams:null,basis:"unknown",unknownCups:3,estimatedCups:0
+    });
+    expect(assessment("non_alcohol",2)).toMatchObject({
+      grams:0,basis:"non_alcohol",estimatedCups:0,unknownCups:0
+    });
+    expect(assessment("tequila_shot",0)).toMatchObject({
+      grams:null,basis:"unknown",unknownCups:0
+    });
+  });
+  it("round-trips controlled subtypes with old beer unchanged, never inferring from ml or ABV",()=>{
+    const types=["tequila_shot","lemon_sour","sake","wine","shochu"] as const;
+    for(const kind of types){
+      const source=drinkSourceId(kind);
+      expect(manualDrinkSources).toContain(source);
+      expect(storedDrinkKind(kind)).toBe("other_alcohol");
+      expect(drinkVariant(kind)).toBeNull();
+      expect(publicDrinkKind("other_alcohol",null,source)).toBe(kind);
+    }
+    expect(publicDrinkKind("other_alcohol",null,"manual:drink")).toBe("other_alcohol");
+    expect(publicDrinkKind("other_alcohol","beer","manual:drink")).toBe("beer");
+    expect(drinkSourceId("beer")).toBe("manual:drink");
+    expect(manualDrinkSources).not.toContain("manual:drink:invented");
   });
 });
 
