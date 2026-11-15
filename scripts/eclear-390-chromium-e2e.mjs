@@ -434,9 +434,24 @@ try{
  assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),false);
  await cupInput("#drink-cups-edit","4");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('訂正を保存')&&!x.disabled)"),"edit cups valid");
+ // All existing inputs remain usable; tequila can be selected in a past record.
+ await js("(()=>{const e=document.querySelector('.mvp-edit select');e.value='tequila_shot';"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await wait(()=>js("document.querySelector('.mvp-edit select').value==='tequila_shot'"),"edit tequila kind");
+ await wait(()=>js("document.querySelector('.mvp-edit').innerText.includes('簡易推定')"),
+   "tequila past-record edit clearly labeled estimated");
  await click("訂正を保存");
  await wait(()=>lastDrinkPatch?.cups===4,"PATCH numeric cups");
  assert.equal(typeof lastDrinkPatch.cups,"number");
+ assert.equal(lastDrinkPatch.kind,"tequila_shot","past drink PATCH retains tequila subtype");
+ // The new-entry picker estimates 2 x 30 ml x 40% without entering ml/ABV.
+ await js("(()=>{const e=document.querySelector('.drinks-panel select');e.value='tequila_shot';"+
+   "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ await cupInput("#drink-cups-new","2");
+ await wait(()=>js("document.querySelector('.drinks-panel').innerText.includes('簡易推定 約19.2g')"),
+   "two tequila shots show personal 19.2g estimate");
+ assert.equal(await js("document.querySelector('.drinks-panel details input[type=number]').value"),"",
+   "new drink keeps unknown actual ml empty (no stored fake measurements)");
  // Synthetic 45-day-old manual measurements are discoverable by date-selected history.
  assert(await js("(()=>{const d=document.querySelector('.manual-records');if(!d)return false;d.open=true;return true})()"),
   "manual history section");
