@@ -14,7 +14,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: life-log-one-shot-personal-drinks-235
+  group: life-log-one-shot-personal-drinks-239
   cancel-in-progress: false
 
 jobs:
@@ -26,11 +26,11 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): ship personal drink estimates to existing UAT (#235)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): rearm personal drinks UAT release (#239)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 1f20649af4a650b9a377d7927d0044ac22fc4135
+      BASE_SHA: 926bca5dd83bfe2cacc8eacf62457fcf5c363591
       FIX_SHA: 1f20649af4a650b9a377d7927d0044ac22fc4135
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
@@ -52,7 +52,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'ci(uat): ship personal drink estimates to existing UAT (#235)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): rearm personal drinks UAT release (#239)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-personal-drinks-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
