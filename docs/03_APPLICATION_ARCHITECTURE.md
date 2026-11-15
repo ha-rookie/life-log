@@ -218,3 +218,20 @@ local unit tests or a successful Draft PR CI.
 - \`import_row_audit\` remains one result per input source row for backwards-compatible summary and history. v3 target audit offers its own outcomes; old \`csv:audited-v2\` and truly pre-audit \`csv:<source>\` jobs keep their original semantics. After input validation and Owner authentication, the \`lifestyle\` day snapshot race guard remains effective. Batch exception or a stale review token fails closed and rolls back every inserted target, manifest and audit.
 - \`GET /api/import/history\` remains Owner-scoped, paginated and \`no-store\`. v3 history reports target-audit status/counts without exposing raw CSV rows, owner IDs, original memo values or internal source keys. Old v2/legacy jobs are not retroactively rewritten.
 - **Deployment distinction:** the UAT Worker may contain this new code while its existing CSV confirm guard remains localhost-only; UAT does not accept remote personal uploads. Applying a new remote D1 Migration requires a separate strict SQL provenance checksum, metadata-only preflight, unchanged existing-data proof and single-use deployment gate. If these cannot be verified, do not perform the Remote D1 Migration or claim physical Android import acceptance.
+
+
+## Issue #227 — personal alcohol estimates, editable tequila and distinct evidence
+
+For a personal low-friction workflow, the normal drink action requires kind, integer 1–50 cups and an observed JST time; original \`volume_ml\` and \`abv_pct\` columns remain **nullable** and are never overwritten by preset values. The volume/ABV fields remain optional in a collapsed detail panel. Existing rows, including size-only historical rows, must remain unchanged.
+
+Known fixed **personal assumptions** (\`personal-2026-11-15-v1\`, not manufacturer averages):
+- highball (restaurant), green-tea highball, lemon sour: 250 ml actual liquid × 5% = 10 g ethanol per cup;
+- beer: 350 ml × 5% = 14 g per cup;
+- tequila shot: 30 ml × 40% = 9.6 g per shot;
+- Japanese sake: 100 ml × 15% = 12 g; wine: 120 ml × 12% = 11.52 g; straight shochu: 60 ml × 25% = 12 g, each explicitly provisional rather than the mixed-drink 5%;
+- other alcohol: **unknown** without entered numbers; non-alcohol: exactly 0 g.
+Formula: cups × actual liquid ml per cup × ABV percent / 100 × 0.8 g/ml. Missing entered component can be filled from personal estimate but is **always labeled estimated**; both provided numerical inputs yield “entered-values calculation”, not proof of an actual manufacturer measurement. Do not imply estimates are clinically safe exposure levels. Preserve null separately from 0; expose estimate provenance and version in compare/CSV.
+
+The v0001-v0006 D1 schema is immutable for this iteration. Existing CHECK constraints permit the legacy kind \`other_alcohol\` but its \`drink_variant\` permits only \`beer\`. To avoid remote migration and any existing-data rewrite, new controlled subtypes are persisted as an explicit, allowlisted \`source_id\` discriminator (for example \`manual:drink:tequila_shot\`), while keeping \`drink_kind=other_alcohol\` as the backward-compatible base class, original \`source_row_key\` UUID, and immutable record id. This source identifier denotes a **manual drink type subsource**, not an external measurement provenance. Owner-only queries accept only \`manual:drink\` and enumerated subtype IDs; updates can move a record between subtypes and compare the exact original source_id to prevent lost updates. Unknown/free-text values never become SQL identifiers. Old beer remains represented by \`drink_variant=beer\`; do not infer tequila from 30ml/40%. Repeated UUIDs across sources fail closed rather than duplicate. Existing signed Owner authentication, CSRF intent, write policy and Worker scope remain unchanged.
+
+A future normalized drink-kind schema may replace this bounded compatibility encoding via its own additive migration, but the current user-visible kind must round-trip through GET, correction, cancellation and CSV. Neither real user records nor UAT D1 data are accessed in tests.
