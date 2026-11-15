@@ -20,6 +20,8 @@ await writeFile(jpLifestyleFixture,"\uFEFF日付,飲酒,歩数,体重_kg,測定�
  "2026/01/02,1,0,,\r\n2026/01/03,0,,,\r\n2026/01/04,,6500,,\r\n");
 await writeFile(jpRejectedFixture,"日付,飲酒,歩数,体重_kg,測定時刻\n2026/01/05,1,0,75,07:00\n");
 await writeFile(jpWeightFixture,"\uFEFF日付,飲酒,歩数,体重_kg\r\n2026/01/06,1,0,75.2\r\n");
+// Do not pipe npm/Vite's stdio: inherited grandchild pipes can keep this
+// standalone Node E2E process alive after its browser assertions finish.
 const vite=spawn("npm",["run","dev:ui","--","--port","5187","--strictPort"],{stdio:"ignore"});
 let chrome,ws,seq=0,mode="ok",confirmed=0,readbacks=0,normal=0;
 let syntheticDrink=null,lastDrinkPost=null,lastDrinkPatch=null,lastHistoryQuery=null,lastManualRange=null,lastNormalPost=null;
@@ -31,6 +33,8 @@ const blockedRemoteOrigins=new Set();
 // All Chromium HTTP(S) traffic is intercepted: localhost is the *only*
 // allowed host. Test data must never reach any live UAT or production endpoint.
 function cmd(method,params={}){
+ if(!ws||ws.readyState!==WebSocket.OPEN)
+  return Promise.reject(Error("CDP_NOT_CONNECTED:"+method));
  return new Promise((resolve,reject)=>{
   const id=++seq;pending.set(id,{resolve,reject});
   ws.send(JSON.stringify({id,method,params}));
@@ -209,7 +213,10 @@ async function js(expression){
 async function wait(check,label,limit=14000){
  const started=Date.now();
  while(Date.now()-started<limit){if(await check())return;await sleep(150);}
- throw Error("Timeout "+label+" "+String(await js("document.body?.innerText")).slice(-450));
+ const context=ws?.readyState===WebSocket.OPEN
+  ?String(await js("document.body?.innerText")).slice(-450)
+  : "PRE_BROWSER_STARTUP (Vite did not become reachable)";
+ throw Error("Timeout "+label+" "+context);
 }
 const contains=t=>js("document.body?.innerText.includes("+JSON.stringify(t)+")");
 async function click(text){
@@ -224,7 +231,10 @@ async function upload(){
  await wait(()=>contains("ECLEARの読み込みが完了しました"),"CSV parsed");
 }
 try{
- await wait(async()=>{try{return (await fetch("http://127.0.0.1:5187/")).ok;}catch{return false;}},"Vite",20000);
+ await wait(async()=>{
+  if(vite.exitCode!==null)throw Error("VITE_PROCESS_EXIT:"+vite.exitCode);
+  try{return (await fetch("http://127.0.0.1:5187/")).ok;}catch{return false;}
+ },"Vite startup",45000);
  chrome=spawn(process.env.CHROME_BIN||"google-chrome",[
  "--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage",
  "--disable-background-networking","--no-first-run","--remote-debugging-port=0",
