@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: life-log-one-shot-analysis-metrics-244
+  group: life-log-one-shot-analysis-metrics-246
   cancel-in-progress: false
 
 jobs:
@@ -27,11 +27,11 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release observed-only metrics to existing UAT (#244)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): rearm observed-only metrics Worker release (#246)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 80b9ed9fd2703933538011340e1c8c77c06ad239
+      BASE_SHA: 916bb79de2d700b1729ec397f87dea6677db6d0b
       FIX_SHA: 082b73a945723a593e09435193ee8c63e5c9ecdb
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
@@ -53,7 +53,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release observed-only metrics to existing UAT (#244)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): rearm observed-only metrics Worker release (#246)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-analysis-metrics-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
