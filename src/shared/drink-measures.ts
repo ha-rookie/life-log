@@ -25,7 +25,7 @@ export function publicDrinkKind(stored:StoredDrinkKind,variant:string|null,sourc
   return stored;
 }
 export const drinkNames:Record<DrinkKind,string>={
-  highball:"ハイボール（サーバー）",beer:"ビール",green_tea_high:"緑茶ハイ",
+  highball:"ハイボール",beer:"ビール",green_tea_high:"緑茶ハイ",
   lemon_sour:"レモンサワー",tequila_shot:"テキーラショット",
   sake:"日本酒",wine:"ワイン",shochu:"焼酎ストレート",
   other_alcohol:"その他のお酒",non_alcohol:"ノンアルコール"
