@@ -135,6 +135,34 @@ async function intercept(p){
    data={status:"updated"};
   }else {code=405;data={error:"METHOD_NOT_ALLOWED"};}
  }
+ else if(path==="/api/mvp/metrics"){
+  const asOf=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  data={asOf,ruleVersion:"synthetic-metrics",disclaimer:"合成データの欠測を0にしません",
+   windows:[7,14,28].map(days=>({
+    days,from:"2026-11-01",to:asOf,
+    weight:{qualifiedMeanKg:days===7?75.8:null,meanKg:75.8,observedDays:5,missingDays:days-5},
+    steps:{mean:6400,observedDays:4,missingDays:days-4,explicitZeroDays:1,sources:["google_fit"]},
+    drinking:{observedDays:3,missingDays:days-3,recordedAlcoholCups:5,
+     enteredG:12,estimatedG:50,unknownCups:2,assumptionVersion:"personal-2026-11-15-v1"},
+    composition:{latest:{estimatedFatMassKg:21.3,estimatedSkeletalMuscleKg:25.1,
+     measuredAt:"2026-11-08T09:00:00+09:00",source:"eclear"},deviceDerived:true}
+   }))};
+ }
+ else if(path==="/api/mvp/lag"){
+  const asOf=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  data={asOf,from:"2026-08-17",to:"2026-11-08",disclaimer:"合成：探索的な符号比較",
+   weeks:Array.from({length:12},(_,i)=>({
+    from:"2026-08-17",to:"2026-11-"+String(Math.min(28,i+1)).padStart(2,"0"),
+    weightMeanKg:i<2?null:76+i*0.1,weightObservedDays:i<2?0:5,
+    stepsMean:i<1?null:5000+i*100,stepsObservedDays:i<1?0:5
+   })),
+   lags:[1,2,4].map(lagWeeks=>({
+    lagWeeks,stepHypothesis:lagWeeks===1?
+     {pairedWeeks:6,support:5,counter:1,flat:0,verdict:"supporting_observations"}:
+     {pairedWeeks:2,support:2,counter:0,flat:0,verdict:"undetermined"},
+    alcoholHypothesis:{pairedWeeks:0,support:0,counter:0,flat:0,verdict:"undetermined"}
+   }))};
+ }
  else if(path==="/api/mvp/experiments")data={experiments:[{
    id:"00000000-0000-4000-8000-000000000015",statement:"合成：散歩の実験",
    supportText:"記録を比較",counterText:"欠測もある",unknownText:"因果関係",
@@ -495,6 +523,15 @@ try{
  // and an honest empty-range state in the real 390px synthetic browser.
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#insights"});
  await wait(()=>contains("2期間の体重・生活比較"),"analysis view mounted");
+ await wait(()=>contains("生活習慣の仮説検証"),"synthetic hypothesis dashboard mounted");
+ await wait(()=>contains("1週後：支持傾向"),"support only with qualified pair evidence");
+ assert(await contains("4週後：判定保留"),"insufficient observational weeks cannot infer a trend");
+ assert(await contains("推定不能 2杯"),"unknown alcohol not turned into zero");
+ assert(await contains("未取得 3日"),"missing weight is explicitly covered");
+ assert(await contains("H5 歩数・飲酒の複合関係"),"all five hypotheses displayed");
+ assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
+  "390px hypothesis dashboard does not overflow");
+
  await click("期間を比較");
  await wait(()=>contains("期間内の最初の実測"),"comparison evidence");
  assert(await contains("csv:eclear"),"authoritative ECLEAR source displayed");
