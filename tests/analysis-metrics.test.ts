@@ -87,6 +87,26 @@ describe("Issue #229 observed-only derived metrics",()=>{
     });
     expect(()=>buildAnalysisMetrics(empty,"2026-02-30")).toThrow("METRICS_DATE");
   });
+  it("#255 publishes canonical 28 JST days without treating unknown alcohol as 0",()=>{
+    const result=buildAnalysisMetrics({
+      bodies:[body("eclear",time(0),"csv:eclear",76,{body_fat_pct:25,skeletal_muscle_pct:35})],
+      steps:[{local_day:day(0),steps:0,source_id:"google_fit"},
+        {local_day:day(0),steps:1234,source_id:"manual:steps"}],
+      lifestyles:[{local_day:day(1),drinking_presence:1,source_id:"manual:lifestyle"},
+        {local_day:day(2),drinking_presence:0,source_id:"manual:lifestyle"}],
+      drinks:[{observed_at:time(0),drink_kind:"highball",drink_variant:null,
+        source_id:"manual:drink",alcohol:1,cups:1,volume_ml:null,abv_pct:null}]
+    },day(0));
+    expect(result.daily).toHaveLength(28);
+    expect(result.daily.at(-1)).toMatchObject({
+      day:day(0),weightKg:76,weightSource:"csv:eclear",steps:0,stepsSource:"google_fit",
+      estimatedFatMassKg:19,estimatedSkeletalMuscleKg:26.6,
+      drinkingStatus:"yes",alcoholG:10,unknownCups:0
+    });
+    expect(result.daily.at(-2)).toMatchObject({drinkingStatus:"yes",alcoholG:null});
+    expect(result.daily.at(-3)).toMatchObject({drinkingStatus:"no",alcoholG:0});
+    expect(result.daily.at(-4)).toMatchObject({drinkingStatus:"unknown",alcoholG:null});
+  });
 });
 describe("Issue #229 Owner-scoped read-only API on ephemeral local D1",()=>{
   let platform:Awaited<ReturnType<typeof getPlatformProxy<{DB:DB}>>>,db:DB;
@@ -122,6 +142,7 @@ describe("Issue #229 Owner-scoped read-only API on ephemeral local D1",()=>{
     const data=await res.json() as ReturnType<typeof buildAnalysisMetrics>;
     expect(data.windows[0].weight.meanKg).toBe(76);
     expect(data.windows[0].steps.explicitZeroDays).toBe(1);
+    expect(data.daily.at(-1)).toMatchObject({weightKg:76,steps:0,estimatedFatMassKg:19});
     expect(data.windows[0].composition.latest?.estimatedFatMassKg).toBe(19);
     expect(JSON.stringify(data)).not.toContain("120");
     expect((await db.prepare("SELECT COUNT(*) AS n FROM body_measurements").first<{n:number}>())?.n).toBe(before?.n);
