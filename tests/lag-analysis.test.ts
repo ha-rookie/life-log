@@ -3,15 +3,16 @@ import { getPlatformProxy } from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
 import drinksSchema from "../migrations/0004_drink_details.sql?raw";
 import { buildLagEvidence } from "../src/shared/lag-analysis";
-import { type MetricInput } from "../src/shared/analysis-metrics";
+import { type MetricInput,type MetricBodyRow,type MetricStepRow,type MetricLifestyleRow,type MetricDrinkRow } from "../src/shared/analysis-metrics";
+type MutableInput={bodies:MetricBodyRow[];steps:MetricStepRow[];lifestyles:MetricLifestyleRow[];drinks:MetricDrinkRow[]};
 import { handleMvpFeatures } from "../src/worker/mvp-features";
 
 const DAY=86400000;
 const asOf="2026-11-15"; // Sunday; 2026-11-08 is the last safely completed Sunday
 const date=(m:number)=>new Date(m).toISOString().slice(0,10);
 const sunday=Date.parse("2026-11-08T00:00:00Z");
-function syntheticWeeks(sign:-1|1= -1):MetricInput{
-  const data:MetricInput={bodies:[],steps:[],lifestyles:[],drinks:[]};
+function syntheticWeeks(sign:-1|1= -1):MutableInput{
+  const data:MutableInput={bodies:[],steps:[],lifestyles:[],drinks:[]};
   for(let week=0;week<12;week++){
     const finish=sunday-(11-week)*7*DAY;
     for(const back of [6,4,2,0]){
