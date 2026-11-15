@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { buildDailyHypotheses, type DailyObservation } from "../shared/hypothesis-daily";
 import { coverageLabel, describeLagEvidence, displayObserved, type LagSummary } from "../shared/hypothesis-dashboard";
 
 type MetricWindow={
@@ -11,7 +12,7 @@ type MetricWindow={
     measuredAt:string;source:string}|null;deviceDerived:boolean};
 };
 type MetricResponse={
-  asOf:string;ruleVersion:string;windows:MetricWindow[];disclaimer:string;
+  asOf:string;ruleVersion:string;windows:MetricWindow[];daily?:DailyObservation[];disclaimer:string;
 };
 type LagResponse=LagSummary&{asOf:string;disclaimer:string;from:string;to:string};
 type Snapshot={metrics:MetricResponse;lag:LagResponse};
@@ -69,6 +70,7 @@ export function HypothesisDashboard(){
     return ()=>controller.abort();},[load]);
   const current=snapshot?.metrics.windows.find(w=>w.days===selected);
   const lagCards=snapshot?describeLagEvidence(snapshot.lag):[];
+  const dailyEvidence=snapshot?buildDailyHypotheses(snapshot.metrics.daily??[]):null;
   return <section className="panel hypothesis-dashboard" aria-labelledby="hypothesis-title">
     <h2 id="hypothesis-title">生活習慣の仮説検証</h2>
     <p className="hint">記録された事実、支持・反証となる観測、まだ分からないことを区別します。原因や将来の体重は予測しません。</p>
@@ -118,15 +120,26 @@ export function HypothesisDashboard(){
           <p className="hint">支持傾向・反証傾向は探索的な符号の一致であり、統計的有意性や因果関係を示しません。</p>
         </article>
         <article><h4>H2 飲酒日と翌日・翌々日の体重</h4>
-          <p><strong>判定保留</strong> — 日単位での翌日比較と非飲酒日の対照が未実装です。短期変動は水分・塩分等の影響を受けます。</p></article>
+          <p><strong>{dailyEvidence?.h2.verdict??"判定保留"}</strong> — 翌日：飲酒 {dailyEvidence?.h2.next1.drinkingPairs??0}組／明示的な非飲酒 {dailyEvidence?.h2.next1.nondrinkingPairs??0}組、
+            2日後：飲酒 {dailyEvidence?.h2.next2.drinkingPairs??0}組／非飲酒 {dailyEvidence?.h2.next2.nondrinkingPairs??0}組</p>
+          <p className="hint">翌日の平均体重差：飲酒日 {displayObserved(dailyEvidence?.h2.next1.drinkingMeanChangeKg," kg")}、
+            非飲酒日 {displayObserved(dailyEvidence?.h2.next1.nondrinkingMeanChangeKg," kg")}。
+            {dailyEvidence?.h2.caution}</p></article>
         <article><h4>H3 飲酒翌日の歩数</h4>
-          <p><strong>判定保留</strong> — 同じ曜日の非飲酒日との対応比較が未実装です。未登録を禁酒日とはみなしません。</p></article>
+          <p><strong>{dailyEvidence?.h3.verdict??"判定保留"}</strong> — 同曜日の観測比較 {dailyEvidence?.h3.sameWeekdayPairs??0}組、
+            平均差 {displayObserved(dailyEvidence?.h3.meanDifferenceSteps," 歩",0)}</p>
+          <p className="hint">{dailyEvidence?.h3.caution}</p></article>
         <article><h4>H4 推定脂肪量・骨格筋量</h4>
-          <p><strong>判定保留</strong> — 単一の体組成計測値だけでは増減を判定できません。</p>
+          <p><strong>{dailyEvidence?.h4.verdict??"判定保留"}</strong> — 体組成を同日に測定した
+            {dailyEvidence?.h4.observedDays??0}日、比較期間 {dailyEvidence?.h4.spanDays??0}日</p>
+          <p>比較可能な場合の機器推定差：脂肪量 {displayObserved(dailyEvidence?.h4.fatDeltaKg," kg")}、
+            骨格筋量 {displayObserved(dailyEvidence?.h4.muscleDeltaKg," kg")}、
+            体重 {displayObserved(dailyEvidence?.h4.weightDeltaKg," kg")}</p>
           <p className="hint">直近の機器推定：脂肪量 {displayObserved(current.composition.latest?.estimatedFatMassKg," kg")}、
-            骨格筋量 {displayObserved(current.composition.latest?.estimatedSkeletalMuscleKg," kg")}。家庭用BIAの推定値です。</p></article>
+            骨格筋量 {displayObserved(current.composition.latest?.estimatedSkeletalMuscleKg," kg")}。
+            {dailyEvidence?.h4.caution}</p></article>
         <article><h4>H5 歩数・飲酒の複合関係</h4>
-          <p><strong>判定保留</strong> — 食事摂取量・睡眠などの交絡と観測数が確認できるまで多変量判定は行いません。</p></article>
+          <p><strong>判定保留</strong> — {dailyEvidence?.h5.reason??"食事・睡眠等の交絡情報が不足しています"}</p></article>
       </div>
       <p className="hint">{snapshot.lag.disclaimer} {snapshot.metrics.disclaimer}</p>
     </>}

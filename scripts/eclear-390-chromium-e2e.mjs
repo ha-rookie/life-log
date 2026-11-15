@@ -43,6 +43,7 @@ function cmd(method,params={}){
  });
 }
 const encode=x=>Buffer.from(JSON.stringify(x)).toString("base64");
+const roundSynthetic=x=>Math.round(x*100)/100;
 async function intercept(p){
  const url=new URL(p.request.url);
  if(url.protocol==="http:"||url.protocol==="https:"){
@@ -138,6 +139,14 @@ async function intercept(p){
  else if(path==="/api/mvp/metrics"){
   const asOf=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
   data={asOf,ruleVersion:"synthetic-metrics",disclaimer:"合成データの欠測を0にしません",
+   daily:Array.from({length:28},(_,i)=>{
+    const day=new Date(Date.parse(asOf+"T00:00:00Z")-(27-i)*86400000).toISOString().slice(0,10);
+    return {day,weightKg:i===5?null:roundSynthetic(76-i*0.01),
+     weightSource:"csv:eclear",steps:i%8===0?0:6000+i*100,stepsSource:"google_fit",
+     estimatedFatMassKg:[0,14,27].includes(i)?roundSynthetic(22-i*0.08):null,
+     estimatedSkeletalMuscleKg:[0,14,27].includes(i)?roundSynthetic(26+i*0.02):null,
+     drinkingStatus:i%2===0?"yes":"no",alcoholG:i%2===0?10:0,unknownCups:0};
+   }),
    windows:[7,14,28].map(days=>({
     days,from:"2026-11-01",to:asOf,
     weight:{qualifiedMeanKg:days===7?75.8:null,meanKg:75.8,observedDays:5,missingDays:days-5},
@@ -529,6 +538,11 @@ try{
  assert(await contains("推定不能 2杯"),"unknown alcohol not turned into zero");
  assert(await contains("未取得 3日"),"missing weight is explicitly covered");
  assert(await contains("H5 歩数・飲酒の複合関係"),"all five hypotheses displayed");
+ await wait(()=>contains("翌日の平均体重差"),"H2 uses observed paired days");
+ assert(await contains("同曜日の観測比較"),"H3 matched weekday evidence displayed");
+ assert(await contains("体組成を同日に測定した"),"H4 BIA comparison count shown");
+ assert(await contains("比較可能な場合の機器推定差"),"BIA deltas are not treated as measured fat mass");
+
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,
   "390px hypothesis dashboard does not overflow");
 
