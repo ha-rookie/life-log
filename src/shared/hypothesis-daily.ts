@@ -79,8 +79,8 @@ export function buildDailyHypotheses(daily:readonly DailyObservation[]){
   const strata=([["low","low"],["low","high"],["high","low"],["high","high"]] as const)
     .map(([stepGroup,drinkGroup])=>{
       const matches=pairedComposite.filter(x=>medianSteps!==null&&medianAlcoholG!==null&&
-        (x.steps>=medianSteps?"high":"low")===stepGroup&&
-        (x.alcoholG>=medianAlcoholG?"high":"low")===drinkGroup);
+        (x.steps>medianSteps?"high":"low")===stepGroup&&
+        (x.alcoholG>medianAlcoholG?"high":"low")===drinkGroup);
       return {stepGroup,drinkGroup,observedPairs:matches.length,
         meanNextWeightChangeKg:mean(matches.map(x=>x.nextWeightChangeKg))};
     });
