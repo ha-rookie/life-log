@@ -3,7 +3,7 @@ import { getPlatformProxy } from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
 import drinksSchema from "../migrations/0004_drink_details.sql?raw";
 import { buildLagEvidence } from "../src/shared/lag-analysis";
-import { type MetricInput,type MetricBodyRow,type MetricStepRow,type MetricLifestyleRow,type MetricDrinkRow } from "../src/shared/analysis-metrics";
+import { type MetricBodyRow,type MetricStepRow,type MetricLifestyleRow,type MetricDrinkRow } from "../src/shared/analysis-metrics";
 type MutableInput={bodies:MetricBodyRow[];steps:MetricStepRow[];lifestyles:MetricLifestyleRow[];drinks:MetricDrinkRow[]};
 import { handleMvpFeatures } from "../src/worker/mvp-features";
 
