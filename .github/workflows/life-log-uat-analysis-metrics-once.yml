@@ -1,0 +1,184 @@
+name: Life-log one-shot observed-only analysis metrics UAT Worker release
+
+# Run once after reviewed one-file PR is squash-merged and required main CI passes.
+# No UAT/D1 mutation on PR. Separate from all existing deployment workflows.
+# The release is gated by the successful push CI of the exact one-file squash commit.
+on:
+  workflow_run:
+    workflows: ["Life-log local app and D1 CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: life-log-one-shot-analysis-metrics-244
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.repository == 'ha-rookie/life-log' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt <= 2 &&
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release observed-only metrics to existing UAT (#244)')
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      BASE_SHA: 80b9ed9fd2703933538011340e1c8c77c06ad239
+      FIX_SHA: 082b73a945723a593e09435193ee8c63e5c9ecdb
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+      UAT_URL: https://life-log-uat.ha-rookie.workers.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate exact one-file merge, unchanged application and authorized CSV audit-v3 dual-target application
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release observed-only metrics to existing UAT (#244)'
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
+          printf '%s\n' '.github/workflows/life-log-uat-analysis-metrics-once.yml' > "$RUNNER_TEMP/expected-files.txt"
+          diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
+          git merge-base --is-ancestor "$FIX_SHA" "$TARGET_SHA"
+          # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
+          git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
+            src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/243" \
+            --jq '.merged_at != null and .merge_commit_sha == "082b73a945723a593e09435193ee8c63e5c9ecdb"' | grep -Fx true
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
+            .split(/\r?\n/).filter(x=>!x.trimStart().startsWith('//')).join('\n'));
+          const u=config.env?.uat,d=u?.d1_databases?.[0];
+          if(u?.name!=='life-log-uat'||u?.workers_dev!==true||
+            u.d1_databases?.length!==1||d?.binding!=='DB'||
+            d.database_id!=='421d0116-5c33-4782-a2b6-28f9684d3956'||
+            d.database_name!=='life-log-dev'||
+            u.vars?.MANUAL_REMOTE_TARGET!=='uat'||
+            u.vars?.MANUAL_REMOTE_ORIGIN!=='https://life-log-uat.ha-rookie.workers.dev'){
+            throw Error('UAT target identity changed; do not deploy');
+          }
+          JS
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged read-only metrics feature #243 and isolated UAT target"
+      - name: Verify proven Migration 0006 and exact UAT D1 schema metadata before deployment
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/43690156087" \
+            --jq '.conclusion == "success" and .head_sha == "5e76e8c6360285027cc0e5098a0ec0f8b3e4617b" and .name == "Life-log one-shot CSV target audit v3 UAT additive Migration 0006"' | grep -Fx true
+          # Query ONLY D1 ledger and sqlite_schema metadata; never measurements or imports.
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const token=process.env.CLOUDFLARE_API_TOKEN,account=process.env.CLOUDFLARE_ACCOUNT_ID;
+          assert(token?.length>=12&&/^[0-9a-f]{32}$/i.test(account||''));
+          const id='421d0116-5c33-4782-a2b6-28f9684d3956';
+          const base='https://api.cloudflare.com/client/v4/accounts/'+account+'/d1/database/'+id;
+          const api=async(method,path,body)=>{
+            const response=await fetch(base+path,{method,
+              headers:{Authorization:'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},
+              ...(body?{body:JSON.stringify(body)}:{})});
+            if(!response.ok)throw Error('UAT_D1_METADATA_UNAVAILABLE');
+            const value=await response.json();
+            assert.equal(value.success,true);
+            return value.result;
+          };
+          const db=await api('GET','');
+          assert.equal(db.uuid,id);
+          assert.equal(db.name,'life-log-dev');
+          const query=async sql=>{
+            const result=await api('POST','/query',{sql,params:[]});
+            assert(result?.length===1&&result[0].success===true);
+            assert(!result[0].meta?.changes&&!result[0].meta?.changed_db);
+            assert(Array.isArray(result[0].results));
+            return result[0].results;
+          };
+          const expected=['0001_initial.sql','0002_owner_auth.sql','0003_owner_passkey.sql',
+            '0004_drink_details.sql','0005_eclear_enrichment_audit.sql',
+            '0006_csv_target_audit_v3.sql'];
+          const ledger=await query('SELECT name FROM d1_migrations ORDER BY id');
+          assert.deepEqual(ledger.map(x=>x.name),expected);
+          const objects=await query("SELECT type,name,tbl_name FROM sqlite_schema "+
+            "WHERE name IN ('import_job_target_manifest','import_target_audit','idx_import_target_audit_job_row') ORDER BY name");
+          assert.deepEqual(objects,[
+            {type:'index',name:'idx_import_target_audit_job_row',tbl_name:'import_target_audit'},
+            {type:'table',name:'import_job_target_manifest',tbl_name:'import_job_target_manifest'},
+            {type:'table',name:'import_target_audit',tbl_name:'import_target_audit'}
+          ]);
+          console.log('PASS: verified original migration run, exact six ledger entries and three UAT v3 objects (metadata only)');
+          JS
+      - name: Install/build and validate existing UI release guard with offline fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          npx --no-install vitest run tests/uat-ui-release-guard.test.mjs tests/analysis-metrics.test.ts tests/mvp-features.test.ts tests/source-adapter.test.ts tests/audit-history.test.ts tests/import-worker.test.ts tests/uat-csv-v3-workflow.test.mjs
+          node --check scripts/uat-ui-release-guard.mjs
+      - name: One-shot guarded Worker-only deployment (preserve UAT auth, vars, D1 binding)
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          # Exact-main recheck immediately before touching Cloudflare.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
+          umask 077
+          cfg="$(mktemp -u "$PWD/.uat-analysis-metrics-XXXXXXXX.jsonc")"
+          before="$(mktemp -u "$RUNNER_TEMP/uat-analysis-metrics-bindings-XXXXXXXX.json")"
+          trap 'rm -f "$cfg" "$before"' EXIT
+          # Existing guard strips stale repo vars and retains active UAT auth/Secrets.
+          node scripts/uat-ui-release-guard.mjs prepare "$cfg"
+          npx --no-install wrangler deploy --config "$cfg" --env uat --keep-vars --dry-run
+          # Worker metadata GET only; no Remote D1 endpoint or query.
+          # Fail closed before upload if permissions/bindings/runtime cannot be verified.
+          node scripts/uat-ui-release-guard.mjs snapshot "$before"
+          # Only the existing UAT Worker is deployed; no Migration/Secrets/vars write.
+          npx --no-install wrangler deploy --config "$cfg" --env uat --keep-vars
+          node scripts/uat-ui-release-guard.mjs compare "$before"
+          echo "PASS: existing UAT Worker deployed; auth, D1 binding and vars preserved"
+      - name: Verify protected UAT login and private app remain safe (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for i in $(seq 1 12); do
+            login="$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)"
+            root="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)"
+            api="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/dashboard" || true)"
+            if [[ "$login" = 200 && "$root" = 403 && "$api" = 403 ]] &&
+              grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then
+              ready=1
+              break
+            fi
+            if [[ "$root" = 200 || "$api" = 200 ]]; then
+              echo "::error::UAT anonymous access unexpectedly allowed"; exit 1
+            fi
+            sleep 3
+          done
+          test "$ready" = 1
+          echo "PASS: UAT passkey login reachable; anonymous app and dashboard denied; no D1 queries or changes"
