@@ -1,3 +1,4 @@
+import { HypothesisDashboard } from "./HypothesisDashboard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
   pureAlcoholGrams, assessDrinkAlcohol, personalAlcoholRule, validDrinkAmounts,
@@ -373,6 +374,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   }
 
   return <>
+    {mode==="analysis"&&<HypothesisDashboard/>}
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
       <p className="metric" aria-live="polite">注文した杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
