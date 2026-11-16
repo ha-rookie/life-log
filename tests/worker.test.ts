@@ -54,10 +54,12 @@ describe("worker authorization boundary", () => {
       expect(res.status).toBe(403);
     }
     // Existing curl and API clients use */*, not an HTML navigation.
-    const curl = await handler.fetch(new Request("https://app.example.invalid/",{
-      headers:{Accept:"*/*"}
-    }),env);
-    expect(curl.status).toBe(403);
+    for (const accept of ["*/*", "application/json", "application/x-text/html-fake"]) {
+      const curl = await handler.fetch(new Request("https://app.example.invalid/",{
+        headers:{Accept:accept}
+      }),env);
+      expect(curl.status).toBe(403);
+    }
     expect(env.ASSETS.fetch).not.toHaveBeenCalled();
     expect(env.DB.prepare).not.toHaveBeenCalled();
   });
@@ -66,6 +68,15 @@ describe("worker authorization boundary", () => {
     const res = await createHandler(async () => "owner").fetch(new Request("https://app.example.invalid/index.html"), env);
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+  it("keeps authenticated browser HTML entry private, not redirected", async () => {
+    const env=testEnv();
+    const res=await createHandler(async()=> "owner").fetch(
+      new Request("https://app.example.invalid/",{headers:{Accept:"text/html"}}),env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Location")).toBeNull();
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(env.ASSETS.fetch).toHaveBeenCalledTimes(1);
   });
   it("returns null for absent measurements and never accepts mutation endpoints", async () => {
     const env = testEnv();
