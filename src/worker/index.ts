@@ -62,7 +62,8 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
         const url = new URL(request.url);
         if (request.method === "GET" &&
             (url.pathname === "/" || url.pathname === "/index.html") &&
-            request.headers.get("Accept")?.includes("text/html")) {
+            request.headers.get("Accept")?.split(",").some(type =>
+              type.trim().split(";")[0].trim().toLowerCase() === "text/html")) {
           return new Response(null, { status: 302, headers: { ...privateHeaders, Location: "/login" } });
         }
         return new Response("Forbidden", { status: 403, headers: privateHeaders });
