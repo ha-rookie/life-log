@@ -59,6 +59,40 @@ describe("Issue #228 non-overlapping time-lag evidence",()=>{
    expect(result.lags[0].stepHypothesis.verdict).toBe("counter_observations");
    expect(result.lags[0].alcoholHypothesis.verdict).toBe("supporting_observations");
  });
+ it("excludes stated drinking without calculable grams instead of manufacturing zero",()=>{
+   const unknown=syntheticWeeks();
+   unknown.drinks.length=0;
+   for(const row of unknown.lifestyles)row.drinking_presence=1;
+   const result=buildLagEvidence(unknown,asOf);
+   expect(result.weeks.every(w=>w.drinkingObservedDays===7&&
+     w.alcoholUnknownCups===0&&w.alcoholUnquantifiedDays===7&&
+     w.alcoholEnteredG===0&&w.alcoholEstimatedG===0)).toBe(true);
+   expect(result.lags.every(l=>l.alcoholHypothesis.pairedWeeks===0&&
+     l.alcoholHypothesis.verdict==="undetermined")).toBe(true);
+   expect(result.lags.every(l=>l.stepHypothesis.pairedWeeks>=6)).toBe(true);
+   // A declared alcohol-free week really is a known 0g week, not missing data.
+   const dry=syntheticWeeks();
+   dry.drinks.length=0;
+   const dryResult=buildLagEvidence(dry,asOf);
+   expect(dryResult.weeks.every(w=>w.alcoholUnquantifiedDays===0)).toBe(true);
+   expect(dryResult.lags.every(l=>l.alcoholHypothesis.pairedWeeks>=6&&
+     l.alcoholHypothesis.flat===l.alcoholHypothesis.pairedWeeks)).toBe(true);
+ });
+ it("rejects only pairs involving an incompletely quantified week",()=>{
+   const baseline=buildLagEvidence(syntheticWeeks(),asOf);
+   const partial=syntheticWeeks();
+   // A single confirmed drinking day without drink detail makes week 0 incomplete.
+   partial.lifestyles[0].drinking_presence=1;
+   const result=buildLagEvidence(partial,asOf);
+   expect(result.weeks[0].alcoholUnquantifiedDays).toBe(1);
+   expect(result.weeks.slice(1).every(w=>w.alcoholUnquantifiedDays===0)).toBe(true);
+   for(let i=0;i<3;i++){
+     expect(result.lags[i].alcoholHypothesis.pairedWeeks)
+       .toBe(baseline.lags[i].alcoholHypothesis.pairedWeeks-1);
+     expect(result.lags[i].stepHypothesis.pairedWeeks)
+       .toBe(baseline.lags[i].stepHypothesis.pairedWeeks);
+   }
+ });
  it("sparse or anomalous body data is withheld, no invented sober days or zeros",()=>{
    const none=buildLagEvidence({bodies:[],steps:[],lifestyles:[],drinks:[]},asOf);
    expect(none.lags.every(l=>l.stepHypothesis.pairedWeeks===0&&
