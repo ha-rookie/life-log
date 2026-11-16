@@ -138,7 +138,7 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
 | M02 #26 2期間体重の変化・観測・欠測 | `/api/mvp/compare` | synthetic D1 period calculation and UAT |
 | M03 #27 歩数・飲酒有無・食事の比較 | 同じ比較API・UI | missing != 0; selected source and observed day counts |
 | M07 #30 仮説1件・行動実験・本人判定 | `/api/mvp/experiments` | synthetic D1, one-active-plan boundary |
-| M08/09 #31 CSV再出力 | `/api/mvp/export` | owner-scoped UTF-8 BOM, NULL empty vs 0, formula-injection escaping |
+| M08/09 #31 CSV再出力 | `/api/mvp/export` | owner-scoped UTF-8 BOM + CRLF, 既存6列に `value_state` を追加して `null` / `present` を明示、数値0と未取得を区別、数式インジェクションをエスケープ、重複した `from` / `to` を拒否 |
 
 - This code does **not** infer past alcohol cup counts from legacy drinking_presence=1.
 - Comparison shows observational association only; no causal or weight-loss-effect assertions.
@@ -198,3 +198,9 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
 - **Mobile**: 390px CSS has responsive two-column counters, wrapped file names and full-width ≥48px action controls; no internal build metadata on the main page.
 - **Evidence**: `tests/source-adapter.test.ts` and `tests/eclear-enrichment-ui.test.tsx` cover synthetic source sanitization, 40-row boundaries, rendering, counters, failure messages and responsive CSS contract. These are **not a substitute** for a real Chromium 390px E2E or an actual Android acceptance. Do not mark physical device acceptance complete without a browser/device run.
 - **Release boundary**: Backend v2 requires `ECLEAR_ENRICHMENT_LOCAL_ONLY=true` and a separate HMAC key on trusted loopback; UAT/Production remain disabled. No Remote D1 migration, real-user data modification, Secrets or UAT deployment in this PR. Parent #124 remains open until authorized real-device and real-data acceptance.
+
+### M08/M09 CSV再出力の値状態（#267）
+- 各行は `record_type,observed_at_or_day,value,unit,source,detail,value_state` の7列。最初の6列の並びは維持し、`value_state` は `null`（DB NULL/undefined）か `present`（DBの空文字、数値0、その他の値）とする。値自体は引用エスケープされた元の文字列のまま。
+- エクスポートはOwnerに紐づく保存済みの各出典の**原本再出力**で、ECLEAR/Fit優先で1日に正規化する分析データとは異なる。複数出典を足したり、同日重複を正本と誤認してはならない。
+- `from` と `to` を正確に1個ずつ要求する。未知キー・重複キー・日付不正はHTTP 400。Ownerの既存GET保護に従い、レスポンスはprivate/no-store。UTF-8 BOM、CRLF、数式先頭の無害化は維持する。
+- 合成ローカルD1のテストだけを用いる。UAT実ユーザー記録に触れず、本番デプロイやMigration、Secrets/vars変更を伴わない。
