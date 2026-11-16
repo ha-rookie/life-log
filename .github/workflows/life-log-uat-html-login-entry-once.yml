@@ -119,19 +119,23 @@ jobs:
           for i in $(seq 1 12); do
             login="$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)"
             root="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)"
+            html_root="$(curl -sS --max-time 15 -D "$RUNNER_TEMP/html-root.headers" -o /dev/null -w '%{http_code}' -H 'Accept: text/html' "$UAT_URL/" || true)"
+            redirect_ok=0
+            if tr -d '\r' < "$RUNNER_TEMP/html-root.headers" | grep -Fxiq 'Location: /login'; then redirect_ok=1; fi
             api="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/dashboard" || true)"
+            asset="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H 'Accept: text/html' "$UAT_URL/assets/not-a-real-app.js" || true)"
             lag="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/lag" || true)"
             metrics="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/metrics" || true)"
             export_csv="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/export?from=2026-11-01&to=2026-11-02" || true)"
-            if [[ "$login" = 200 && "$root" = 403 && "$api" = 403 && "$lag" = 403 && "$metrics" = 403 && "$export_csv" = 403 ]] &&
+            if [[ "$login" = 200 && "$root" = 403 && "$html_root" = 302 && "$redirect_ok" = 1 && "$api" = 403 && "$asset" = 403 && "$lag" = 403 && "$metrics" = 403 && "$export_csv" = 403 ]] &&
               grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then
               ready=1
               break
             fi
-            if [[ "$root" = 200 || "$api" = 200 || "$lag" = 200 || "$metrics" = 200 || "$export_csv" = 200 ]]; then
+            if [[ "$root" = 200 || "$html_root" = 200 || "$api" = 200 || "$asset" = 200 || "$lag" = 200 || "$metrics" = 200 || "$export_csv" = 200 ]]; then
               echo "::error::UAT anonymous access unexpectedly allowed"; exit 1
             fi
             sleep 3
           done
           test "$ready" = 1
-          echo "PASS: UAT passkey login reachable; anonymous app, dashboard, analysis and export APIs denied; no D1 queries or changes"
+          echo "PASS: UAT HTML browser entry redirects 302 to /login; passkey login reachable; anonymous app, assets, dashboard, analysis/export APIs denied; no D1 queries or changes"
