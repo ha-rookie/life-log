@@ -415,8 +415,10 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   expect(response.status).toBe(200);
   expect(response.headers.get("Cache-Control")).toContain("no-store");
   expect(response.headers.get("Content-Type")).toContain("text/csv");
-  const csv=await response.text();
-  expect(csv.startsWith('\uFEFF"record_type","observed_at_or_day","value","unit","source","detail","value_state"\r\n')).toBe(true);
+  const bytes=new Uint8Array(await response.arrayBuffer());
+  expect(Array.from(bytes.slice(0,3))).toEqual([0xef,0xbb,0xbf]);
+  const csv=new TextDecoder("utf-8").decode(bytes);
+  expect(csv.startsWith('"record_type","observed_at_or_day","value","unit","source","detail","value_state"\r\n')).toBe(true);
   expect(csv.endsWith("\r\n")).toBe(true);
   expect(csv).toContain('"steps","'+day(0)+'","0","steps","manual:steps","activity","present"');
   expect(csv).toContain('"\u0027=SHEET(""bad"")"');
