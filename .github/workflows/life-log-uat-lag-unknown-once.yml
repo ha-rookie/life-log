@@ -120,8 +120,8 @@ jobs:
             login="$(curl -sS --max-time 15 -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$UAT_URL/login" || true)"
             root="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/" || true)"
             api="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/dashboard" || true)"
-          lag="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/lag" || true)"
-          metrics="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/metrics" || true)"
+            lag="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/lag" || true)"
+            metrics="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$UAT_URL/api/mvp/metrics" || true)"
             if [[ "$login" = 200 && "$root" = 403 && "$api" = 403 && "$lag" = 403 && "$metrics" = 403 ]] &&
               grep -Fq 'パスキーでログイン' "$RUNNER_TEMP/login.html"; then
               ready=1
