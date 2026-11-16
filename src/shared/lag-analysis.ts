@@ -26,13 +26,18 @@ export function buildLagEvidence(input:MetricInput,asOf:string){
   const weeks=Array.from({length:12},(_,i)=>{
     const finish=lastSunday-(11-i)*7*DAY;
     const from=day(finish-6*DAY),to=day(finish);
-    const metrics=buildAnalysisMetrics(input,to).windows[0];
+    const observed=buildAnalysisMetrics(input,to);
+    const metrics=observed.windows[0];
+    // Lifestyle "drank" with no calculable drink detail is unknown, never 0g.
+    // A week with any such day is ineligible for a grams-based lag comparison.
+    const alcoholUnquantifiedDays=observed.daily.slice(-7)
+      .filter(d=>d.drinkingStatus==="yes"&&d.alcoholG===null).length;
     const measured=metrics.weight.qualifiedMeanKg;
     return {
       from,to,weightMeanKg:measured,weightObservedDays:metrics.weight.observedDays,
       stepsMean:metrics.steps.mean,stepsObservedDays:metrics.steps.observedDays,
       alcoholEnteredG:metrics.drinking.enteredG,alcoholEstimatedG:metrics.drinking.estimatedG,
-      alcoholUnknownCups:metrics.drinking.unknownCups,
+      alcoholUnknownCups:metrics.drinking.unknownCups,alcoholUnquantifiedDays,
       drinkingObservedDays:metrics.drinking.observedDays,
       drinkingMissingDays:metrics.drinking.missingDays,
       ruleVersion:metrics.drinking.assumptionVersion
@@ -58,7 +63,8 @@ export function buildLagEvidence(input:MetricInput,asOf:string){
           weightDeltaKg:delta,direction:product<0?"support":product>0?"counter":"flat"});
       }
       if(current.drinkingObservedDays>=4&&previous.drinkingObservedDays>=4&&
-        current.alcoholUnknownCups===0&&previous.alcoholUnknownCups===0){
+        current.alcoholUnknownCups===0&&previous.alcoholUnknownCups===0&&
+        current.alcoholUnquantifiedDays===0&&previous.alcoholUnquantifiedDays===0){
         const change=round(current.alcoholEnteredG+current.alcoholEstimatedG-
           previous.alcoholEnteredG-previous.alcoholEstimatedG);
         const product=change*delta;
