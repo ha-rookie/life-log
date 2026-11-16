@@ -416,11 +416,11 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   expect(response.headers.get("Cache-Control")).toContain("no-store");
   expect(response.headers.get("Content-Type")).toContain("text/csv");
   const csv=await response.text();
-  expect(csv.startsWith('\\uFEFF"record_type","observed_at_or_day","value","unit","source","detail","value_state"\\r\\n')).toBe(true);
-  expect(csv.endsWith("\\r\\n")).toBe(true);
+  expect(csv.startsWith('\uFEFF"record_type","observed_at_or_day","value","unit","source","detail","value_state"\r\n')).toBe(true);
+  expect(csv.endsWith("\r\n")).toBe(true);
   expect(csv).toContain('"steps","'+day(0)+'","0","steps","manual:steps","activity","present"');
-  expect(csv).toContain('"\\u0027=SHEET(""bad"")"');
-  expect(csv).toContain('"drinking_presence","'+day(0)+'","","","\\u0027=SHEET(""bad"")","lifestyle","null"');
+  expect(csv).toContain('"\u0027=SHEET(""bad"")"');
+  expect(csv).toContain('"drinking_presence","'+day(0)+'","","","\u0027=SHEET(""bad"")","lifestyle","null"');
   expect(csv).not.toContain("99999");
   expect((await call(db,"/api/mvp/export?from="+day(1)+"&from="+day(0)+"&to="+day(0))).status).toBe(400);
   expect((await call(db,"/api/mvp/export?from="+day(1)+"&to="+day(0)+"&to="+day(0))).status).toBe(400);
