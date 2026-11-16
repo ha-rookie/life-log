@@ -21,11 +21,62 @@ describe("worker authorization boundary", () => {
     expect(env.ASSETS.fetch).not.toHaveBeenCalled();
     expect(env.DB.prepare).not.toHaveBeenCalled();
   });
+  it("guides only unauthenticated browser HTML entry to passkey login", async () => {
+    const env = testEnv();
+    const handler = createHandler(async () => null);
+    for (const path of ["/", "/index.html"]) {
+      const res = await handler.fetch(new Request("https://app.example.invalid"+path,{
+        headers:{Accept:"text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"}
+      }),env);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("/login");
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    }
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+    expect(env.DB.prepare).not.toHaveBeenCalled();
+  });
+  it("keeps private routes and non-navigation requests forbidden even with HTML Accept", async () => {
+    const env = testEnv();
+    const handler = createHandler(async () => null);
+    for (const path of ["/api/dashboard", "/api/mvp/metrics", "/api/mvp/export", "/assets/app.hash.js", "/private", "/favicon.ico"]) {
+      const res = await handler.fetch(new Request("https://app.example.invalid"+path,{
+        headers:{Accept:"text/html"}
+      }),env);
+      expect(res.status).toBe(403);
+      expect(res.headers.get("Location")).toBeNull();
+    }
+    for (const method of ["HEAD","POST","OPTIONS"]) {
+      const res = await handler.fetch(new Request("https://app.example.invalid/",{
+        method,headers:{Accept:"text/html"}
+      }),env);
+      expect(res.status).toBe(403);
+    }
+    // Existing curl and API clients use */*, not an HTML navigation.
+    for (const accept of ["*/*", "application/json", "application/x-text/html-fake"]) {
+      const curl = await handler.fetch(new Request("https://app.example.invalid/",{
+        headers:{Accept:accept}
+      }),env);
+      expect(curl.status).toBe(403);
+    }
+    expect(env.ASSETS.fetch).not.toHaveBeenCalled();
+    expect(env.DB.prepare).not.toHaveBeenCalled();
+  });
   it("serves authorized assets without making them publicly cacheable", async () => {
     const env = testEnv();
     const res = await createHandler(async () => "owner").fetch(new Request("https://app.example.invalid/index.html"), env);
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+  it("keeps authenticated browser HTML entry private, not redirected", async () => {
+    const env=testEnv();
+    const res=await createHandler(async()=> "owner").fetch(
+      new Request("https://app.example.invalid/",{headers:{Accept:"text/html"}}),env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Location")).toBeNull();
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(env.ASSETS.fetch).toHaveBeenCalledTimes(1);
   });
   it("returns null for absent measurements and never accepts mutation endpoints", async () => {
     const env = testEnv();

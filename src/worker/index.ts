@@ -56,7 +56,18 @@ export function createHandler(authorize: Authorizer = verifyOwner) {
         try { ownerId = await sessionOwner(request, env.DB as unknown as Parameters<typeof sessionOwner>[1]); ownerSession = ownerId === "owner"; }
         catch { ownerId = null; }
       }
-      if (ownerId !== "owner") return new Response("Forbidden", { status: 403, headers: privateHeaders });
+      if (ownerId !== "owner") {
+        // Only top-level browser HTML navigation gets a public sign-in entry.
+        // Private APIs, other paths, assets and non-navigation requests remain 403.
+        const url = new URL(request.url);
+        if (request.method === "GET" &&
+            (url.pathname === "/" || url.pathname === "/index.html") &&
+            request.headers.get("Accept")?.split(",").some(type =>
+              type.trim().split(";")[0].trim().toLowerCase() === "text/html")) {
+          return new Response(null, { status: 302, headers: { ...privateHeaders, Location: "/login" } });
+        }
+        return new Response("Forbidden", { status: 403, headers: privateHeaders });
+      }
 
       const path = new URL(request.url).pathname;
       if (path.startsWith("/api/")) {
