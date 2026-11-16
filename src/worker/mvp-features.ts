@@ -507,11 +507,12 @@ const csvSafe=(x:unknown)=>{
 };
 async function exportCsv(req:Request,db:MvpDb,owner:string):Promise<Response>{
   const q=new URL(req.url).searchParams;
-  if([...q.keys()].some(k=>!["from","to"].includes(k)))return fail("RANGE",400);
+  if([...q.keys()].some(k=>!["from","to"].includes(k))||
+    q.getAll("from").length!==1||q.getAll("to").length!==1)return fail("RANGE",400);
   const p=range(q.get("from"),q.get("to"),366);
   if(!p)return fail("RANGE",400);
   const [a,b]=dateBounds(p);
-  const parts:unknown[][]=[["record_type","observed_at_or_day","value","unit","source","detail"]];
+  const parts:unknown[][]=[["record_type","observed_at_or_day","value","unit","source","detail","value_state"]];
   const w=await db.prepare("SELECT measured_at,weight_kg,source_id,source_kind FROM body_measurements "+
     "WHERE owner_id=? AND unixepoch(measured_at)>=? AND unixepoch(measured_at)<? LIMIT 10001").bind(owner,a,b)
     .all<{measured_at:string;weight_kg:number|null;source_id:string;source_kind:string}>();
@@ -552,7 +553,11 @@ async function exportCsv(req:Request,db:MvpDb,owner:string):Promise<Response>{
     .all<{local_day:string;category:string;source_id:string}>();
   for(const x of outings.results)parts.push(["outing",x.local_day,1,"visit",x.source_id,x.category]);
   if([w,steps,lifestyle,drinks,outings].some(x=>x.results.length>10000))return fail("TOO_MANY",422);
-  const csv="\uFEFF"+parts.map(row=>row.map(csvSafe).join(",")).join("\r\n")+"\r\n";
+  // Keep the original six columns stable. The seventh disambiguates NULL from an
+  // explicitly recorded empty string and from the actual numeric zero.
+  const csv="\uFEFF"+parts.map((row,i)=>(i===0?row:
+    [...row,row[2]===null||row[2]===undefined?"null":"present"])
+    .map(csvSafe).join(",")).join("\r\n")+"\r\n";
   return new Response(csv,{headers:{...headers,"Content-Type":"text/csv; charset=utf-8",
     "Content-Disposition":'attachment; filename="life-log-'+p.from+"-"+p.to+'.csv"'}});
 }
