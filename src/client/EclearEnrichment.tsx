@@ -1,4 +1,5 @@
 import {useEffect,useState} from "react";
+import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 
 /** Data-only preview. Neither the local D1 record IDs nor measured values cross to UI. */
 export type CompositionPreview={
@@ -60,6 +61,8 @@ async function requestV2(
       headers:{"Content-Type":"application/json","X-Life-Log-Intent":"eclear-enrichment-v2"},
       body:JSON.stringify(reviewToken===undefined?{csv}:{csv,token:reviewToken})
     });
+    if(!controller.signal.aborted && await redirectOnExpiredOwnerSession(response))
+      throw new Error("LOGIN_REQUIRED");
     const data=await response.json().catch(()=>({})) as Record<string,unknown>;
     if(!response.ok){
       const e=new Error("ECLEAR_API_FAILURE") as ApiError;
