@@ -34,7 +34,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
     try {
       const response=await fetch("/api/manual/records?"+new URLSearchParams(range).toString(),
         {credentials:"same-origin",cache:"no-store"});
-      if(await redirectOnExpiredOwnerSession(response))throw new Error("LOGIN_REQUIRED");
+      if(response.status===403 && await redirectOnExpiredOwnerSession(response))throw new Error("LOGIN_REQUIRED");
       if(!response.ok)throw new Error("GET");
       const data=await response.json() as Records;
       if(current===historySequence.current)setRows(data);
@@ -64,7 +64,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
         "X-Life-Log-Intent": "manual-write-v1" },
       body: JSON.stringify(payload),
     });
-    if(await redirectOnExpiredOwnerSession(response))throw new Error("LOGIN_REQUIRED");
+    if(response.status===403 && await redirectOnExpiredOwnerSession(response))throw new Error("LOGIN_REQUIRED");
     // The global Access gate can return text rather than JSON for expired JWTs.
     let data: { error?: string; status?: string } = {};
     try { data = await response.json() as typeof data; } catch { /* denied auth may be text */ }
