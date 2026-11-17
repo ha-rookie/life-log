@@ -264,7 +264,7 @@ describe("Issue #25: JST daily trend and calendar seven-day average", () => {
         'import {buildWeightTrend,addSevenDayAverage,jstDay,parseDay} from "../src/shared/weight-trend";',
         'import "../src/client/styles.css";',
         'const now=parseDay(jstDay(Date.now()));const rows=[];const today=jstDay(Date.now());const omit=new Date(Date.UTC(Number(today.slice(0,4)),Number(today.slice(5,7))-7,1)).toISOString().slice(0,7);',
-        'for(let i=0;i<370;i+=2){const d=new Date(now-i*86400000).toISOString().slice(0,10);if(d.startsWith(omit))continue;rows.push({id:"test-"+i,measured_at:d+"T08:15:00+09:00",weight_kg:Math.round((77+Math.sin(i/20))*10)/10,source_kind:"measured",anomaly_flag:0});}'
+        'for(let i=0;i<370;i+=2){const d=new Date(now-i*86400000).toISOString().slice(0,10);if(d.startsWith(omit))continue;rows.push({id:"test-"+i,measured_at:d+"T08:15:00+09:00",weight_kg:Math.round((77+Math.sin(i/20))*10)/10,source_kind:"measured",anomaly_flag:0});}',
         'window.__apiMode="normal";window.__apiCalls=0;window.__jsErrors=[];',
         'window.addEventListener("error",e=>window.__jsErrors.push(String(e.message)));',
         'window.addEventListener("unhandledrejection",e=>window.__jsErrors.push(String(e.reason)));',
