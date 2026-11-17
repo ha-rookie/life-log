@@ -1,4 +1,5 @@
 import { HypothesisDashboard } from "./HypothesisDashboard";
+import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
   pureAlcoholGrams, assessDrinkAlcohol, personalAlcoholRule, validDrinkAmounts,
@@ -44,12 +45,14 @@ const weightEvidence=(day:string|null,kg:number|null,measuredAt:string|null,sour
     day+" · "+render(kg," kg")+" · 測定日時 "+(measuredAt??"不明")+" · 出典 "+(source??"不明");
 async function jsonGet<T>(path:string):Promise<T>{
   const res=await fetch(path,{credentials:"same-origin",cache:"no-store"});
+  if(res.status===403 && await redirectOnExpiredOwnerSession(res))throw Error("ログインが必要です");
   if(!res.ok)throw Error("取得できません（HTTP "+res.status+"）");
   return await res.json() as T;
 }
 async function mutate(path:string,method:"POST"|"PUT"|"PATCH"|"DELETE",value:Record<string,unknown>){
   const res=await fetch(path,{method,credentials:"same-origin",cache:"no-store",
     headers:{"Content-Type":"application/json","X-Life-Log-Intent":"manual-write-v1"},body:JSON.stringify(value)});
+  if(res.status===403 && await redirectOnExpiredOwnerSession(res))throw Error("ログインが必要です");
   const data=await res.json().catch(()=>({})) as {error?:string;status?:string};
   if(!res.ok)throw Error(
     res.status===403?"本人認証・書込みの許可を確認してください。":
@@ -362,6 +365,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     try{
       const q=new URLSearchParams({from:exportFrom,to:exportTo});
       const res=await fetch("/api/mvp/export?"+q,{credentials:"same-origin",cache:"no-store"});
+      if(res.status===403 && await redirectOnExpiredOwnerSession(res))throw Error("ログインが必要です");
       if(!res.ok)throw Error("CSVを出力できません（HTTP "+res.status+"）");
       const blob=await res.blob();
       const url=URL.createObjectURL(blob);

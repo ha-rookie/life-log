@@ -54,7 +54,7 @@ async function intercept(p){
    }
  }
  // Synthetic login document is served only by this localhost Chromium fixture.
- if(url.pathname==="/login"&&mode==="dashboard-expired"){
+ if(url.pathname==="/login"&&(mode==="dashboard-expired"||mode==="drinks-expired")){
    await cmd("Fetch.fulfillRequest",{requestId:p.requestId,responseCode:200,
      responseHeaders:[{name:"content-type",value:"text/html; charset=utf-8"}],
      body:Buffer.from("<!doctype html><html lang='ja'><body>SYNTHETIC LOGIN ENTRY</body></html>").toString("base64")});
@@ -65,6 +65,12 @@ async function intercept(p){
    return;
  }
  const path=url.pathname;calls.push(path);
+ if(path==="/api/mvp/drinks"&&mode==="drinks-expired"){
+   await cmd("Fetch.fulfillRequest",{requestId:p.requestId,responseCode:403,
+     responseHeaders:[{name:"content-type",value:"text/plain; charset=UTF-8"}],
+     body:Buffer.from("Forbidden").toString("base64")});
+   return;
+ }
  let code=200,data={};
  if(path==="/api/dashboard"){
    data={latestWeightKg:75,measuredAt:"2026-01-02T07:40:00+09:00",weightSource:"csv:eclear",latestSteps:null,stepsDay:null,stepsSource:null};
@@ -615,6 +621,11 @@ try{
  await wait(()=>contains("記録を表示できません。ログイン状態を確認してください。"),
    "503 dashboard does not force reauthentication");
  assert.equal(await js("location.pathname"),"/","503 stays in private SPA");
+ // Dashboard succeeds, but the drink API denies an expired Owner session.
+ mode="drinks-expired";
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=drinks403#record"});
+ await wait(()=>contains("SYNTHETIC LOGIN ENTRY"),"raw 403 drinks API redirects to login",22000);
+ assert.equal(await js("location.pathname"),"/login","drink 403 directs to passkey login");
  mode="dashboard-expired";
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=403#home"});
  await wait(()=>contains("SYNTHETIC LOGIN ENTRY"),"403 dashboard routes to same-origin login",22000);
@@ -625,7 +636,8 @@ try{
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
    "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","original source bytes BOM/CRLF SHA256 explicit confirm","v3 2-target explicit confirm and untrusted time rejection","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow",
-   "SPA dashboard 503 stays in app","SPA dashboard 403 redirects to login"],
+   "SPA dashboard 503 stays in app","raw 403 drinks API redirects to login",
+   "SPA dashboard 403 redirects to login"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);

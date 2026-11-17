@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 import { rangeForGranularity, type WeightTrend, type TrendGranularity } from "../shared/weight-trend";
 import type { StepsTrend } from "../worker/steps-trend";
 
@@ -143,6 +144,10 @@ export function ProgressCharts({view,refreshEpoch=0}:{
     const options:RequestInit={credentials:"same-origin",cache:"no-store",signal:abort.signal};
     Promise.all([fetch("/api/weight/trend?"+q,options),fetch("/api/steps/trend?"+q,options)])
       .then(async([w,s])=>{
+        if(!abort.signal.aborted){
+          if(w.status===403 && await redirectOnExpiredOwnerSession(w))throw Error("LOGIN_REQUIRED");
+          if(s.status===403 && await redirectOnExpiredOwnerSession(s))throw Error("LOGIN_REQUIRED");
+        }
         if(!w.ok||!s.ok)throw Error("API");
         const [weight,steps]=await Promise.all([w.json() as Promise<WeightTrend>,s.json() as Promise<StepsTrend>]);
         if(weight.from!==range.from||weight.to!==range.to||
