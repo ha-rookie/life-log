@@ -145,8 +145,8 @@ export function ProgressCharts({view,refreshEpoch=0}:{
     Promise.all([fetch("/api/weight/trend?"+q,options),fetch("/api/steps/trend?"+q,options)])
       .then(async([w,s])=>{
         if(!abort.signal.aborted){
-          if(await redirectOnExpiredOwnerSession(w))throw Error("LOGIN_REQUIRED");
-          if(await redirectOnExpiredOwnerSession(s))throw Error("LOGIN_REQUIRED");
+          if(w.status===403 && await redirectOnExpiredOwnerSession(w))throw Error("LOGIN_REQUIRED");
+          if(s.status===403 && await redirectOnExpiredOwnerSession(s))throw Error("LOGIN_REQUIRED");
         }
         if(!w.ok||!s.ok)throw Error("API");
         const [weight,steps]=await Promise.all([w.json() as Promise<WeightTrend>,s.json() as Promise<StepsTrend>]);
