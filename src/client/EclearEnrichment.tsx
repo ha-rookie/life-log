@@ -61,7 +61,7 @@ async function requestV2(
       headers:{"Content-Type":"application/json","X-Life-Log-Intent":"eclear-enrichment-v2"},
       body:JSON.stringify(reviewToken===undefined?{csv}:{csv,token:reviewToken})
     });
-    if(!controller.signal.aborted && await redirectOnExpiredOwnerSession(response))
+    if(!controller.signal.aborted && response.status===403 && await redirectOnExpiredOwnerSession(response))
       throw new Error("LOGIN_REQUIRED");
     const data=await response.json().catch(()=>({})) as Record<string,unknown>;
     if(!response.ok){
