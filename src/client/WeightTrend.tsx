@@ -169,7 +169,7 @@ export function WeightTrendPanel() {
         const res = await fetch("/api/weight/trend?" + params.toString(), {
           credentials: "same-origin", cache: "no-store", signal: controller.signal,
         });
-        if (!controller.signal.aborted && await redirectOnExpiredOwnerSession(res))
+        if (!controller.signal.aborted && res.status===403 && await redirectOnExpiredOwnerSession(res))
           throw new Error("LOGIN_REQUIRED");
         if (!res.ok) throw new Error("status");
         const data = await res.json() as WeightTrend;
