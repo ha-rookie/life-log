@@ -269,6 +269,13 @@ export function App() {
           credentials: "same-origin", cache: "no-store", signal: controller.signal,
         });
         if (!res.ok) {
+          // The app may remain open after the Owner session expires.
+          // Only an explicit auth denial prompts passkey login. Connectivity
+          // errors or service failures must never be disguised as expiry.
+          if (res.status === 403 && !controller.signal.aborted) {
+            window.location.replace("/login");
+            return;
+          }
           if (!controller.signal.aborted) setState({
             kind: "blocked", message: "記録を表示できません。ログイン状態を確認してください。",
           });
