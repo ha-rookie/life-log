@@ -609,12 +609,12 @@ try{
  // An already-open SPA must distinguish expired authentication from outage.
  // 503 remains an in-app error; 403 navigates to the same-origin login screen.
  mode="dashboard-unavailable";
- await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#home"});
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=503#home"});
  await wait(()=>contains("記録を表示できません。ログイン状態を確認してください。"),
    "503 dashboard does not force reauthentication");
  assert.equal(await js("location.pathname"),"/","503 stays in private SPA");
  mode="dashboard-expired";
- await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#home"});
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=403#home"});
  await wait(()=>contains("SYNTHETIC LOGIN ENTRY"),"403 dashboard routes to same-origin login",22000);
  assert.equal(await js("location.pathname"),"/login","403 directs to local passkey login entry");
  assert.deepEqual([...blockedRemoteOrigins],[],"Chrome tried to request a non-local host");
