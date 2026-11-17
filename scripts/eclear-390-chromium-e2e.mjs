@@ -299,7 +299,9 @@ try{
   else if(msg.method==="Fetch.requestPaused")void intercept(msg.params).catch(e=>{
     // CDP can invalidate an already-paused request while navigating locally.
     // Bound only that exact browser race; external requests remain fatal via blockedRemoteOrigins.
-    if(String(e).includes("Invalid InterceptionId.")&&++expiredInterceptions<=3)return;
+    // Two full-page auth redirects can cancel in-flight synthetic CDP requests.
+    // Keep a strict bound; never suppress other CDP errors or remote-origin leaks.
+    if(String(e).includes("Invalid InterceptionId.")&&++expiredInterceptions<=8)return;
     console.error(e);process.exitCode=1;
    });
  });
