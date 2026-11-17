@@ -53,13 +53,24 @@ async function intercept(p){
      return;
    }
  }
+ // Synthetic login document is served only by this localhost Chromium fixture.
+ if(url.pathname==="/login"&&mode==="dashboard-expired"){
+   await cmd("Fetch.fulfillRequest",{requestId:p.requestId,responseCode:200,
+     responseHeaders:[{name:"content-type",value:"text/html; charset=utf-8"}],
+     body:Buffer.from("<!doctype html><html lang='ja'><body>SYNTHETIC LOGIN ENTRY</body></html>").toString("base64")});
+   return;
+ }
  if(!url.pathname.startsWith("/api/")){
    await cmd("Fetch.continueRequest",{requestId:p.requestId});
    return;
  }
  const path=url.pathname;calls.push(path);
  let code=200,data={};
- if(path==="/api/dashboard")data={latestWeightKg:75,measuredAt:"2026-01-02T07:40:00+09:00",weightSource:"csv:eclear",latestSteps:null,stepsDay:null,stepsSource:null};
+ if(path==="/api/dashboard"){
+   data={latestWeightKg:75,measuredAt:"2026-01-02T07:40:00+09:00",weightSource:"csv:eclear",latestSteps:null,stepsDay:null,stepsSource:null};
+   if(mode==="dashboard-expired"){code=403;data={error:"AUTH_REQUIRED"};}
+   if(mode==="dashboard-unavailable"){code=503;data={error:"SERVICE_UNAVAILABLE"};}
+ }
  else if(path==="/api/eclear/enrichment/preview"){
   data={status:"preview",reviewToken:"synthetic-token",total:1,newMeasurements:0,enrichMeasurements:1,enrichCells:5,sameCells:2,conflictMeasurements:0,missingCells:0,unchangedMeasurements:0,classifications:[]};
   if(mode==="conflict"){data.conflictMeasurements=1;data.enrichCells=0;data.enrichMeasurements=0;data.classifications=[{line:2,status:"conflict",reason:"existing_value_conflict",enrichFields:[],conflictFields:["bodyFatPct"]}];}
@@ -288,7 +299,9 @@ try{
   else if(msg.method==="Fetch.requestPaused")void intercept(msg.params).catch(e=>{
     // CDP can invalidate an already-paused request while navigating locally.
     // Bound only that exact browser race; external requests remain fatal via blockedRemoteOrigins.
-    if(String(e).includes("Invalid InterceptionId.")&&++expiredInterceptions<=3)return;
+    // Two full-page auth redirects can cancel in-flight synthetic CDP requests.
+    // Keep a strict bound; never suppress other CDP errors or remote-origin leaks.
+    if(String(e).includes("Invalid InterceptionId.")&&++expiredInterceptions<=8)return;
     console.error(e);process.exitCode=1;
    });
  });
@@ -595,12 +608,24 @@ try{
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"drink form 390px overflow");
  assert.equal(await js("window.innerWidth"),390);
  assert.equal(await js("document.documentElement.scrollWidth>window.innerWidth"),false,"390px overflow");
+ // An already-open SPA must distinguish expired authentication from outage.
+ // 503 remains an in-app error; 403 navigates to the same-origin login screen.
+ mode="dashboard-unavailable";
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=503#home"});
+ await wait(()=>contains("記録を表示できません。ログイン状態を確認してください。"),
+   "503 dashboard does not force reauthentication");
+ assert.equal(await js("location.pathname"),"/","503 stays in private SPA");
+ mode="dashboard-expired";
+ await cmd("Page.navigate",{url:"http://127.0.0.1:5187/?syntheticAuthCase=403#home"});
+ await wait(()=>contains("SYNTHETIC LOGIN ENTRY"),"403 dashboard routes to same-origin login",22000);
+ assert.equal(await js("location.pathname"),"/login","403 directs to local passkey login entry");
  assert.deepEqual([...blockedRemoteOrigins],[],"Chrome tried to request a non-local host");
  console.log(JSON.stringify({result:"PASS",browser:"Chromium",viewport:390,
   verified:["React UI","file picker","normal import isolation","preview","conflict",
    "403 disabled","commit readback","409 no retry","503 no retry","normal import","memo privacy","passkey status UI",
    "Android 390px numeric input","focus selects existing cups","clearing preserves empty","invalid 0/51 blocked",
-   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","original source bytes BOM/CRLF SHA256 explicit confirm","v3 2-target explicit confirm and untrusted time rejection","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow"],
+   "POST number cups","45-day backfill auto history","today counts unchanged","past JST date POST","future date blocked","edit empty/51 blocked","PATCH number cups","45-day manual weight/steps history","audit job and row previous-next","comparison evidence and missing coverage","M03 steps canonical source and zero vs missing","M03 drinking 1/0/unknown coverage","M03 lunch/dinner takeaway and missing coverage","Japanese lifestyle synthetic CSV picker/preview/confirm/reject","original source bytes BOM/CRLF SHA256 explicit confirm","v3 2-target explicit confirm and untrusted time rejection","M07 matched experiment evidence and insufficient 7-day weight","no synthetic auto verdict","stale compare cleared","no overflow",
+   "SPA dashboard 503 stays in app","SPA dashboard 403 redirects to login"],
   apiCalls:calls.length,remoteD1:0}));
 }catch(error){
  console.error("Chromium E2E failed:",error);
