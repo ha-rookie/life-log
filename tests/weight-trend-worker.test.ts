@@ -415,7 +415,9 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
         "safe D1 503 UI error");
       expect(apiStatuses).toContain(503);
       d1Fault = false;
-      await click("前の期間", ".trend-period-nav button");
+      // A fresh login returns to the day view, not the previous month's UI state.
+      // Explicitly switch back to months to verify recovery with signed Owner data.
+      await click("月", ".trend-granularity button");
       await until('document.querySelector(".trend-period-table tbody")?.children.length===12',
         "recovery after local D1 error");
       expect(await evaluate('window.__realErrors.length')).toBe(0);
