@@ -1,4 +1,4 @@
-name: Life-log one-shot expired-session HTML login entry UAT Worker release
+name: Life-log one-shot SPA session-expiry login UAT Worker release
 
 # Run once after reviewed one-file PR is squash-merged and required main CI passes.
 # No UAT/D1 mutation on PR. Separate from all existing deployment workflows.
@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: life-log-one-shot-html-entry-273
+  group: life-log-one-shot-spa-auth-277
   cancel-in-progress: false
 
 jobs:
@@ -27,12 +27,12 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release HTML login entry redirect to existing UAT (#273)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): ship SPA 403 login recovery to existing UAT (#277)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: a430d03d29725cc427104e7c84874b391af0b241
-      FIX_SHA: a430d03d29725cc427104e7c84874b391af0b241
+      BASE_SHA: e7d61ebe32e6254e2ecd3cb97b265300cd0fd43e
+      FIX_SHA: e7d61ebe32e6254e2ecd3cb97b265300cd0fd43e
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Validate exact one-file merge and anonymous HTML login redirect
+      - name: Validate exact one-file merge and SPA expired-session redirect
         shell: bash
         run: |
           set -euo pipefail
@@ -53,7 +53,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release HTML login entry redirect to existing UAT (#273)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): ship SPA 403 login recovery to existing UAT (#277)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-html-login-entry-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
@@ -61,8 +61,8 @@ jobs:
           # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
           git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
             src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
-          gh api "repos/$GITHUB_REPOSITORY/pulls/272" \
-            --jq '.merged_at != null and .merge_commit_sha == "a430d03d29725cc427104e7c84874b391af0b241"' | grep -Fx true
+          gh api "repos/$GITHUB_REPOSITORY/pulls/276" \
+            --jq '.merged_at != null and .merge_commit_sha == "e7d61ebe32e6254e2ecd3cb97b265300cd0fd43e"' | grep -Fx true
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
@@ -77,7 +77,7 @@ jobs:
             throw Error('UAT target identity changed; do not deploy');
           }
           JS
-          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged HTML entry correction PR #272 and isolated UAT target"
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged SPA auth correction PR #276 and isolated UAT target"
       - name: Install/build and validate existing UI release guard with offline fixtures
         shell: bash
         run: |
@@ -98,8 +98,8 @@ jobs:
           # Exact-main recheck immediately before touching Cloudflare.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           umask 077
-          cfg="$(mktemp -u "$PWD/.uat-html-entry-XXXXXXXX.jsonc")"
-          before="$(mktemp -u "$RUNNER_TEMP/uat-html-entry-bindings-XXXXXXXX.json")"
+          cfg="$(mktemp -u "$PWD/.uat-spa-auth-XXXXXXXX.jsonc")"
+          before="$(mktemp -u "$RUNNER_TEMP/uat-spa-auth-bindings-XXXXXXXX.json")"
           trap 'rm -f "$cfg" "$before"' EXIT
           # Existing guard strips stale repo vars and retains active UAT auth/Secrets.
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
