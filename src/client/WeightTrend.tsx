@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 import type { WeightTrend, TrendDay, TrendGranularity, TrendPeriod } from "../shared/weight-trend";
 import { DEFAULT_GOAL, groupTrendDays, moveGranularityRange, parseDay, rangeFitsGranularity, rangeForGranularity } from "../shared/weight-trend";
 
@@ -168,6 +169,8 @@ export function WeightTrendPanel() {
         const res = await fetch("/api/weight/trend?" + params.toString(), {
           credentials: "same-origin", cache: "no-store", signal: controller.signal,
         });
+        if (!controller.signal.aborted && await redirectOnExpiredOwnerSession(res))
+          throw new Error("LOGIN_REQUIRED");
         if (!res.ok) throw new Error("status");
         const data = await res.json() as WeightTrend;
         if (!controller.signal.aborted && epoch === seq.current) setState({ kind: "ok", trend: data });
