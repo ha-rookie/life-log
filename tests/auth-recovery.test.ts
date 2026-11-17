@@ -6,7 +6,8 @@ describe("Owner session recovery is not a blanket 403 redirect",()=>{
     const redirect=vi.fn();
     const res=new Response("Forbidden",{status:403,headers:{"Cache-Control":"private, no-store"}});
     expect(await redirectOnExpiredOwnerSession(res,redirect)).toBe(true);
-    expect(redirect).toHaveBeenCalledExactlyOnceWith("/login");
+    expect(redirect).toHaveBeenCalledTimes(1);
+    expect(redirect).toHaveBeenCalledWith("/login");
     expect(await res.text()).toBe("Forbidden");
   });
   it("does not mistake feature-disabled JSON 403 or other errors for expiry",async()=>{
