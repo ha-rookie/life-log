@@ -400,8 +400,8 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       expect(denied.cache).toContain("no-store");
       expect(dbReads).toBe(readsBeforeDenial);
       await click("前の期間", ".trend-period-nav button");
-      await until('document.querySelector("[role=alert]")?.textContent.includes("取得できません")',
-        "owner mismatch UI denial");
+      await until('location.pathname==="/login"',
+        "owner mismatch redirects to same-origin login");
       identity = "missing";
       const unsigned = await evaluate('fetch("/api/weight/trend?from=' + today + '&to=' + today
         + '").then(r=>r.status)');
@@ -409,7 +409,8 @@ describe("Issue #25: signed owner + actual ephemeral local D1 weight trend", () 
       expect(dbReads).toBe(readsBeforeDenial);
       identity = "owner";
       d1Fault = true;
-      await click("最新へ", ".trend-period-nav button");
+      // A fresh navigation re-enters the Owner UI after the test identity changes.
+      await cdp("Page.navigate", { url: "http://127.0.0.1:" + server.address().port + "/" });
       await until('document.querySelector("[role=alert]")?.textContent.includes("取得できません")',
         "safe D1 503 UI error");
       expect(apiStatuses).toContain(503);
