@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 import { buildDailyHypotheses, type DailyObservation } from "../shared/hypothesis-daily";
 import { coverageLabel, describeLagEvidence, displayObserved, type LagSummary } from "../shared/hypothesis-dashboard";
 
@@ -50,6 +51,7 @@ export function HypothesisDashboard(){
     try{
       const get=async(path:string)=>{
         const r=await fetch(path,{credentials:"same-origin",cache:"no-store",signal});
+        if(!signal?.aborted && await redirectOnExpiredOwnerSession(r))throw Error("LOGIN_REQUIRED");
         if(!r.ok)throw Error("データ取得に失敗しました（HTTP "+r.status+"）");
         return await r.json() as unknown;
       };
