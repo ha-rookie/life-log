@@ -15,6 +15,8 @@ const mealLabel:Record<Exclude<MealKind,null>,string>={home:"自炊",restaurant:
 const venueLabel={work:"会社・接待",bar:"居酒屋・バー",other:"その他"};
 type Experiment={id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;
   status:string;startsOn:string;endsOn:string;targetAction:string;outcomeText:string|null;decision:string|null};
+type EditablePlan={id:string;targetAction:string;startsOn:string;endsOn:string;
+  expectedTargetAction:string;expectedStartsOn:string;expectedEndsOn:string};
 type Period={from:string;to:string;calendarDays:number;
   weight:{startDay:string|null;startKg:number|null;startMeasuredAt:string|null;startSource:string|null;
     endDay:string|null;endKg:number|null;endMeasuredAt:string|null;endSource:string|null;
@@ -104,6 +106,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [evidenceBusy,setEvidenceBusy]=useState(false);
   const evidenceSequence=useRef(0);
   const [planBusy,setPlanBusy]=useState(false);
+  const [editingPlan,setEditingPlan]=useState<EditablePlan|null>(null);
+  const [planNotice,setPlanNotice]=useState("");
   const [statement,setStatement]=useState("");
   const [support,setSupport]=useState("");
   const [counter,setCounter]=useState("");
@@ -350,6 +354,20 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       setSupport("");setCounter("");setUnknown("");
     }catch(err){setExperimentError(err instanceof Error?err.message:"行動計画を作成できません。");}
     finally{setPlanBusy(false);}
+  }
+  async function savePlanChanges(e:React.FormEvent){
+    e.preventDefault();if(planBusy||!editingPlan)return;
+    setPlanBusy(true);setExperimentError("");setPlanNotice("");
+    try{
+      await mutate("/api/mvp/experiments","PUT",editingPlan);
+      // Changing either date invalidates the previous matched-period evidence.
+      evidenceSequence.current++;setEvidence(null);setEvidenceError("");
+      setEditingPlan(null);
+      await loadExperiments();
+      setPlanNotice("行動計画を訂正しました。比較結果は次回表示時に再計算します。");
+    }catch(err){
+      setExperimentError(err instanceof Error?err.message:"行動計画を訂正できません。");
+    }finally{setPlanBusy(false);}
   }
   async function decide(id:string){
     if(planBusy)return;setPlanBusy(true);setExperimentError("");
@@ -618,11 +636,35 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
         <button type="submit" disabled={planBusy||!statement.trim()||!targetAction.trim()}>行動計画を登録</button>
       </form>
       {experimentError&&<p role="alert">{experimentError}</p>}
+      {planNotice&&<p role="status">{planNotice}</p>}
       {experimentList.map(x=><article key={x.id} className="mvp-plan">
         <h3>{x.statement}</h3>
         <p>{x.startsOn} ～ {x.endsOn} ／ {x.targetAction}</p>
         <p>支持：{x.supportText||"未記録"} ／ 反証：{x.counterText||"未記録"}</p>
         <p>不明点：{x.unknownText||"未記録"}</p>
+        {x.decision===null&&<div>
+          {editingPlan?.id===x.id
+            ?<form onSubmit={e=>void savePlanChanges(e)} aria-label="行動計画の訂正">
+              <div className="mvp-grid">
+                <label>訂正する行動計画<input required maxLength={600}
+                  value={editingPlan.targetAction}
+                  onChange={e=>setEditingPlan(old=>old?{...old,targetAction:e.target.value}:null)}/></label>
+                <label>訂正する開始日<input required type="date" value={editingPlan.startsOn}
+                  onChange={e=>setEditingPlan(old=>old?{...old,startsOn:e.target.value}:null)}/></label>
+                <label>訂正する終了日<input required type="date" value={editingPlan.endsOn}
+                  onChange={e=>setEditingPlan(old=>old?{...old,endsOn:e.target.value}:null)}/></label>
+              </div>
+              <p className="hint">期間を訂正すると前後比較の対象日も変わります。体重・歩数などの原本は変更しません。</p>
+              <button type="submit" disabled={planBusy||!editingPlan.targetAction.trim()||
+                !editingPlan.startsOn||!editingPlan.endsOn}>訂正を保存</button>
+              <button type="button" disabled={planBusy} onClick={()=>setEditingPlan(null)}>訂正を取り消す</button>
+            </form>
+            :<button type="button" disabled={planBusy}
+              onClick={()=>{setExperimentError("");setPlanNotice("");setEditingPlan({
+                id:x.id,targetAction:x.targetAction,startsOn:x.startsOn,endsOn:x.endsOn,
+                expectedTargetAction:x.targetAction,expectedStartsOn:x.startsOn,expectedEndsOn:x.endsOn
+              });}}>計画・期間を訂正</button>}
+        </div>}
         <button type="button" disabled={evidenceBusy}
           onClick={()=>void loadExperimentEvidence(x.id)}>この実験の前後を比較</button>
         {evidenceBusy&&<p role="status">実測記録を照合中…</p>}
