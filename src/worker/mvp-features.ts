@@ -331,10 +331,11 @@ async function experiments(req:Request,db:MvpDb,owner:string){
     const rows=await db.prepare("SELECT e.id AS id,h.statement AS statement,h.support_text AS supportText,"+
       "h.counterevidence_text AS counterText,h.unknown_text AS unknownText,h.status AS status,"+
       "e.starts_on AS startsOn,e.ends_on AS endsOn,e.target_action AS targetAction,"+
+      "e.baseline_text AS baselineText,"+
       "e.outcome_text AS outcomeText,e.user_decision AS decision "+
       "FROM behavior_experiments e JOIN behavior_hypotheses h ON h.id=e.hypothesis_id AND h.owner_id=e.owner_id "+
       "WHERE e.owner_id=? ORDER BY e.starts_on DESC,e.id DESC LIMIT 21").bind(owner)
-      .all<{id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;status:string;startsOn:string;endsOn:string;targetAction:string;outcomeText:string|null;decision:string|null}>();
+      .all<{id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;status:string;startsOn:string;endsOn:string;targetAction:string;baselineText:string|null;outcomeText:string|null;decision:string|null}>();
     if(rows.results.length>20)return fail("TOO_MANY",422);
     return json({experiments:rows.results});
   }
@@ -342,6 +343,8 @@ async function experiments(req:Request,db:MvpDb,owner:string){
   if(!p||typeof p.id!=="string"||!uuid.test(p.id))return fail("PAYLOAD",400);
   const id=p.id.toLowerCase();
   if(req.method==="POST"){
+    if(p.baselineText!==undefined&&p.baselineText!==null&&
+      (typeof p.baselineText!=="string"||p.baselineText.length>1200))return fail("PLAN");
     if(!validText(p.statement)||!validText(p.targetAction)||
       !validCalendarDay(p.startsOn)||!validCalendarDay(p.endsOn)||
       p.startsOn>p.endsOn||p.endsOn>new Date(Date.now()+9*3600000+366*dayMs).toISOString().slice(0,10)||
@@ -368,8 +371,15 @@ async function experiments(req:Request,db:MvpDb,owner:string){
     // Correct only the Owner's undecided plan: no hypothesis rewrite or
     // measurement updates. Original visible values are a compare-and-swap gate.
     const permitted=["id","targetAction","startsOn","endsOn",
-      "expectedTargetAction","expectedStartsOn","expectedEndsOn"];
+      "expectedTargetAction","expectedStartsOn","expectedEndsOn",
+      "baselineText","expectedBaselineText"];
+    const hasOwn=(key:string)=>Object.prototype.hasOwnProperty.call(p,key);
+    const editingGoal=hasOwn("baselineText")||hasOwn("expectedBaselineText");
+    const validNote=(value:unknown)=>value===null||
+      (typeof value==="string"&&value.length<=1200);
     if(Object.keys(p).some(key=>!permitted.includes(key))||
+      (editingGoal&&(!hasOwn("baselineText")||!hasOwn("expectedBaselineText")||
+        !validNote(p.baselineText)||!validNote(p.expectedBaselineText)))||
       !validText(p.targetAction)||!validText(p.expectedTargetAction)||
       !validCalendarDay(p.startsOn)||!validCalendarDay(p.endsOn)||
       !validCalendarDay(p.expectedStartsOn)||!validCalendarDay(p.expectedEndsOn)||
@@ -378,22 +388,25 @@ async function experiments(req:Request,db:MvpDb,owner:string){
       (millis(p.endsOn)-millis(p.startsOn))/dayMs>90)return fail("PLAN");
     const current=await db.prepare(
       "SELECT target_action AS targetAction,starts_on AS startsOn,ends_on AS endsOn,"+
-      "user_decision AS decision FROM behavior_experiments WHERE id=? AND owner_id=?"
-    ).bind(id,owner).first<{targetAction:string;startsOn:string;endsOn:string;decision:string|null}>();
+      "baseline_text AS baselineText,user_decision AS decision FROM behavior_experiments WHERE id=? AND owner_id=?"
+    ).bind(id,owner).first<{targetAction:string;startsOn:string;endsOn:string;baselineText:string|null;decision:string|null}>();
     if(!current)return fail("NOT_FOUND",404);
     if(current.decision!==null)return fail("ALREADY_DECIDED",409);
+    // Older clients omit the note entirely: preserve its current value.
+    const goal=editingGoal?p.baselineText as string|null:current.baselineText;
+    const expectedGoal=editingGoal?p.expectedBaselineText as string|null:current.baselineText;
     // A lost success response may be retried without changing anything.
     if(current.targetAction===p.targetAction&&current.startsOn===p.startsOn&&
-      current.endsOn===p.endsOn)return json({status:"unchanged",id});
+      current.endsOn===p.endsOn&&current.baselineText===goal)return json({status:"unchanged",id});
     if(current.targetAction!==p.expectedTargetAction||
       current.startsOn!==p.expectedStartsOn||
-      current.endsOn!==p.expectedEndsOn)return fail("CONFLICT",409);
+      current.endsOn!==p.expectedEndsOn||current.baselineText!==expectedGoal)return fail("CONFLICT",409);
     const updated=await db.prepare(
-      "UPDATE behavior_experiments SET target_action=?,starts_on=?,ends_on=? "+
+      "UPDATE behavior_experiments SET target_action=?,starts_on=?,ends_on=?,baseline_text=? "+
       "WHERE id=? AND owner_id=? AND user_decision IS NULL "+
-      "AND target_action=? AND starts_on=? AND ends_on=?"
-    ).bind(p.targetAction,p.startsOn,p.endsOn,id,owner,
-      p.expectedTargetAction,p.expectedStartsOn,p.expectedEndsOn).run();
+      "AND target_action=? AND starts_on=? AND ends_on=? AND baseline_text IS ?"
+    ).bind(p.targetAction,p.startsOn,p.endsOn,goal,id,owner,
+      p.expectedTargetAction,p.expectedStartsOn,p.expectedEndsOn,expectedGoal).run();
     return updated.meta?.changes===1?json({status:"updated",id}):fail("CONFLICT",409);
   }
   if(req.method==="PATCH"){
