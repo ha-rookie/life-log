@@ -350,9 +350,15 @@ async function experiments(req:Request,db:MvpDb,owner:string){
       p.startsOn>p.endsOn||p.endsOn>new Date(Date.now()+9*3600000+366*dayMs).toISOString().slice(0,10)||
       (millis(p.endsOn)-millis(p.startsOn))/dayMs>90)return fail("PLAN");
     // Only one live experiment at a time; no duplicate retry creates extra rows.
-    const existing=await db.prepare("SELECT id,target_action AS action FROM behavior_experiments "+
-      "WHERE id=? AND owner_id=?").bind(id,owner).first<{id:string;action:string}>();
-    if(existing)return existing.action===p.targetAction?json({status:"saved",id}):fail("CONFLICT",409);
+    const existing=await db.prepare(
+      "SELECT id,target_action AS action,baseline_text AS baselineText FROM behavior_experiments "+
+      "WHERE id=? AND owner_id=?").bind(id,owner).first<{
+        id:string;action:string;baselineText:string|null
+      }>();
+    // A replay with a different stated goal must not silently report success.
+    if(existing)return existing.action===p.targetAction&&
+      existing.baselineText===(p.baselineText??null)
+      ?json({status:"saved",id}):fail("CONFLICT",409);
     const active=await db.prepare("SELECT id FROM behavior_experiments WHERE owner_id=? AND user_decision IS NULL LIMIT 1")
       .bind(owner).first<{id:string}>();
     if(active)return fail("ACTIVE_EXISTS",409);
