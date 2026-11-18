@@ -309,6 +309,68 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
    id:one,decision:"stop",outcomeText:"retry"
   })).status).toBe(409);
  });
+ it("persists optional evaluation metric and goal notes with safe legacy CAS edits",async()=>{
+  const prior={id:one,statement:"Walking hypothesis",targetAction:"Walk each evening",
+    startsOn:day(5),endsOn:day(-7),baselineText:"歩数の平均と7日平均体重を比較する"};
+  expect((await call(db,"/api/mvp/experiments","POST",prior)).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","POST",prior)).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","POST",{
+    ...prior,baselineText:"Different unstored goal"
+  })).status).toBe(409);
+  const first=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{baselineText:string|null}>};
+  expect(first.experiments[0].baselineText).toBe(prior.baselineText);
+  const desired="目標: 週平均歩数8,000歩。体重7日平均も参照する";
+  const change={id:one,targetAction:prior.targetAction,startsOn:prior.startsOn,endsOn:prior.endsOn,
+    expectedTargetAction:prior.targetAction,expectedStartsOn:prior.startsOn,
+    expectedEndsOn:prior.endsOn,expectedBaselineText:prior.baselineText,baselineText:desired};
+  expect((await call(db,"/api/mvp/experiments","PUT",change)).status).toBe(200);
+  const replay=await call(db,"/api/mvp/experiments","PUT",change);
+  expect(replay.status).toBe(200);
+  expect(await replay.json()).toMatchObject({status:"unchanged",id:one});
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...change,baselineText:"Blind overwrite",expectedBaselineText:"Wrong"
+  })).status).toBe(409);
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...change,baselineText:12
+  })).status).toBe(422);
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...change,expectedBaselineText:undefined
+  })).status).toBe(422);
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...change,baselineText:"x".repeat(1201)
+  })).status).toBe(422);
+  // Old clients send only action/date fields: never silently erase the note.
+  const legacy={id:one,targetAction:"Walk 15 minutes",startsOn:prior.startsOn,endsOn:prior.endsOn,
+    expectedTargetAction:prior.targetAction,expectedStartsOn:prior.startsOn,
+    expectedEndsOn:prior.endsOn};
+  expect((await call(db,"/api/mvp/experiments","PUT",legacy)).status).toBe(200);
+  const changed=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{baselineText:string|null;targetAction:string}>};
+  expect(changed.experiments[0]).toMatchObject({baselineText:desired,targetAction:legacy.targetAction});
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...legacy,targetAction:legacy.targetAction,
+    expectedTargetAction:legacy.targetAction,baselineText:null,expectedBaselineText:desired
+  })).status).toBe(200);
+  const cleared=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{baselineText:string|null}>};
+  expect(cleared.experiments[0].baselineText).toBeNull();
+  const other=await handleMvpFeatures(new Request(site+"/api/mvp/experiments",{
+    method:"PUT",headers:{"Content-Type":"application/json","Origin":site,
+      "Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"manual-write-v1"},
+    body:JSON.stringify(change)}),db,"other",env);
+  expect(other.status).toBe(404);
+  expect((await call(db,"/api/mvp/experiments","PATCH",{
+    id:one,decision:"unknown",outcomeText:"No causal inference"
+  })).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","PUT",change)).status).toBe(409);
+  expect((await call(db,"/api/mvp/experiments","POST",{
+    ...prior,id:two,baselineText:"x".repeat(1201)
+  })).status).toBe(422);
+  // An old plan with no note still reads NULL.
+  const empty={id:two,statement:"Unscored",targetAction:"Observe only",
+    startsOn:day(6),endsOn:day(-8)};
+  expect((await call(db,"/api/mvp/experiments","POST",empty)).status).toBe(200);
+  const all=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{id:string;baselineText:string|null}>};
+  expect(all.experiments.find(x=>x.id===two)?.baselineText).toBeNull();
+ });
  it("corrects only an undecided Owner plan with CAS, safe retry and no measurement writes",async()=>{
   const old={id:one,statement:"Walking and weight",targetAction:"Walk 10 minutes",
     startsOn:day(4),endsOn:day(-10)};

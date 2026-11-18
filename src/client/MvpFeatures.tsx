@@ -14,9 +14,9 @@ type Outing={key:string;day:string;category:"work"|"bar"|"other"};
 const mealLabel:Record<Exclude<MealKind,null>,string>={home:"自炊",restaurant:"外食",takeout:"中食"};
 const venueLabel={work:"会社・接待",bar:"居酒屋・バー",other:"その他"};
 type Experiment={id:string;statement:string;supportText:string|null;counterText:string|null;unknownText:string|null;
-  status:string;startsOn:string;endsOn:string;targetAction:string;outcomeText:string|null;decision:string|null};
-type EditablePlan={id:string;targetAction:string;startsOn:string;endsOn:string;
-  expectedTargetAction:string;expectedStartsOn:string;expectedEndsOn:string};
+  status:string;startsOn:string;endsOn:string;targetAction:string;baselineText:string|null;outcomeText:string|null;decision:string|null};
+type EditablePlan={id:string;targetAction:string;startsOn:string;endsOn:string;baselineText:string;
+  expectedTargetAction:string;expectedStartsOn:string;expectedEndsOn:string;expectedBaselineText:string|null};
 type Period={from:string;to:string;calendarDays:number;
   weight:{startDay:string|null;startKg:number|null;startMeasuredAt:string|null;startSource:string|null;
     endDay:string|null;endKg:number|null;endMeasuredAt:string|null;endSource:string|null;
@@ -113,6 +113,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [counter,setCounter]=useState("");
   const [unknown,setUnknown]=useState("");
   const [targetAction,setTargetAction]=useState("");
+  const [baselineText,setBaselineText]=useState("");
   const [startsOn,setStartsOn]=useState(jstDay);
   const [endsOn,setEndsOn]=useState(isoDay(-14));
   const [outcomes,setOutcomes]=useState<Record<string,string>>({});
@@ -349,8 +350,8 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     try{
       await mutate("/api/mvp/experiments","POST",{
         id:crypto.randomUUID(),statement,targetAction,supportText:support,counterText:counter,
-        unknownText:unknown,startsOn,endsOn});
-      await loadExperiments();setStatement("");setTargetAction("");
+        unknownText:unknown,baselineText:baselineText.trim()||null,startsOn,endsOn});
+      await loadExperiments();setStatement("");setTargetAction("");setBaselineText("");
       setSupport("");setCounter("");setUnknown("");
     }catch(err){setExperimentError(err instanceof Error?err.message:"行動計画を作成できません。");}
     finally{setPlanBusy(false);}
@@ -359,12 +360,14 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     e.preventDefault();if(planBusy||!editingPlan)return;
     setPlanBusy(true);setExperimentError("");setPlanNotice("");
     try{
-      await mutate("/api/mvp/experiments","PUT",editingPlan);
+      await mutate("/api/mvp/experiments","PUT",{
+        ...editingPlan,baselineText:editingPlan.baselineText.trim()||null
+      });
       // Changing either date invalidates the previous matched-period evidence.
       evidenceSequence.current++;setEvidence(null);setEvidenceError("");
       setEditingPlan(null);
       await loadExperiments();
-      setPlanNotice("行動計画を訂正しました。比較結果は次回表示時に再計算します。");
+      setPlanNotice("行動計画を訂正しました。評価指標・目標のメモも保存しました。比較結果は次回表示時に再計算します。");
     }catch(err){
       setExperimentError(err instanceof Error?err.message:"行動計画を訂正できません。");
     }finally{setPlanBusy(false);}
@@ -627,6 +630,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             onChange={e=>setStatement(e.target.value)} placeholder="例：夕食後の散歩と体重推移の関係"/></label>
           <label>行動計画<input required maxLength={600} value={targetAction}
             onChange={e=>setTargetAction(e.target.value)} placeholder="例：夕食後に20分歩く"/></label>
+          <label>比較基準・評価指標・目標（任意）<textarea maxLength={1200}
+            value={baselineText} onChange={e=>setBaselineText(e.target.value)}
+            placeholder="例：週平均歩数8,000歩を目安にする。体重7日平均も確認する"/></label>
           <label>支持する材料<textarea maxLength={1200} value={support} onChange={e=>setSupport(e.target.value)}/></label>
           <label>反証する材料<textarea maxLength={1200} value={counter} onChange={e=>setCounter(e.target.value)}/></label>
           <label>まだわからないこと<textarea maxLength={1200} value={unknown} onChange={e=>setUnknown(e.target.value)}/></label>
@@ -640,6 +646,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       {experimentList.map(x=><article key={x.id} className="mvp-plan">
         <h3>{x.statement}</h3>
         <p>{x.startsOn} ～ {x.endsOn} ／ {x.targetAction}</p>
+        <p>比較基準・評価指標・目標：{x.baselineText||"未設定（任意）"}</p>
         <p>支持：{x.supportText||"未記録"} ／ 反証：{x.counterText||"未記録"}</p>
         <p>不明点：{x.unknownText||"未記録"}</p>
         {x.decision===null&&<div>
@@ -649,6 +656,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
                 <label>訂正する行動計画<input required maxLength={600}
                   value={editingPlan.targetAction}
                   onChange={e=>setEditingPlan(old=>old?{...old,targetAction:e.target.value}:null)}/></label>
+                <label>比較基準・評価指標・目標の訂正（任意）<textarea maxLength={1200}
+                  value={editingPlan.baselineText}
+                  onChange={e=>setEditingPlan(old=>old?{...old,baselineText:e.target.value}:null)}/></label>
                 <label>訂正する開始日<input required type="date" value={editingPlan.startsOn}
                   onChange={e=>setEditingPlan(old=>old?{...old,startsOn:e.target.value}:null)}/></label>
                 <label>訂正する終了日<input required type="date" value={editingPlan.endsOn}
@@ -662,6 +672,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             :<button type="button" disabled={planBusy}
               onClick={()=>{setExperimentError("");setPlanNotice("");setEditingPlan({
                 id:x.id,targetAction:x.targetAction,startsOn:x.startsOn,endsOn:x.endsOn,
+                baselineText:x.baselineText??"",expectedBaselineText:x.baselineText,
                 expectedTargetAction:x.targetAction,expectedStartsOn:x.startsOn,expectedEndsOn:x.endsOn
               });}}>計画・期間を訂正</button>}
         </div>}
@@ -696,7 +707,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
                 </section>)}
             </div>
             :<p>開始前のため比較データはありません。未来の測定値を0として扱いません。</p>}
-          <p className="hint">体重・歩数・飲酒が一緒に変わっても、行動の因果効果とは断定しません。最終判定は本人が行います。</p>
+          <p className="hint">評価指標・目標は本人が記入した参考メモです。自動達成判定はしません。体重・歩数・飲酒が一緒に変わっても、行動の因果効果とは断定しません。最終判定は本人が行います。</p>
         </section>}
         {x.decision?<p>本人判定：{({continue:"継続",revise:"修正",stop:"終了",unknown:"不明"} as Record<string,string>)[x.decision]||x.decision}
           {x.outcomeText?" · "+x.outcomeText:""}</p>:<div>

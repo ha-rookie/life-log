@@ -33,7 +33,9 @@ async function js(expression){
 async function wait(check,label,max=14000){
   const start=Date.now();
   while(Date.now()-start<max){if(await check())return;await sleep(140);}
-  const body=await js("document.body?.innerText");
+  // Chrome startup can expire before the DevTools WebSocket exists.
+  // Keep the real timeout reason instead of throwing on undefined ws.send.
+  const body=ws?await js("document.body?.innerText").catch(()=>"<CDP disconnected>"):"<CDP not connected>";
   throw Error("Timed out "+label+"; UI="+String(body).slice(-900));
 }
 const contains=text=>js("document.body?.innerText.includes("+JSON.stringify(text)+")");
@@ -76,7 +78,7 @@ try{
       port=Number((await readFile(join(dir,"chrome","DevToolsActivePort"),"utf8")).split("\n")[0]);
       return port>0;
     }catch{return false;}
-  },"Chrome DevTools",18000);
+  },"Chrome DevTools",30000);
   const tabs=await (await fetch("http://127.0.0.1:"+port+"/json/list")).json();
   ws=new WebSocket(tabs.find(x=>x.type==="page").webSocketDebuggerUrl);
   await new Promise((resolve,reject)=>{
