@@ -313,6 +313,10 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
   const prior={id:one,statement:"Walking hypothesis",targetAction:"Walk each evening",
     startsOn:day(5),endsOn:day(-7),baselineText:"歩数の平均と7日平均体重を比較する"};
   expect((await call(db,"/api/mvp/experiments","POST",prior)).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","POST",prior)).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","POST",{
+    ...prior,baselineText:"Different unstored goal"
+  })).status).toBe(409);
   const first=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{baselineText:string|null}>};
   expect(first.experiments[0].baselineText).toBe(prior.baselineText);
   const desired="目標: 週平均歩数8,000歩。体重7日平均も参照する";
