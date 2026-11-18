@@ -632,7 +632,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
             onChange={e=>setTargetAction(e.target.value)} placeholder="例：夕食後に20分歩く"/></label>
           <label>比較基準・評価指標・目標（任意）<textarea maxLength={1200}
             value={baselineText} onChange={e=>setBaselineText(e.target.value)}
-            placeholder="例：週平均歩数を8,000歩を目安にする。体重7日平均も確認する"/></label>
+            placeholder="例：週平均歩数8,000歩を目安にする。体重7日平均も確認する"/></label>
           <label>支持する材料<textarea maxLength={1200} value={support} onChange={e=>setSupport(e.target.value)}/></label>
           <label>反証する材料<textarea maxLength={1200} value={counter} onChange={e=>setCounter(e.target.value)}/></label>
           <label>まだわからないこと<textarea maxLength={1200} value={unknown} onChange={e=>setUnknown(e.target.value)}/></label>
