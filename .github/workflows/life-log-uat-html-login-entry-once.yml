@@ -1,4 +1,4 @@
-name: Life-log one-shot Owner API 403 login recovery UAT Worker release
+name: Life-log one-shot M07 experiment plan correction UAT Worker release
 
 # Run once after reviewed one-file PR is squash-merged and required main CI passes.
 # No UAT/D1 mutation on PR. Separate from all existing deployment workflows.
@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: life-log-one-shot-owner-api-auth-281
+  group: life-log-one-shot-m07-plan-285
   cancel-in-progress: false
 
 jobs:
@@ -27,12 +27,12 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release Owner API 403 login recovery to existing UAT (#281)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release M07 experiment plan correction to existing UAT (#285)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: d97f23fdfa4c86b2d88bc87511e5857145682aa0
-      FIX_SHA: d97f23fdfa4c86b2d88bc87511e5857145682aa0
+      BASE_SHA: 1a43b6b2d4510ec4c6dfcb0f961666f6cd2c803e
+      FIX_SHA: 1a43b6b2d4510ec4c6dfcb0f961666f6cd2c803e
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Validate exact one-file merge and Owner API 403 login recovery
+      - name: Validate exact one-file merge and M07 experiment plan correction
         shell: bash
         run: |
           set -euo pipefail
@@ -53,7 +53,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release Owner API 403 login recovery to existing UAT (#281)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release M07 experiment plan correction to existing UAT (#285)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-html-login-entry-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
@@ -61,8 +61,8 @@ jobs:
           # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
           git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
             src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
-          gh api "repos/$GITHUB_REPOSITORY/pulls/280" \
-            --jq '.merged_at != null and .merge_commit_sha == "d97f23fdfa4c86b2d88bc87511e5857145682aa0"' | grep -Fx true
+          gh api "repos/$GITHUB_REPOSITORY/pulls/284" \
+            --jq '.merged_at != null and .merge_commit_sha == "1a43b6b2d4510ec4c6dfcb0f961666f6cd2c803e"' | grep -Fx true
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
@@ -77,7 +77,7 @@ jobs:
             throw Error('UAT target identity changed; do not deploy');
           }
           JS
-          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged Owner API auth correction PR #280 and isolated UAT target"
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged M07 plan correction PR #284 and isolated UAT target"
       - name: Install/build and validate existing UI release guard with offline fixtures
         shell: bash
         run: |
@@ -98,8 +98,8 @@ jobs:
           # Exact-main recheck immediately before touching Cloudflare.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           umask 077
-          cfg="$(mktemp -u "$PWD/.uat-owner-api-auth-XXXXXXXX.jsonc")"
-          before="$(mktemp -u "$RUNNER_TEMP/uat-owner-api-auth-bindings-XXXXXXXX.json")"
+          cfg="$(mktemp -u "$PWD/.uat-m07-plan-XXXXXXXX.jsonc")"
+          before="$(mktemp -u "$RUNNER_TEMP/uat-m07-plan-bindings-XXXXXXXX.json")"
           trap 'rm -f "$cfg" "$before"' EXIT
           # Existing guard strips stale repo vars and retains active UAT auth/Secrets.
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
