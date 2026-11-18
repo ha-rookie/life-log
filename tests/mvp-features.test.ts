@@ -309,6 +309,59 @@ describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()
    id:one,decision:"stop",outcomeText:"retry"
   })).status).toBe(409);
  });
+ it("corrects only an undecided Owner plan with CAS, safe retry and no measurement writes",async()=>{
+  const old={id:one,statement:"Walking and weight",targetAction:"Walk 10 minutes",
+    startsOn:day(4),endsOn:day(-10)};
+  expect((await call(db,"/api/mvp/experiments","POST",old)).status).toBe(200);
+  await db.prepare("INSERT INTO body_measurements(id,owner_id,measured_at,weight_kg,source_id,source_row_key,source_kind) "+
+    "VALUES(?,?,?,?,?,?,?)").bind("untouched","owner",time(2),75,"eclear","untouched","measured").run();
+  const change={id:one,expectedTargetAction:old.targetAction,
+    expectedStartsOn:old.startsOn,expectedEndsOn:old.endsOn,
+    targetAction:"Walk 20 minutes",startsOn:day(6),endsOn:day(-8)};
+  const denied=await handleMvpFeatures(new Request(site+"/api/mvp/experiments",{
+    method:"PUT",headers:{"Content-Type":"application/json","Origin":site,
+      "Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"manual-write-v1"},
+    body:JSON.stringify(change)}),db,"other",env);
+  expect(denied.status).toBe(404);
+  expect((await call(db,"/api/mvp/experiments","PUT",change,"https://evil.invalid")).status).toBe(403);
+  expect((await handleMvpFeatures(new Request(site+"/api/mvp/experiments",{
+    method:"PUT",headers:{"Content-Type":"application/json","Origin":site,
+      "Sec-Fetch-Site":"same-origin","X-Life-Log-Intent":"manual-write-v1"},
+    body:JSON.stringify(change)}),db,"owner",{})).status).toBe(403);
+  expect((await call(db,"/api/mvp/experiments","PUT",{...change,id:two})).status).toBe(404);
+  const saved=await call(db,"/api/mvp/experiments","PUT",change);
+  expect(saved.status).toBe(200);
+  expect(await saved.json()).toMatchObject({status:"updated",id:one});
+  const replay=await call(db,"/api/mvp/experiments","PUT",change);
+  expect(replay.status).toBe(200);
+  expect(await replay.json()).toMatchObject({status:"unchanged",id:one});
+  const list=(await (await call(db,"/api/mvp/experiments")).json()) as {experiments:Array<{
+    startsOn:string;endsOn:string;targetAction:string;decision:string|null;statement:string
+  }>};
+  expect(list.experiments[0]).toMatchObject({
+    startsOn:change.startsOn,endsOn:change.endsOn,targetAction:change.targetAction,
+    statement:old.statement,decision:null
+  });
+  const evidence=await (await call(db,"/api/mvp/experiments/evidence?id="+one)).json() as any;
+  expect(evidence).toMatchObject({plannedFrom:change.startsOn,plannedTo:change.endsOn,
+    status:"in_progress",during:{from:change.startsOn,to:day(0),calendarDays:7},
+    before:{from:day(13),to:day(7),calendarDays:7}});
+  expect((await db.prepare("SELECT weight_kg FROM body_measurements WHERE id='untouched'")
+    .first<{weight_kg:number}>())?.weight_kg).toBe(75);
+  for(const invalid of [
+    {...change,targetAction:"x".repeat(601)},
+    {...change,startsOn:day(-20),endsOn:day(2)},
+    {...change,endsOn:day(-380)},
+    {...change,unexpected:"extra"},
+  ])expect((await call(db,"/api/mvp/experiments","PUT",invalid)).status).toBe(422);
+  expect((await call(db,"/api/mvp/experiments","PUT",{
+    ...change,targetAction:"Blind overwrite"
+  })).status).toBe(409);
+  expect((await call(db,"/api/mvp/experiments","PATCH",{
+    id:one,decision:"unknown",outcomeText:"No causal inference"
+  })).status).toBe(200);
+  expect((await call(db,"/api/mvp/experiments","PUT",change)).status).toBe(409);
+ });
  it("computes Owner-scoped matched elapsed experiment and baseline windows with qualified 7-day weight means",async()=>{
   const plan={id:one,statement:"Synthetic test: daily walks",targetAction:"Walk after dinner",
     startsOn:day(8),endsOn:day(-7),supportText:"prior records",counterText:"missing days",unknownText:"other factors"};

@@ -364,6 +364,38 @@ async function experiments(req:Request,db:MvpDb,owner:string){
     ]);
     return json({status:"saved",id});
   }
+  if(req.method==="PUT"){
+    // Correct only the Owner's undecided plan: no hypothesis rewrite or
+    // measurement updates. Original visible values are a compare-and-swap gate.
+    const permitted=["id","targetAction","startsOn","endsOn",
+      "expectedTargetAction","expectedStartsOn","expectedEndsOn"];
+    if(Object.keys(p).some(key=>!permitted.includes(key))||
+      !validText(p.targetAction)||!validText(p.expectedTargetAction)||
+      !validCalendarDay(p.startsOn)||!validCalendarDay(p.endsOn)||
+      !validCalendarDay(p.expectedStartsOn)||!validCalendarDay(p.expectedEndsOn)||
+      p.startsOn>p.endsOn||
+      p.endsOn>new Date(Date.now()+9*3600000+366*dayMs).toISOString().slice(0,10)||
+      (millis(p.endsOn)-millis(p.startsOn))/dayMs>90)return fail("PLAN");
+    const current=await db.prepare(
+      "SELECT target_action AS targetAction,starts_on AS startsOn,ends_on AS endsOn,"+
+      "user_decision AS decision FROM behavior_experiments WHERE id=? AND owner_id=?"
+    ).bind(id,owner).first<{targetAction:string;startsOn:string;endsOn:string;decision:string|null}>();
+    if(!current)return fail("NOT_FOUND",404);
+    if(current.decision!==null)return fail("ALREADY_DECIDED",409);
+    // A lost success response may be retried without changing anything.
+    if(current.targetAction===p.targetAction&&current.startsOn===p.startsOn&&
+      current.endsOn===p.endsOn)return json({status:"unchanged",id});
+    if(current.targetAction!==p.expectedTargetAction||
+      current.startsOn!==p.expectedStartsOn||
+      current.endsOn!==p.expectedEndsOn)return fail("CONFLICT",409);
+    const updated=await db.prepare(
+      "UPDATE behavior_experiments SET target_action=?,starts_on=?,ends_on=? "+
+      "WHERE id=? AND owner_id=? AND user_decision IS NULL "+
+      "AND target_action=? AND starts_on=? AND ends_on=?"
+    ).bind(p.targetAction,p.startsOn,p.endsOn,id,owner,
+      p.expectedTargetAction,p.expectedStartsOn,p.expectedEndsOn).run();
+    return updated.meta?.changes===1?json({status:"updated",id}):fail("CONFLICT",409);
+  }
   if(req.method==="PATCH"){
     const decisions=["continue","revise","stop","unknown"];
     if(!decisions.includes(String(p.decision))||
@@ -566,7 +598,7 @@ export async function handleMvpFeatures(req:Request,db:MvpDb,owner:string,config
   const method=req.method;
   const pathMethods:Record<string,string[]>={
     "/api/mvp/compare":["GET"],"/api/mvp/metrics":["GET"],"/api/mvp/lag":["GET"],"/api/mvp/drinks":["GET","POST","PATCH","DELETE"],
-    "/api/mvp/experiments":["GET","POST","PATCH"],"/api/mvp/experiments/evidence":["GET"],"/api/mvp/export":["GET"],
+    "/api/mvp/experiments":["GET","POST","PUT","PATCH"],"/api/mvp/experiments/evidence":["GET"],"/api/mvp/export":["GET"],
     "/api/mvp/meals":["GET","PUT","DELETE"],"/api/mvp/outings":["GET","POST","PATCH","DELETE"]
   };
   if(!pathMethods[path])return fail("NOT_FOUND",404);
