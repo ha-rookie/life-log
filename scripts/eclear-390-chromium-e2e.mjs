@@ -424,14 +424,14 @@ try{
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-new'))"),"drink form mounted");
  await wait(()=>js("Boolean(document.querySelector('#steps-day'))"),"daily manual fields mounted");
  const jstYesterday=new Date(Date.now()+9*3600000-86400000).toISOString().slice(0,10);
- const completedDefault=await js("(()=>({
+ const completedDefault=await js(`(()=>({
    steps:document.querySelector('#steps-day')?.value,
    meal:document.querySelector('#meal-day')?.value,
    outing:document.querySelector('#outing-day')?.value,
    drink:document.querySelector('#drink-day-new')?.value,
    time:document.querySelector('#drink-clock-new')?.value,
    weight:document.querySelector('.manual-entry input[type=datetime-local]')?.value
- }))()");
+ }))()`);
  assert.deepEqual(completedDefault,{steps:jstYesterday,meal:jstYesterday,
    outing:jstYesterday,drink:jstYesterday,time:"",weight:""},
    "only completed JST day defaults to yesterday; drink time and weight are not invented");
