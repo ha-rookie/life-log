@@ -506,7 +506,7 @@ try{
  await wait(()=>js("document.querySelector('#drink-history-to').value==="+JSON.stringify(historicDay)),
   "history automatically follows backdated POST");
  await wait(()=>lastHistoryQuery?.to===historicDay,"history request uses historic end date");
- assert.equal(await js("document.body.innerText.includes('選択日の注文杯数：お酒 7 杯 ／ ノンアル 0 杯')"),true,
+ await wait(()=>js("document.body.innerText.includes('選択日の注文杯数：お酒 7 杯 ／ ノンアル 0 杯')"),
   "selected completed day reflects its own drinks after backdated entry");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic old record listed");
  assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('飲酒履歴を期間指定して確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
