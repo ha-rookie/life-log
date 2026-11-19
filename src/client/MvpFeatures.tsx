@@ -1,6 +1,7 @@
 import { HypothesisDashboard } from "./HypothesisDashboard";
 import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { defaultCompletedDay } from "./entry-date";
 import { drinkNames, sizeNames, referenceMl, equivalentNormalServings,
   pureAlcoholGrams, assessDrinkAlcohol, personalAlcoholRule, validDrinkAmounts,
   parseDrinkCupsInput, parseDrinkLocalDateTime, drinkHistoryRange, type DrinkKind, type DrinkRecord,
@@ -75,7 +76,10 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [drinkKind,setDrinkKind]=useState<Kind>("highball");
   const [drinkSize,setDrinkSize]=useState<DrinkSize>("custom");
   const [drinkCups,setDrinkCups]=useState("1");
-  const [drinkTime,setDrinkTime]=useState(jstNow);
+  const [drinkDay,setDrinkDay]=useState(()=>mode==="quick"?jstDay():defaultCompletedDay());
+  // Do not invent an exact time for a drink entered after the day is complete.
+  const [drinkClock,setDrinkClock]=useState(()=>mode==="quick"?jstNow().slice(11,16):"");
+  const drinkTime=drinkClock?drinkDay+"T"+drinkClock:"";
   const [drinkVolume,setDrinkVolume]=useState("");
   const [drinkAbv,setDrinkAbv]=useState("");
   const [editSize,setEditSize]=useState<DrinkSize>("custom");
@@ -86,14 +90,14 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [editKind,setEditKind]=useState<Kind>("highball");
   const [editTime,setEditTime]=useState("");
   const [meals,setMeals]=useState<Meal[]>([]);
-  const [mealDay,setMealDay]=useState(jstDay);
+  const [mealDay,setMealDay]=useState(defaultCompletedDay);
   const [mealLunch,setMealLunch]=useState("");
   const [mealDinner,setMealDinner]=useState("");
   const [mealLate,setMealLate]=useState("");
   const [mealsError,setMealsError]=useState("");
   const [mealBusy,setMealBusy]=useState(false);
   const [outings,setOutings]=useState<Outing[]>([]);
-  const [outingDay,setOutingDay]=useState(jstDay);
+  const [outingDay,setOutingDay]=useState(defaultCompletedDay);
   const [outingKind,setOutingKind]=useState<Outing["category"]>("bar");
   const [outingEdit,setOutingEdit]=useState<Outing|null>(null);
   const [outingError,setOutingError]=useState("");
@@ -187,7 +191,12 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   },[meals,mealDay]);
 
   const historyRange=drinkHistoryRange(historyTo,jstDay());
-  const todayDrinks=drinks.filter(d=>localTime(d.observedAt).slice(0,10)===jstDay());
+  // The default GET is bounded to recent days. An explicitly selected older
+  // day may only be present in the separately loaded history window.
+  const visibleDrinks=mode==="record"
+    ?[...new Map([...drinks,...historyDrinks].map(d=>[d.key,d])).values()]
+    :drinks;
+  const todayDrinks=visibleDrinks.filter(d=>localTime(d.observedAt).slice(0,10)===drinkDay);
   const todayAlcohol=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>n+d.cups,0);
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
   const todayKnownG=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>
@@ -402,12 +411,13 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     {mode==="analysis"&&<HypothesisDashboard/>}
     {(mode==="quick"||mode==="record")&&<section className="panel drinks-panel" aria-labelledby="drink-title">
       <h2 id="drink-title">{mode==="quick"?"今日の飲酒":"飲酒を記録・訂正"}</h2>
-      <p className="metric" aria-live="polite">注文した杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
+      <p className="metric" aria-live="polite">{mode==="quick"?"今日":"選択日"}の注文杯数：お酒 {todayAlcohol} 杯 ／ ノンアル {todayNoAlcohol} 杯</p>
       <p className="hint" aria-live="polite">参考純アルコール量：入力値からの計算 {Math.round(todayKnownG*10)/10}g
         ／ 簡易推定 約{Math.round(todayEstimatedG*10)/10}g
         {todayUnknownCups>0?` ／ 推定できないお酒 ${todayUnknownCups}杯`:""}。
         推定は個人用の仮定値で、実測値や安全量ではありません。
       </p>
+      {mode==="record"&&<p className="hint">前日の記録を入力しやすいよう日付を初期表示しています。飲んだ時刻は自動推定しません。実際の時刻を選んでください。日付をまたいだ飲酒は実際に飲んだ日で記録します。</p>}
       <div className="mvp-grid" aria-label="飲酒の種類と量">
         <label>お酒の種類<select value={drinkKind} disabled={drinksBusy}
           onChange={e=>{const kind=e.target.value as Kind;setDrinkKind(kind);
@@ -415,13 +425,15 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
           {Object.entries(names).map(([kind,label])=>
             <option key={kind} value={kind}>{label}</option>)}
         </select></label>
-        <label>飲んだ日時（日本時間）<input id="drink-time-new" type="datetime-local"
-          value={drinkTime} max={jstNow()} disabled={drinksBusy}
-          aria-invalid={drinkTimeObserved===null}
-          onChange={e=>setDrinkTime(e.target.value)}/></label>
-        <button type="button" disabled={drinksBusy} onClick={()=>setDrinkTime(jstNow())}>
-          日時を今に戻す
-        </button>
+        <label>飲んだ日（日本時間）<input id="drink-day-new" type="date"
+          value={drinkDay} max={jstDay()} disabled={drinksBusy}
+          onChange={e=>setDrinkDay(e.target.value)}/></label>
+        <label>飲んだ時刻（日本時間）<input id="drink-clock-new" type="time" required
+          value={drinkClock} disabled={drinksBusy} aria-invalid={drinkTimeObserved===null}
+          onChange={e=>setDrinkClock(e.target.value)}/></label>
+        <button type="button" disabled={drinksBusy} onClick={()=>{
+          setDrinkDay(jstDay());setDrinkClock(jstNow().slice(11,16));
+        }}>日時を今に戻す</button>
         <label>注文した杯数（1〜50）<input id="drink-cups-new" className="drink-cups-input"
           type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} autoComplete="off"
           value={drinkCups} disabled={drinksBusy} aria-invalid={drinkCupCount===null}
@@ -532,9 +544,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
 
     {mode==="record"&&<section className="panel" aria-labelledby="meals-title">
       <h2 id="meals-title">食事区分・夜食</h2>
-      <p className="hint">選んでいない項目は「不明」として保存します。実際の記録がない日を外食なし・夜食なしとはみなしません。</p>
+      <p className="hint">1日の食事・夜食が確定する前日を初期表示します。選んでいない項目は「不明」として保存し、記録がない日を外食なし・夜食なしとはみなしません。</p>
       <div className="mvp-grid">
-        <label>日付（JST）<input type="date" value={mealDay} max={jstDay()}
+        <label>日付（JST）<input id="meal-day" type="date" value={mealDay} max={jstDay()}
           onChange={e=>setMealDay(e.target.value)}/></label>
         <label>昼食<select value={mealLunch} onChange={e=>setMealLunch(e.target.value)}>
           <option value="">不明・未入力</option>
@@ -556,9 +568,9 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
     </section>}
     {mode==="record"&&<section className="panel" aria-labelledby="outings-title">
       <h2 id="outings-title">飲みの場・会食の参加</h2>
-      <p className="hint">参加回数は飲酒杯数とは別に記録します。飲酒していない会食も参加として残せます。</p>
+      <p className="hint">前日までに確定した参加を入力しやすい日付にしています。参加回数は飲酒杯数とは別に記録し、飲酒しない会食も残せます。</p>
       <div className="mvp-grid">
-        <label>日付（JST）<input type="date" value={outingDay} max={jstDay()}
+        <label>日付（JST）<input id="outing-day" type="date" value={outingDay} max={jstDay()}
           onChange={e=>setOutingDay(e.target.value)}/></label>
         <label>場の種類<select value={outingKind} onChange={e=>setOutingKind(e.target.value as Outing["category"])}>
           {Object.entries(venueLabel).map(([k,v])=><option key={k} value={k}>{v}</option>)}
@@ -567,7 +579,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
       <button type="button" disabled={outingBusy} onClick={()=>void saveOuting()}>
         {outingEdit?"参加記録を訂正":"参加を記録"}</button>
       {outingEdit&&<button type="button" disabled={outingBusy} onClick={()=>{
-        setOutingEdit(null);setOutingDay(jstDay());setOutingKind("bar");
+        setOutingEdit(null);setOutingDay(defaultCompletedDay());setOutingKind("bar");
       }}>訂正をやめる</button>}
       {outingError&&<p role="alert">{outingError}</p>}
       <ul>{outings.map(row=><li className="mvp-entry" key={row.key}>

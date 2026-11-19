@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { manualHistoryRange } from "../shared/manual-history";
+import { defaultCompletedDay } from "./entry-date";
 import { redirectOnExpiredOwnerSession } from "./auth-recovery";
 
 type Weight = { key: string; measuredAt: string; weightKg: number };
@@ -20,7 +21,7 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
   const [weightKey, setWeightKey] = useState<string | null>(null);
   const [weightOriginal, setWeightOriginal] = useState<Weight | null>(null);
   const pendingKey = useRef<string | null>(null);
-  const [stepsDay, setStepsDay] = useState(jstToday);
+  const [stepsDay, setStepsDay] = useState(defaultCompletedDay);
   const [stepsValue, setStepsValue] = useState("");
   const [oldSteps, setOldSteps] = useState<number | null>(null);
   const [stepEditing, setStepEditing] = useState(false);
@@ -174,8 +175,9 @@ export function ManualEntry({ onSaved }: { onSaved: () => void }) {
     </form>
     <form onSubmit={e => void saveSteps(e)}>
       <h3>歩数</h3>
+      <p className="hint">1日分の歩数が確定した前日を初期表示します。別の日も選べます。</p>
       <div className="manual-fields">
-        <label>日付（日本時間）<input type="date" required max={jstToday()}
+        <label>日付（日本時間）<input id="steps-day" type="date" required max={jstToday()}
           value={stepsDay} disabled={busy || stepEditing}
           onChange={e => setStepsDay(e.target.value)}/></label>
         <label>歩数<input type="number" required min="0" max="300000" step="1"

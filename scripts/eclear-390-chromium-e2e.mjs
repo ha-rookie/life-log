@@ -422,6 +422,22 @@ try{
  // the current value without immediately replacing it with "0".
  await cmd("Page.navigate",{url:"http://127.0.0.1:5187/#record"});
  await wait(()=>js("Boolean(document.querySelector('#drink-cups-new'))"),"drink form mounted");
+ await wait(()=>js("Boolean(document.querySelector('#steps-day'))"),"daily manual fields mounted");
+ const jstYesterday=new Date(Date.now()+9*3600000-86400000).toISOString().slice(0,10);
+ const completedDefault=await js(`(()=>({
+   steps:document.querySelector('#steps-day')?.value,
+   meal:document.querySelector('#meal-day')?.value,
+   outing:document.querySelector('#outing-day')?.value,
+   drink:document.querySelector('#drink-day-new')?.value,
+   time:document.querySelector('#drink-clock-new')?.value,
+   weight:document.querySelector('.manual-entry input[type=datetime-local]')?.value
+ }))()`);
+ assert.deepEqual(completedDefault,{steps:jstYesterday,meal:jstYesterday,
+   outing:jstYesterday,drink:jstYesterday,time:"",weight:""},
+   "only completed JST day defaults to yesterday; drink time and weight are not invented");
+ assert.equal(await js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('ハイボールを1杯記録')&&!x.disabled)"),false,
+   "without an actual drink time a day-only selection may not save fabricated time");
+
  // A fresh one-cup tequila shot is estimated as 9.6g; no ml/ABV entered.
  await js("(()=>{const e=document.querySelector('.drinks-panel select');e.value='tequila_shot';"+
    "e.dispatchEvent(new Event('change',{bubbles:true}));})()");
@@ -463,21 +479,24 @@ try{
  const historicLocal=historicDay+"T20:30";
  const futureLocal=new Date(Date.now()+9*3600000+86400000).toISOString().slice(0,16);
  async function chooseDrinkTime(value){
-  await js("(()=>{const e=document.querySelector('#drink-time-new');"+
-   "const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
-   "setter.call(e,"+JSON.stringify(value)+");"+
-   "e.dispatchEvent(new Event('input',{bubbles:true}));"+
-   "e.dispatchEvent(new Event('change',{bubbles:true}));return e.value})()");
-  await wait(()=>js("document.querySelector('#drink-time-new').value==="+JSON.stringify(value)),
-   "chosen drink date/time "+value);
+  const date=value.slice(0,10),clock=value.slice(11,16);
+  await js("(()=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"+
+    "for(const [id,next] of [['#drink-day-new',"+JSON.stringify(date)+"],['#drink-clock-new',"+JSON.stringify(clock)+"]]){"+
+    "const e=document.querySelector(id);setter.call(e,next);"+
+    "e.dispatchEvent(new Event('input',{bubbles:true}));"+
+    "e.dispatchEvent(new Event('change',{bubbles:true}));}})()");
+  await wait(()=>js("document.querySelector('#drink-day-new').value==="+JSON.stringify(date)+
+    "&&document.querySelector('#drink-clock-new').value==="+JSON.stringify(clock)),
+    "selected drink date and explicit time "+value);
  }
- assert.equal(await js("document.querySelector('#drink-time-new').type"),"datetime-local");
+ assert.equal(await js("document.querySelector('#drink-day-new').type"),"date");
+ assert.equal(await js("document.querySelector('#drink-clock-new').type"),"time");
  await chooseDrinkTime(futureLocal);
- await wait(()=>js("document.querySelector('#drink-time-new').getAttribute('aria-invalid')==='true'"),
-  "future date blocked");
+ await wait(()=>js("document.querySelector('#drink-clock-new').getAttribute('aria-invalid')==='true'"),
+   "future drink date blocked");
  await chooseDrinkTime(historicLocal);
- await wait(()=>js("document.querySelector('#drink-time-new').getAttribute('aria-invalid')==='false'"),
-  "historical date valid");
+ await wait(()=>js("document.querySelector('#drink-clock-new').getAttribute('aria-invalid')==='false'"),
+   "backdated drink date and time valid");
 
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.includes('ハイボールを7杯記録')&&!x.disabled)"),"valid cups save enabled");
  await click("ハイボールを7杯記録");
@@ -487,8 +506,8 @@ try{
  await wait(()=>js("document.querySelector('#drink-history-to').value==="+JSON.stringify(historicDay)),
   "history automatically follows backdated POST");
  await wait(()=>lastHistoryQuery?.to===historicDay,"history request uses historic end date");
- assert.equal(await js("document.body.innerText.includes('注文した杯数：お酒 0 杯 ／ ノンアル 0 杯')"),true,
-  "historical browsing must not corrupt today's drink totals");
+ await wait(()=>js("document.body.innerText.includes('選択日の注文杯数：お酒 7 杯 ／ ノンアル 0 杯')"),
+  "selected completed day reflects its own drinks after backdated entry");
  await wait(()=>js("[...document.querySelectorAll('button')].some(x=>x.textContent.trim()==='訂正')"),"synthetic old record listed");
  assert(await js("(()=>{const d=[...document.querySelectorAll('details')].find(x=>x.querySelector('summary')?.textContent.includes('飲酒履歴を期間指定して確認・訂正する'));if(!d)return false;d.open=true;return true})()"));
  // Select today's 30-day window: the older drink disappears, then reappears when returning.
