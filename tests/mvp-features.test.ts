@@ -1,4 +1,7 @@
 import { beforeAll,afterAll,beforeEach,describe,it,expect } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MvpFeatures } from "../src/client/MvpFeatures";
 import { getPlatformProxy } from "wrangler";
 import schema from "../migrations/0001_initial.sql?raw";
 import drinksMigration from "../migrations/0004_drink_details.sql?raw";
@@ -24,6 +27,17 @@ const call=async(db:DB,path:string,method="GET",data?:unknown,origin=site)=>{
   ...(data===undefined?{}:{body:JSON.stringify(data)})});
  return handleMvpFeatures(req,db,"owner",env);
 };
+describe("Issue #292: JST previous-day lifestyle entry defaults",()=>{
+ it("uses previous day for drink, meals and outings but retains current-day history and metrics",()=>{
+  const html=renderToStaticMarkup(createElement(MvpFeatures,{onSaved:()=>{},mode:"record"}));
+  const previous=day(1),today=day(0);
+  expect(html).toContain('id="drink-time-new"');
+  expect(html).toContain(previous+"T19:00");
+  expect(html).toContain('value="'+previous+'"');
+  expect(html).toContain('value="'+today+'"');
+  expect(html).toContain("日時を今に戻す");
+ });
+});
 describe("MVP: Owner drinks, periods, experiments and private CSV (local D1)",()=>{
  let platform:Awaited<ReturnType<typeof getPlatformProxy<{DB:DB}>>>,db:DB;
  beforeAll(async()=>{

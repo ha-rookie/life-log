@@ -36,6 +36,7 @@ type ExperimentEvidence={id:string;status:"not_started"|"in_progress"|"finished"
 const names=drinkNames;
 const jstNow=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,16);
 const jstDay=()=>jstNow().slice(0,10);
+const yesterdayDrinkTime=()=>isoDay(1)+"T19:00";
 const isoDay=(daysAgo:number)=>new Date(Date.now()+9*3600000-daysAgo*86400000).toISOString().slice(0,10);
 const localTime=(observed:string)=>new Date(Date.parse(observed)+9*3600000).toISOString().slice(0,16);
 const jstObserved=(local:string)=>local+":00+09:00";
@@ -75,7 +76,7 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [drinkKind,setDrinkKind]=useState<Kind>("highball");
   const [drinkSize,setDrinkSize]=useState<DrinkSize>("custom");
   const [drinkCups,setDrinkCups]=useState("1");
-  const [drinkTime,setDrinkTime]=useState(jstNow);
+  const [drinkTime,setDrinkTime]=useState(yesterdayDrinkTime);
   const [drinkVolume,setDrinkVolume]=useState("");
   const [drinkAbv,setDrinkAbv]=useState("");
   const [editSize,setEditSize]=useState<DrinkSize>("custom");
@@ -86,14 +87,14 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   const [editKind,setEditKind]=useState<Kind>("highball");
   const [editTime,setEditTime]=useState("");
   const [meals,setMeals]=useState<Meal[]>([]);
-  const [mealDay,setMealDay]=useState(jstDay);
+  const [mealDay,setMealDay]=useState(()=>isoDay(1));
   const [mealLunch,setMealLunch]=useState("");
   const [mealDinner,setMealDinner]=useState("");
   const [mealLate,setMealLate]=useState("");
   const [mealsError,setMealsError]=useState("");
   const [mealBusy,setMealBusy]=useState(false);
   const [outings,setOutings]=useState<Outing[]>([]);
-  const [outingDay,setOutingDay]=useState(jstDay);
+  const [outingDay,setOutingDay]=useState(()=>isoDay(1));
   const [outingKind,setOutingKind]=useState<Outing["category"]>("bar");
   const [outingEdit,setOutingEdit]=useState<Outing|null>(null);
   const [outingError,setOutingError]=useState("");
