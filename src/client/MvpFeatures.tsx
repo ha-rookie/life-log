@@ -191,7 +191,12 @@ export function MvpFeatures({onSaved,mode="record"}:{onSaved:()=>void;mode?:"qui
   },[meals,mealDay]);
 
   const historyRange=drinkHistoryRange(historyTo,jstDay());
-  const todayDrinks=drinks.filter(d=>localTime(d.observedAt).slice(0,10)===drinkDay);
+  // The default GET is bounded to recent days. An explicitly selected older
+  // day may only be present in the separately loaded history window.
+  const visibleDrinks=mode==="record"
+    ?[...new Map([...drinks,...historyDrinks].map(d=>[d.key,d])).values()]
+    :drinks;
+  const todayDrinks=visibleDrinks.filter(d=>localTime(d.observedAt).slice(0,10)===drinkDay);
   const todayAlcohol=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>n+d.cups,0);
   const todayNoAlcohol=todayDrinks.filter(d=>d.alcohol===0).reduce((n,d)=>n+d.cups,0);
   const todayKnownG=todayDrinks.filter(d=>d.alcohol===1).reduce((n,d)=>
