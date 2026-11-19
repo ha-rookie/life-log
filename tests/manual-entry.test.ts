@@ -684,6 +684,14 @@ describe("Issue #29: synthetic owner-only manual weight/steps and independent lo
     expect(e.prepare).not.toHaveBeenCalled();
   });
 
+  it("defaults new manual steps to yesterday in JST without changing history range", () => {
+    const html=renderToStaticMarkup(createElement(ManualEntry,{onSaved:()=>{}}));
+    const yesterday=new Date(Date.now()+9*3600000-86400000).toISOString().slice(0,10);
+    const today=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+    expect(html).toMatch(new RegExp('type="date"[^>]*value="'+yesterday+'"'));
+    expect(html).toContain('id="manual-history-to"');
+    expect(html).toContain('value="'+today+'"');
+  });
   it("renders required 390px-entry inputs with explicit datetime and no optimistic success", () => {
     const html=renderToStaticMarkup(createElement(ManualEntry,{onSaved:()=>{}}));
     expect(html).toContain('type="datetime-local"');
