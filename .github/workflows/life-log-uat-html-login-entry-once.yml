@@ -1,4 +1,4 @@
-name: Life-log one-shot M07 evaluation goal note UAT Worker release
+name: Life-log one-shot finalized-day input defaults UAT Worker release
 
 # Run once after reviewed one-file PR is squash-merged and required main CI passes.
 # No UAT/D1 mutation on PR. Separate from all existing deployment workflows.
@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: life-log-one-shot-m07-goal-note-290
+  group: life-log-one-shot-closed-day-296
   cancel-in-progress: false
 
 jobs:
@@ -27,12 +27,12 @@ jobs:
       github.event.workflow_run.status == 'completed' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt <= 2 &&
-      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release M07 evaluation goal notes to existing UAT (#290)')
+      startsWith(github.event.workflow_run.head_commit.message, 'ci(uat): release closed-day input defaults to existing UAT (#296)')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     env:
-      BASE_SHA: 9253c2ab9c44db2664191c74558932e7d805392b
-      FIX_SHA: 9253c2ab9c44db2664191c74558932e7d805392b
+      BASE_SHA: 8e42b1d4560554864ef4f7995e477094e2157e11
+      FIX_SHA: 8e42b1d4560554864ef4f7995e477094e2157e11
       TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
       UAT_URL: https://life-log-uat.ha-rookie.workers.dev
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Validate exact one-file merge and M07 evaluation goal notes
+      - name: Validate exact one-file merge and finalized-day input defaults
         shell: bash
         run: |
           set -euo pipefail
@@ -53,7 +53,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release M07 evaluation goal notes to existing UAT (#290)'
+          test "$(git show -s --format=%s HEAD)" = 'ci(uat): release closed-day input defaults to existing UAT (#296)'
           git diff-tree --no-commit-id --name-only -r HEAD | sort > "$RUNNER_TEMP/actual-files.txt"
           printf '%s\n' '.github/workflows/life-log-uat-html-login-entry-once.yml' > "$RUNNER_TEMP/expected-files.txt"
           diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/actual-files.txt"
@@ -61,8 +61,8 @@ jobs:
           # Neither the Worker/auth code nor D1/schema/config/dependencies may change.
           git diff --exit-code "$FIX_SHA" "$TARGET_SHA" -- \
             src/worker src/shared migrations wrangler.jsonc package.json package-lock.json
-          gh api "repos/$GITHUB_REPOSITORY/pulls/288" \
-            --jq '.merged_at != null and .merge_commit_sha == "9253c2ab9c44db2664191c74558932e7d805392b"' | grep -Fx true
+          gh api "repos/$GITHUB_REPOSITORY/pulls/295" \
+            --jq '.merged_at != null and .merge_commit_sha == "8e42b1d4560554864ef4f7995e477094e2157e11"' | grep -Fx true
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')
@@ -77,14 +77,14 @@ jobs:
             throw Error('UAT target identity changed; do not deploy');
           }
           JS
-          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged M07 goal note PR #288 and isolated UAT target"
+          echo "PASS: exact main CI HEAD, issue-only workflow merge, merged finalized-day default PR #295 and isolated UAT target"
       - name: Install/build and validate existing UI release guard with offline fixtures
         shell: bash
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
           npm run build
-          npx --no-install vitest run tests/uat-ui-release-guard.test.mjs tests/worker.test.ts tests/auth-recovery.test.ts tests/analysis-metrics.test.ts tests/lag-analysis.test.ts tests/hypothesis-dashboard.test.ts tests/hypothesis-daily.test.ts tests/mvp-features.test.ts tests/source-adapter.test.ts tests/audit-history.test.ts tests/import-worker.test.ts tests/uat-csv-v3-workflow.test.mjs
+          npx --no-install vitest run tests/uat-ui-release-guard.test.mjs tests/worker.test.ts tests/entry-date.test.ts tests/auth-recovery.test.ts tests/analysis-metrics.test.ts tests/lag-analysis.test.ts tests/hypothesis-dashboard.test.ts tests/hypothesis-daily.test.ts tests/mvp-features.test.ts tests/source-adapter.test.ts tests/audit-history.test.ts tests/import-worker.test.ts tests/uat-csv-v3-workflow.test.mjs
           node --check scripts/uat-ui-release-guard.mjs
       - name: One-shot guarded Worker-only deployment (preserve UAT auth, vars, D1 binding)
         shell: bash
@@ -98,8 +98,8 @@ jobs:
           # Exact-main recheck immediately before touching Cloudflare.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$TARGET_SHA"
           umask 077
-          cfg="$(mktemp -u "$PWD/.uat-m07-goal-XXXXXXXX.jsonc")"
-          before="$(mktemp -u "$RUNNER_TEMP/uat-m07-goal-bindings-XXXXXXXX.json")"
+          cfg="$(mktemp -u "$PWD/.uat-closed-day-XXXXXXXX.jsonc")"
+          before="$(mktemp -u "$RUNNER_TEMP/uat-closed-day-bindings-XXXXXXXX.json")"
           trap 'rm -f "$cfg" "$before"' EXIT
           # Existing guard strips stale repo vars and retains active UAT auth/Secrets.
           node scripts/uat-ui-release-guard.mjs prepare "$cfg"
