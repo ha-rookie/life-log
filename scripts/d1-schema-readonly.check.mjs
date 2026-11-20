@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {
   DATABASE_ID,DATABASE_NAME,REPO,CONFIRMATION,MIGRATION_0005,TABLES,SQL,
-  assertAllowedSql,assertManualContext,validateLocalConfig,sanitizeRows,
+  assertAllowedSql,assertManualContext,assertOneShotContext,assertReadContext,ONE_SHOT_SUBJECT,ONE_SHOT_APPROVAL,validateLocalConfig,sanitizeRows,
   readMetadata,queryOnly,renderSummary
 } from "./d1-schema-readonly.mjs";
 
@@ -192,4 +192,58 @@ test("new workflow remains manual-only and secrets occur after exact-SHA guard",
   assert.doesNotMatch(workflow,/(?:wrangler\s+d1|wrangler deploy|migrations apply|workflow_run:)/i);
   const ci=readFileSync(".github/workflows/life-log-ci.yml","utf8");
   assert(ci.includes("node --test scripts/d1-schema-readonly.check.mjs"));
+});
+
+
+const oneShotEnv=()=>({
+  ...env(),GITHUB_EVENT_NAME:"workflow_run",
+  ONE_SHOT_APPROVAL,WORKFLOW_RUN_EVENT:"push",WORKFLOW_RUN_CONCLUSION:"success",
+  WORKFLOW_RUN_HEAD_BRANCH:"main",WORKFLOW_RUN_REPOSITORY:REPO,
+  WORKFLOW_RUN_HEAD_SHA:SHA,WORKFLOW_RUN_HEAD_SUBJECT:ONE_SHOT_SUBJECT+"\n\nCloses #155"
+});
+test("one-shot only accepts exact approved main push CI, SHA and commit subject",()=>{
+  assertOneShotContext(oneShotEnv());
+  assertReadContext(oneShotEnv());
+  assertReadContext(env());
+  for(const change of [
+    {GITHUB_EVENT_NAME:"push"},{GITHUB_REF:"refs/heads/feature"},
+    {GITHUB_REPOSITORY:"evil/repo"},{ONE_SHOT_APPROVAL:""},
+    {WORKFLOW_RUN_EVENT:"pull_request"},{WORKFLOW_RUN_CONCLUSION:"failure"},
+    {WORKFLOW_RUN_HEAD_BRANCH:"dev"},{WORKFLOW_RUN_REPOSITORY:"other/repo"},
+    {WORKFLOW_RUN_HEAD_SHA:"c".repeat(40)},{TARGET_SHA:"d".repeat(40)},
+    {GITHUB_SHA:"e".repeat(40)},
+    {WORKFLOW_RUN_HEAD_SUBJECT:"ci(d1): other action (#155)"}
+  ])assert.throws(()=>assertReadContext({...oneShotEnv(),...change}));
+});
+test("one-shot synthetic remote metadata read requires no actual network",async()=>{
+  const s=stub();
+  const result=await readMetadata(s.fetchFn,oneShotEnv(),config());
+  assert.equal(result.databaseId,DATABASE_ID);
+  assert.equal(result.applied0005,false);
+  assert(s.requests.slice(2).every(r=>assertAllowedSql(JSON.parse(r.body).sql)));
+});
+test("new one-shot workflow has only workflow_run and cannot trigger on PR or arbitrary main commits",()=>{
+  const y=readFileSync(".github/workflows/life-log-d1-schema-readonly-once.yml","utf8");
+  const trigger=y.slice(y.indexOf("\non:\n"),y.indexOf("\npermissions:"));
+  assert.match(trigger,/\n  workflow_run:\n/);
+  assert.match(trigger,/workflows: \["Life-log local app and D1 CI"\]/);
+  assert.doesNotMatch(trigger,/\n  (?:push|pull_request|workflow_dispatch|schedule|repository_dispatch):/);
+  assert(y.includes("github.event.workflow_run.event == 'push'"));
+  assert(y.includes("github.event.workflow_run.conclusion == 'success'"));
+  assert(y.includes("github.event.workflow_run.run_attempt == 1"));
+  assert(y.includes("github.run_attempt == 1"));
+  assert(y.includes("startsWith(github.event.workflow_run.head_commit.message"));
+  assert(y.includes(ONE_SHOT_SUBJECT));
+  assert(y.includes('test "$TARGET_SHA" = "$GITHUB_SHA"'));
+  assert(y.includes('git diff-tree --no-commit-id --name-only -r HEAD'));
+  assert(y.includes("expected-files.txt"));
+  assert(y.includes('test "$(gh api'));
+  assert(y.includes("validateLocalConfig"));
+  const preflight=y.indexOf("- name: Verify exact approved squash commit");
+  const remote=y.indexOf("- name: Read only D1 schema and migration ledger");
+  assert(preflight>0&&remote>preflight);
+  assert(!y.slice(0,remote).includes("secrets.CLOUDFLARE_"));
+  assert(y.slice(remote).includes("secrets.CLOUDFLARE_API_TOKEN"));
+  assert(!/wrangler deploy|wrangler d1|migrations apply|UPDATE body_measurements|DELETE FROM/i.test(y));
+  assert(y.includes("node scripts/d1-schema-readonly.mjs --remote"));
 });
