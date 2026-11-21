@@ -211,10 +211,12 @@ Baseline main `9a6bf549707c0d726dd5b65e4fc0c7334799f340`。Phase Aの設計PRは
 
 | Requirement | Architectural design | Interface / Data | Issue | Validation planned | Current evidence/status |
 | --- | --- | --- | --- | --- | --- |
-| REQ-010, NFR-009 | ARCH-020/021/022/023, APP-020/021/024 | IF-AI-001/002/003, DATA-AI-001 | #300 | Fake Sheets/合成D1、S08–S10, S13–S14、生成世代と期間上限、ECLEAR/Fit優先 | Proposed; sync not implemented |
-| REQ-011, NFR-007/008 | ARCH-021/022/023, APP-021/022/023 | IF-AI-002/003/004, DATA-AI-002/004 | #301 | S01–S04, S06–S09, S11–S14、原子ledger、重複なし、サービス認証 | Proposed; sync not implemented |
-| REQ-012, NFR-007/008 | ARCH-022/023, APP-022/023 | IF-AI-003, DATA-AI-002/004 | #302 | S03/S05/S06/S09、CAS/stale、既存manual/CSV source保護 | Proposed; sync not implemented |
-| REQ-013, NFR-009/010 | ARCH-021/024, APP-024 | IF-AI-002/004, DATA-AI-003 | #303 | S04/S10–S14、監査復元、切断/復旧、Google API制限・費用確認 | Proposed; sync not implemented |
+| REQ-010, NFR-009 | ARCH-020/021/022/023, APP-020/021/024 | IF-AI-001/002/003, DATA-AI-001 | #300 | Fake Sheets/合成D1、S08–S10, S13–S14, S17/S19、生成世代と期間上限、ECLEAR/Fit優先・日別禁酒を区別 | Proposed; sync not implemented |
+| REQ-011, NFR-007/008 | ARCH-021/022/023, APP-021/022/023 | IF-AI-002/003/004, DATA-AI-002/004 | #301 | S01–S04, S06–S09, S11–S16, S18/S20、原子ledger、重複なし、偽Results拒否・サービス認証 | Proposed; sync not implemented |
+| REQ-012, NFR-007/008 | ARCH-022/023, APP-022/023 | IF-AI-003, DATA-AI-002/004 | #302 | S03/S05/S06/S09/S15–S16、CAS/stale、Sheet外本人承認、既存manual/CSV source保護 | Proposed; sync not implemented |
+| REQ-013, NFR-009/010 | ARCH-021/024, APP-024 | IF-AI-002/004, DATA-AI-003 | #303 | S04/S10–S20、監査復元、長期停止→旧コマンド拒否、切断/復旧、Google API制限・費用確認 | Proposed; sync not implemented |
 | NFR-007/008/009/010 (Phase A) | ADR-0008 + ARCH-020..024 / APP-020..024 | DATA-AI-001..004 / IF-AI-001..004 | #299 | docs-only Scope Guard, references/ID review; existing repository CI may run but is not sync E2E | **Design PR only; Human review pending** |
+
+**Security stop:** TBD-AI-007 (writable Sheet has untrusted Results, no independent D1 success proof) and TBD-AI-008 (resume/backlog/snapshot controls) are **blocking** for activating writes. Sheet `Results` alone is not D1 proof; read-only and write-enabled acceptance are independent.
 
 **Evidence gap / stop:** No Google credential/shared workbook, Cron Worker, D1 ledger schema, synthetic sync E2E, production release or user acceptance is created in #299. Independent Phase implementations and permissions are required. The established #31 Android MVP acceptance is not replaced.
