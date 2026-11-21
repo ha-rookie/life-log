@@ -135,7 +135,7 @@ Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime en
 
 **Service identity:** Google service accountはprivate documentを個別共有する方式を候補とし、管理者権限/ドメイン全権委任を与えない。Service Account OAuth scope `drive.file` と `spreadsheets` の適用可否を実接続前に検証。資格情報をコード、Sheet、ログ、Issueに置かず、Secrets/vars・Cron・D1 binding・共有設定は今回は変更しない。D1 binding自体にrow-level grantはないため、Owner filter / allowlist /入力検証が必須。
 
-**Quota / cost:** Google Sheets API はquota制限・429があり、2026年中の課金条件変更が公式に予告されている。読取Snapshotを毎15分で全量再生成するのは避け、**日次のread更新と15分のcommand確認を別候補**として検討。日次/15分cronと保持上限は**未確定**。実サービス有効化前に最新Google/Cloudflare仕様、Google Cloud billing設定、無断課金防止・停止条件を再確認する。Cron時刻はUTC。
+**Quota / cost:** Cloudflare Workers Freeでは **Cron実行のCPU上限10ms**。署名生成/JSON処理/DB同期の実負荷が収まるか未実証であり、Free実現性は `TBD-AI-009` として合成負荷検証まで未確定。Google Sheets API はquota制限・429があり、2026年中の課金条件変更が公式に予告されている。読取Snapshotを毎15分で全量再生成するのは避け、**日次のread更新と15分のcommand確認を別候補**として検討。日次/15分cronと保持上限は**未確定**。実サービス有効化前に最新Google/Cloudflare仕様、Google Cloud billing設定、無断課金防止・停止条件を再確認する。Cron時刻はUTC。
 
 **Environment separation:** 開発はFake Sheets + synthetic local D1のみ。既存 `life-log-uat` の唯一のリモート D1 は実利用データを含み得る。共有D1/環境・Secretの変更はRemote D1操作と区別して承認対象。既存認証・CSRF/Origin防護の迂回や信頼できないHeadersの捏造を禁止。
 
