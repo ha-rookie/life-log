@@ -69,3 +69,32 @@
 
 ## 11. 要件変更管理
 ID・状態を維持し06_REQUIREMENTS_TRACEABILITY.mdへ反映する。新規仕様は別Issueに分離する。
+
+## 12. AI連携（Issue #299、Proposed / not released）
+
+ChatGPT Plus の既存Google Drive接続を使う **任意・別途承認対象の外部連携**。現行MVP認証・入力画面の挙動は変更しない。理由・選択肢と未確定点は [ADR-0008](adr/ADR-0008-chatgpt-sheets-sync-boundary.md) を参照。
+
+### Proposed functional requirements
+
+| ID | 要求 | 優先度 | Acceptable result | 状態 |
+| --- | --- | --- | --- | --- |
+| REQ-010 | D1正本からAI用の限定read snapshotを生成 | Later | owner出典、JST、欠測/推定/実測、生成時刻・世代を保持し、異なる/古い世代を成功と扱わない | PROPOSED / #300 |
+| REQ-011 | Sheet上の新規登録依頼を検証して非同期反映 | Later | 依頼追記とD1確定を分離。同一command idの効果は高々1回、確定結果はD1 ledgerで検証。**Sheet結果のみではD1完了を断言しない** | PROPOSED / #301 |
+| REQ-012 | 既存の手入力記録を古い値で上書きせず訂正 | Later | target key + expected revisionの原子的比較; CSV/ECLEAR/Fit原典・非対象項目は不変。**Sheet外で実際の本人が特定命令を承認した証拠を要求する方式の承認が先行** | PROPOSED / #302 |
+| REQ-013 | 同期監査・復旧・停止を本人に説明可能にする | Later | queued/applied/unknown/conflict/rejectedを区別、遅延と直近成功時刻が明示。Google障害でも既存アプリは稼働 | PROPOSED / #303 |
+
+### Proposed non-functional requirements
+
+| ID | 分類 | 要求 | 検証計画 |
+| --- | --- | --- | --- |
+| NFR-007 | Security | Google Service Account / Sync Worker / ChatGPT Connector / Browser Ownerを別主体として扱う。Sheetセルや要求ヘッダーでOwnerを選択できず、1つのprivate documentと限定操作のみ | ACL/偽セル/別owner/資格失効の合成負テスト |
+| NFR-008 | Integrity | D1とledgerの原子性、改変/重複command idの拒否、CAS、正本出典優先、欠測≠0、段階的snapshot公開 | 並行実行、再送、部分失敗、JST境界の合成D1テスト |
+| NFR-009 | Privacy | Google Sheetsに健康データの副本が残ることを明示し、最小列・対象期間・データ保持/失効/削除手順を設計 | Workbook公開権限、コピー期間、ログ・数式対策のレビュー |
+| NFR-010 | Cost/Availability | Google API quota / billing、Cloudflare Free Cron CPU 10ms制約、定期実行の障害/429を考慮。Free枠の実行可能性を証明するまで運用開始としない。課金・配信・Secrets設定は別承認 | quota再確認、CPU/サブリクエスト測定、予算停止条件、rate-limit/Google障害テスト |
+
+### Boundaries / outstanding decisions
+
+- サービス側のWorkerには **別の認可境界**を実装し、現行Passkey / Cloudflare Access及びRemote UAT write gateを緩めない
+- Google Sheetsを本人認証・D1の正本・確実なFIFO queue・改ざんできないResultsとはみなさない。単一Workbookはファイル単位権限であり結果・READタブもEditorが編集できるため、独立したD1確定照合方法が確立するまで成功表示は未検証。新規登録は最初はmanual体重/歩数に限定し、訂正や飲酒/食事の拡張は個別の受入ゲートを通す
+- 正本は ECLEAR 体重 / Google Fit 歩数。他出典のデータは勝手に置換しない
+- `TBD-AI-001`〜`TBD-AI-008` は ADR-0008 に記載。日別の明示禁酒・飲酒あり（杯数不明）・未記録は `Read_DrinkDays` で区別する。Phase Aの文書作成だけでは運用開始・実データ接続・Google認証設定を意味しない
