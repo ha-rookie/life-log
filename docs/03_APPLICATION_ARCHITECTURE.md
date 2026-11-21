@@ -277,3 +277,70 @@ A future normalized drink-kind schema may replace this bounded compatibility enc
 - Split complete pairs into four groups via within-window medians: steps above vs at/below median, alcohol above vs at/below median. Require at least 12 paired days and >=3 observations in **each** of four groups. If any group is undersized, hide group mean weight changes rather than extrapolating a relationship; never regard missing as 0.
 - If qualified, display the four group counts and mean *next-day* observed weight difference as descriptive evidence only. No regression, health score, treatment suggestion, p-value, causality or future-weight estimate. H5's status remains **判定保留** because dietary intake, sleep, time trend, hydration and day-to-day autocorrelation are uncontrolled.
 - The read-only dashboard links to the pre-existing M07 user-directed behavior experiment section without creating or saving experiments on its own. All validations use synthetic local fixtures and the 390px browser with zero external data writes.
+
+## 13. AI連携：Google Sheets Bridge契約（Issue #299 / Proposed）
+
+**Status:** contract draft for independent Human Design Review. Runtime implementation = **not started**. Trust-boundary decision: [ADR-0008](adr/ADR-0008-chatgpt-sheets-sync-boundary.md)。既存のAPIエンドポイントはブラウザーOwner認証および独立したRemote write gateを必要とするため、CronがそのOrigin/Fetch Metadataを偽装して呼ぶ構成は禁止。サービス用の認証/認可と既存のdomain処理を分離して再利用する。
+
+### 13.1 Components and IDs
+
+| ID | Component | Single responsibility |
+| --- | --- | --- |
+| APP-020 | Snapshot projection | Owner限定の正本SELECT、出典・日付・品質・欠測/推定の選択と個人情報最小化 |
+| APP-021 | Sheets adapter | 固定spreadsheetIdを使うGoogle OAuth Client。タイムアウト/429/失効処理。任意URL・任意範囲取得不可 |
+| APP-022 | Command validator | 型・契約バージョン・長さ・許可操作・target/revision・owner固定を検証し、DB接続前に不正要求を拒否 |
+| APP-023 | Domain service / command ledger | D1の業務更新と重複防止記録を同じトランザクションで確定。既存manual/MVPのsource/CAS制約を再利用 |
+| APP-024 | Results publisher / sync health | D1 confirmed statusのみを確定応答として投影。未公開世代、古いスナップショットを明示 |
+
+| ID | Data or interface | Constraint |
+| --- | --- | --- |
+| DATA-AI-001 | `Read_*` snapshots | bounded, generation-stamped, one source of truth: D1 |
+| DATA-AI-002 | `Commands` | append-only intent, untrusted content, stable UUID + canonical payload |
+| DATA-AI-003 | `Results`, `Sync_Status` | D1 ledger-backed results, sync freshness and error state |
+| DATA-AI-004 | D1 command ledger (**future**) | one ledger row per `command_id` owner + digest, atomic business mutation |
+| IF-AI-001 | ChatGPT Drive connector ↔ dedicated Sheet | Read_*/Commands/Results. Connected user's broad Drive authorization is not per-tab |
+| IF-AI-002 | Sync Worker ↔ Google Sheets API | Service Account OAuth, individual-file sharing, fixed file ID and bounded API budget |
+| IF-AI-003 | Sync Worker ↔ D1 | internal owner-only D1 operation, not public HTTP/browser cookie/JWT replay |
+| IF-AI-004 | Cron scheduled job | scheduled-only, no externally callable mutation endpoint; UTC trigger and JST domain dates independent |
+
+### 13.2 Workbook layout / schema v1 (A1 header names, exact columns)
+
+Only one **dedicated private Google Spreadsheet** in v1. Permissions are at file level: separated tabs are a data-organization measure, not a security boundary. `contract_version` is `ai-sheets-v1`; change incompatible columns only with explicit version migration and stop on unknown version. Dates are ISO: UTC instants end in `Z`; a measured_at value must include explicit `+09:00` if expressed in JST; `local_day` is `YYYY-MM-DD` in Asia/Tokyo. No invented midnight for date-only weights. Data source types are categorical (no raw vendor file path).
+
+| Tab | Header columns in order | Purpose |
+| --- | --- | --- |
+| `Meta` | `key,value,updated_at_utc` | `contract_version,active_generation,generated_at_utc,data_through_jst,expected_counts_json,generation_digest,retention_from_jst` stored as separate keyed rows |
+| `Read_Weight` | `generation_id,record_key,local_day,measured_at_jst,weight_kg,source_type,measurement_kind,value_state,revision` | Individual measurements incl. same-day repeats. Canonical daily representative must not be inferred by summing or hiding samples |
+| `Read_Steps` | `generation_id,record_key,local_day,steps,source_type,source_priority,value_state,revision` | Fit source is canonical when available; don't add same-day duplicate sources |
+| `Read_Meals` | `generation_id,record_key,local_day,lunch_kind,dinner_kind,late_meal,source_type,value_state,revision` | Structured categories only; partial/unknown vs completed states not conflated |
+| `Read_Drinks` | `generation_id,record_key,observed_at_jst,drink_kind,cups,pure_alcohol_g,alcohol_value_kind,source_type,value_state,revision` | `pure_alcohol_g` may be estimate or unknown, never silently zero |
+| `Commands` | `contract_version,command_id,requested_at_utc,operation,record_type,target_key,expected_revision,payload_json,requested_by` | Append-only requested create/correct; no delete or SQL; `requested_by` is untrusted label, not verified identity |
+| `Results` | `contract_version,command_id,payload_digest,state,record_key,committed_at_utc,last_checked_at_utc,error_code` | D1 ledger outcome projection; pending/unknown distinguished |
+| `Sync_Status` | `component,last_attempt_at_utc,last_success_at_utc,active_generation,data_through_jst,status,pending_count,failed_count,error_code` | Read/write sync observation, not a D1 business truth |
+
+**Encoding rules:** API writes all values as **RAW** (not `USER_ENTERED`), escapes/neutralizes any formula-leading text before publication, and validates inbound `Commands` cells as literal strings with exact types, lengths and no formulas. JSON payload is schema-validated; unknown keys and oversized objects rejected. Blank cells are not interpreted as explicit zero. The bridge never supplies unrestricted D1 table queries or arbitrary APIs.
+
+**Read window:** propose 90 JST days by default and <=366 days only after checking existing API limits, records/page, Sheets API quota and sensitive data retention. `revision` is an opaque digest/freshness marker computed from identity + stored state; it is **not** authorization nor a bearer token. CSV export is source-row-oriented, not equivalent to this projected canonical data.
+
+### 13.3 Command schema and owner semantics
+
+- `operation`: `create` in Phase C, `correct` only after Phase D approval. Delete, bulk replace, upsert foreign source, and arbitrary target SQL are disallowed.
+- `record_type`: initially `manual_weight`, `manual_steps`. `meal` / `drink` extensions require separate mapping/tests; do not accept unknown kinds.
+- `create`: `target_key`, `expected_revision` must be empty; `payload_json` contains allowed domain fields, e.g. `{"measured_at_jst":"2026-11-21T08:00:00+09:00","weight_kg":77.7}` or `{"local_day":"2026-11-20","steps":9200}`. These are **synthetic examples**, never actual user records. UUID uniqueness generates deterministic destination identity for retry.
+- `correct`: both stable `target_key` and `expected_revision` required; must originate from matching `Read_*` source. Compare in D1 with transaction/CAS, including source and owner predicate. If source is not editable manual, reject.
+- `requested_at_utc`: attribution/age-check only, not proof of authentication. No `owner_id` field in Commands: Worker resolves fixed permitted owner internally after validating service execution context.
+- Digest: canonicalize field order/types and UUID before hashing. D1 ledger unique `command_id` + full payload digest, owner and committed result. Same UUID/digest => stable replay outcome; same UUID/different digest => reject; separate concurrent Cron events must result in one effect. Atomic commit and readback required. `Results` can be reconstructed after Sheets write outage, never reverse the authority.
+- Worker internal permission: allowlisted operations only, fixed spreadsheet ID from trusted binding and authorized user context. A sheet editor can still insert false requests; caller identity cannot be cryptographically proven from a Sheet row alone. Correction approval method stays **TBD-AI-003**.
+- Result statuses: `queued` (in sheet, not D1), `applied`, `duplicate`, `conflict`, `rejected`, `retryable_failure`, `unknown`. Only D1 committed/ledger verified `applied` or `duplicate` means successful. Display time of last verified result; no automatic claim of success after ChatGPT's write.
+
+### 13.4 Snapshot generation / consistency contract
+
+Sync Worker builds new generation in staging rows/tabs and verifies row counts, stable identifiers and digests; only then updates `Meta.active_generation`. It must never edit `Commands` as part of read export. Because separate Google Sheets API requests are not globally transactional, **a reader must filter by active generation and validate manifest counts/digest** or label snapshot stale/partial. If ChatGPT connector cannot enforce generation consistency itself, a later Phase B design must choose a safe publication layout or refuse "complete" claims; do not assume cell read alone is consistent.
+
+No free-text notes, raw original CSV, owner/session IDs, secrets or record hashes that reveal original files go to Sheets; minimum fields only. Exported health data copied into Google Drive remains accessible to authorized file editors and may outlive D1 deletions until explicitly removed. Retention and stop/revoke protocol are part of #303.
+
+### 13.5 Security and synthetic validation plan
+
+Review matrix S01–S14 in ADR-0008 as future executable test cases; **Phase A changes documents only**. Before running a service, synthetic local D1 + fake Sheets must verify failed Google 429/5xx, tampered cells/formulas, owner spoofing, duplicates, concurrent Cron, CAS stale edit, source conflicts, D1-committed/Results-lost recovery, JST date boundaries, generation failures and credentials revoked. Do not assert that running existing app CI constitutes tested sync logic.
+
+The real credential selection, secret placement, Cron setup and additions to D1 are **not authorized** by this design PR. Rollout order: #300 Read → #301 Create → #302 Correct → #303 operator/acceptance. The user-facing Android date defaults in #289/#292 remain separate.
