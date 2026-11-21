@@ -77,6 +77,7 @@ The main threat is **confused trust across one Google document**. Appending data
 - **TBD-AI-006:** Connector read/write/append acceptance and read-after-write behavior with a real private Sheet; **not demonstrated by Phase A docs or existing CI**.
 - **TBD-AI-007 (blocking for write):** One workbook with owner/connector editing `Commands` also permits edits to `Results` and `Read_*`. Compare separate read-only publication and write-inbox workbooks under actually enforceable identities/permissions versus independently verifiable D1 receipts via a trusted channel. **Until the trust mechanism is proven end-to-end, do not treat Sheets status as independent D1 confirmation and do not enable automatic corrections.**
 - **TBD-AI-008 (blocking for recovery):** command TTL, processing budgets, pause/revoke and resume controls, pending backlog quarantine, malformed/partially edited inbox rows, stale and duplicate result rows, snapshot generation policy (single atomic request vs staged verification) and restore acceptance.
+- **TBD-AI-009 (blocking for free-tier feasibility):** Cloudflare Workers **Free** officially limits CPU time per Cron Trigger to **10 ms** (network wait excluded); account also has a per-invocation subrequest budget. Google OAuth2 service-account token signing, JSON parsing, D1 rows and Sheets serialization may exceed 10ms; there is no proof until a synthetic workload is profiled against an equivalent runtime, then authorized low-risk operation observed. Document peak/worst-case CPU, requests, retry budget and stoppage; if Free is not viable, **do not silently upgrade** and do not assert the 15-minute cron solution is feasible.
 
 ## Synthetic verification specification (not yet executable for unimplemented sync)
 
@@ -102,6 +103,7 @@ The main threat is **confused trust across one Google document**. Appending data
 | S18 | Service paused, 2-day backlog and restored credential | Expired / unapproved commands quarantined, never auto catch-up |
 | S19 | Partial snapshot across two Google API calls or tampered generation pointer | Reject complete/latest claim; last validated generation retained |
 | S20 | Google API command submission works but connector readback cannot match ID | No "registered" claim; pending until independent D1 confirmation |
+| S21 | 90-day snapshot + OAuth token creation exceed Free Cron 10ms CPU budget or subrequest limit | No silent paid upgrade; fail safely, reduce scope or select explicitly approved alternative |
 
 These are **planned synthetic test vectors**, not evidence that a sync integration test passed. The Phase A design PR should run existing repository validation and app CI automatically; integration tests belong to #300–#303.
 
@@ -118,5 +120,6 @@ Primary documentation checked 2026-11-21:
 - Sheets API OAuth scopes and tab-level limitations: https://developers.google.com/workspace/sheets/api/scopes
 - Sheets API quotas and changing billing conditions: https://developers.google.com/workspace/sheets/api/limits
 - Cloudflare Cron Triggers / UTC schedule: https://developers.cloudflare.com/workers/configuration/cron-triggers/
+- Cloudflare Worker Free CPU / Cron / subrequest limits: https://developers.cloudflare.com/workers/platform/limits/
 
 **No production authorization results from this ADR.**
