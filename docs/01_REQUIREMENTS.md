@@ -79,8 +79,8 @@ ChatGPT Plus の既存Google Drive接続を使う **任意・別途承認対象�
 | ID | 要求 | 優先度 | Acceptable result | 状態 |
 | --- | --- | --- | --- | --- |
 | REQ-010 | D1正本からAI用の限定read snapshotを生成 | Later | owner出典、JST、欠測/推定/実測、生成時刻・世代を保持し、異なる/古い世代を成功と扱わない | PROPOSED / #300 |
-| REQ-011 | Sheet上の新規登録依頼を検証して非同期反映 | Later | 依頼追記とD1確定を分離。同一command idの効果は高々1回、確定結果はD1 ledgerで検証 | PROPOSED / #301 |
-| REQ-012 | 既存の手入力記録を古い値で上書きせず訂正 | Later | target key + expected revisionの原子的比較; CSV/ECLEAR/Fit原典・非対象項目は不変。本人承認条件の決定が先行 | PROPOSED / #302 |
+| REQ-011 | Sheet上の新規登録依頼を検証して非同期反映 | Later | 依頼追記とD1確定を分離。同一command idの効果は高々1回、確定結果はD1 ledgerで検証。**Sheet結果のみではD1完了を断言しない** | PROPOSED / #301 |
+| REQ-012 | 既存の手入力記録を古い値で上書きせず訂正 | Later | target key + expected revisionの原子的比較; CSV/ECLEAR/Fit原典・非対象項目は不変。**Sheet外で実際の本人が特定命令を承認した証拠を要求する方式の承認が先行** | PROPOSED / #302 |
 | REQ-013 | 同期監査・復旧・停止を本人に説明可能にする | Later | queued/applied/unknown/conflict/rejectedを区別、遅延と直近成功時刻が明示。Google障害でも既存アプリは稼働 | PROPOSED / #303 |
 
 ### Proposed non-functional requirements
@@ -95,6 +95,6 @@ ChatGPT Plus の既存Google Drive接続を使う **任意・別途承認対象�
 ### Boundaries / outstanding decisions
 
 - サービス側のWorkerには **別の認可境界**を実装し、現行Passkey / Cloudflare Access及びRemote UAT write gateを緩めない
-- Google Sheetsを本人認証・D1の正本・確実なFIFO queueとはみなさない。新規登録は最初はmanual体重/歩数に限定し、訂正や飲酒/食事の拡張は個別の受入ゲートを通す
+- Google Sheetsを本人認証・D1の正本・確実なFIFO queue・改ざんできないResultsとはみなさない。単一Workbookはファイル単位権限であり結果・READタブもEditorが編集できるため、独立したD1確定照合方法が確立するまで成功表示は未検証。新規登録は最初はmanual体重/歩数に限定し、訂正や飲酒/食事の拡張は個別の受入ゲートを通す
 - 正本は ECLEAR 体重 / Google Fit 歩数。他出典のデータは勝手に置換しない
-- `TBD-AI-001`〜`TBD-AI-006` は ADR-0008 に記載。Phase Aの文書作成だけでは運用開始・実データ接続・Google認証設定を意味しない
+- `TBD-AI-001`〜`TBD-AI-008` は ADR-0008 に記載。日別の明示禁酒・飲酒あり（杯数不明）・未記録は `Read_DrinkDays` で区別する。Phase Aの文書作成だけでは運用開始・実データ接続・Google認証設定を意味しない
