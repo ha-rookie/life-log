@@ -121,22 +121,24 @@ Access保護対象URLと本人ID、別Preview/Production D1、Workers runtime en
 
 ## 18. AI連携：専用Google Sheets Bridge（Issue #299 / Proposed）
 
-**Status:** 設計提案のみ（未接続・未実装）。Authoritative decision rationale, external official references and remaining TDB gates: [ADR-0008](adr/ADR-0008-chatgpt-sheets-sync-boundary.md)。設計項目の実装が存在しない間、現行 `src/worker/index.ts` のOwner認証境界を維持する。
+**Status:** 設計提案のみ（未接続・未実装）。Authoritative decision rationale, external official references and remaining TBD gates: [ADR-0008](adr/ADR-0008-chatgpt-sheets-sync-boundary.md)。設計項目の実装が存在しない間、現行 `src/worker/index.ts` のOwner認証境界を維持する。
 
 | ID | Element | Responsibility / trust boundary |
 | --- | --- | --- |
 | ARCH-020 | ChatGPT Plus → dedicated private Google Spreadsheet | 利用者接続のGoogle Drive権限で読み取り・Commands追加。コネクタ権限をSheetタブ単位の分離とみなさない |
-| ARCH-021 | Google Spreadsheet | Read_* は非正本・期間制限付きの副本。Commandsは未認証の外部入力。Results/Sync_StatusはD1確定の参照表示 |
+| ARCH-021 | Google Spreadsheet | Read_* / Read_DrinkDays は非正本・期間制限付きの副本。Commandsは本人署名のない外部入力。Results/Sync_Statusも改ざん可能な参照表示であり、**D1確定の独立証拠にはならない** |
 | ARCH-022 | Dedicated scheduled-only Sync Worker | Cron Trigger `scheduled()`。外部から任意HTTPで実行する公開APIなし。許可済みSpreadsheet ID固定・Google OAuth2 service credentials管理・取得/登録/訂正業務の内部処理のみ |
 | ARCH-023 | Existing life-log D1 | 唯一の個人データ正本。owner固定・source policy・transaction/CAS/ledgerにより責任ある確定。既存UAT D1の追加bindingは別途Human承認 |
 | ARCH-024 | Failure/revoke boundary | Google 401/403, 429/5xx, Cron停止, credential失効時も、既存ブラウザアプリは独立稼働。D1を暗黙修正せず、同期不明/遅延を表示 |
 
-**Data flows:** D1 → Worker → staging snapshot → published generation/manifest → Sheets Read_* → ChatGPT（照会）。ChatGPT → Sheets Commands → Worker validation → atomic D1 mutation + ledger → Sheets Results → ChatGPT（登録/訂正）。Google Sheetsへの書込みだけでは D1 commit の証明にならない。
+**Data flows:** D1 → Worker → staging snapshot → published generation/manifest → Sheets Read_*/Read_DrinkDays → ChatGPT（照会）。ChatGPT → Sheets Commands → Worker validation → atomic D1 mutation + ledger → Sheets Results → ChatGPT（登録/訂正）。**どのSheetsセルもUser Editorに変更可能**であるため、Google Sheetsへの書込み・Resultsセルの成功表示だけでは D1 commit の独立した証明にならない。署名検証可能なレシート/本人認証済みD1の再取得など、Sheet外の確認経路を後続設計で成立させるまではユーザーへ『D1登録済み』と断定しない。
 
 **Service identity:** Google service accountはprivate documentを個別共有する方式を候補とし、管理者権限/ドメイン全権委任を与えない。Service Account OAuth scope `drive.file` と `spreadsheets` の適用可否を実接続前に検証。資格情報をコード、Sheet、ログ、Issueに置かず、Secrets/vars・Cron・D1 binding・共有設定は今回は変更しない。D1 binding自体にrow-level grantはないため、Owner filter / allowlist /入力検証が必須。
 
-**Quota / cost:** Google Sheets API はquota制限・429があり、2026年中の課金条件変更が公式に予告されている。日次/15分cronと保持上限は**未確定**。実サービス有効化前に最新Google/Cloudflare仕様、Google Cloud billing設定、無断課金防止・停止条件を再確認する。Cron時刻はUTC。
+**Quota / cost:** Google Sheets API はquota制限・429があり、2026年中の課金条件変更が公式に予告されている。読取Snapshotを毎15分で全量再生成するのは避け、**日次のread更新と15分のcommand確認を別候補**として検討。日次/15分cronと保持上限は**未確定**。実サービス有効化前に最新Google/Cloudflare仕様、Google Cloud billing設定、無断課金防止・停止条件を再確認する。Cron時刻はUTC。
 
 **Environment separation:** 開発はFake Sheets + synthetic local D1のみ。既存 `life-log-uat` の唯一のリモート D1 は実利用データを含み得る。共有D1/環境・Secretの変更はRemote D1操作と区別して承認対象。既存認証・CSRF/Origin防護の迂回や信頼できないHeadersの捏造を禁止。
+
+**Review stop:** 一つのWorkbookのファイル共有権限で `Commands` のみをEditorにし `Results/Read_*` を同じアカウントから改ざん不能にすることはできない。**writeを有効にする前に TBD-AI-007 / 008 と独立した本人確認・検証・期限切れコマンドの拒否を解決する。** `Read_DrinkDays` の明示禁酒/未記録分離を保持する。
 
 **Interfaces and schema:** `docs/03_APPLICATION_ARCHITECTURE.md` の `IF-AI-001..004`、`DATA-AI-001..004` を正本とする。Releaseは #300 → #301 → #302 → #303 の独立段階で、#299の設計PRは配信対象ではない。
