@@ -204,3 +204,17 @@ Issue #80 provides a shared implementation for the remaining MVP features, reusi
 - エクスポートはOwnerに紐づく保存済みの各出典の**原本再出力**で、ECLEAR/Fit優先で1日に正規化する分析データとは異なる。複数出典を足したり、同日重複を正本と誤認してはならない。
 - `from` と `to` を正確に1個ずつ要求する。未知キー・重複キー・日付不正はHTTP 400。Ownerの既存GET保護に従い、レスポンスはprivate/no-store。UTF-8 BOM、CRLF、数式先頭の無害化は維持する。
 - 合成ローカルD1のテストだけを用いる。UAT実ユーザー記録に触れず、本番デプロイやMigration、Secrets/vars変更を伴わない。
+
+## AI連携設計のTraceability（Issue #299 / Proposed only）
+
+Baseline main `9a6bf549707c0d726dd5b65e4fc0c7334799f340`。Phase Aの設計PRは**runtime未実装**であり、ここに示すtestは将来実装/CI証跡の受入契約。現在のOwner JWT/Passkey UAT書込みゲートを変更しない。技術選択とsynthetic test matrixは [ADR-0008](adr/ADR-0008-chatgpt-sheets-sync-boundary.md) を参照。
+
+| Requirement | Architectural design | Interface / Data | Issue | Validation planned | Current evidence/status |
+| --- | --- | --- | --- | --- | --- |
+| REQ-010, NFR-009 | ARCH-020/021/022/023, APP-020/021/024 | IF-AI-001/002/003, DATA-AI-001 | #300 | Fake Sheets/合成D1、S08–S10, S13–S14、生成世代と期間上限、ECLEAR/Fit優先 | Proposed; sync not implemented |
+| REQ-011, NFR-007/008 | ARCH-021/022/023, APP-021/022/023 | IF-AI-002/003/004, DATA-AI-002/004 | #301 | S01–S04, S06–S09, S11–S14、原子ledger、重複なし、サービス認証 | Proposed; sync not implemented |
+| REQ-012, NFR-007/008 | ARCH-022/023, APP-022/023 | IF-AI-003, DATA-AI-002/004 | #302 | S03/S05/S06/S09、CAS/stale、既存manual/CSV source保護 | Proposed; sync not implemented |
+| REQ-013, NFR-009/010 | ARCH-021/024, APP-024 | IF-AI-002/004, DATA-AI-003 | #303 | S04/S10–S14、監査復元、切断/復旧、Google API制限・費用確認 | Proposed; sync not implemented |
+| NFR-007/008/009/010 (Phase A) | ADR-0008 + ARCH-020..024 / APP-020..024 | DATA-AI-001..004 / IF-AI-001..004 | #299 | docs-only Scope Guard, references/ID review; existing repository CI may run but is not sync E2E | **Design PR only; Human review pending** |
+
+**Evidence gap / stop:** No Google credential/shared workbook, Cron Worker, D1 ledger schema, synthetic sync E2E, production release or user acceptance is created in #299. Independent Phase implementations and permissions are required. The established #31 Android MVP acceptance is not replaced.
