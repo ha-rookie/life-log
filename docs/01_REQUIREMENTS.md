@@ -90,7 +90,7 @@ ChatGPT Plus の既存Google Drive接続を使う **任意・別途承認対象�
 | NFR-007 | Security | Google Service Account / Sync Worker / ChatGPT Connector / Browser Ownerを別主体として扱う。Sheetセルや要求ヘッダーでOwnerを選択できず、1つのprivate documentと限定操作のみ | ACL/偽セル/別owner/資格失効の合成負テスト |
 | NFR-008 | Integrity | D1とledgerの原子性、改変/重複command idの拒否、CAS、正本出典優先、欠測≠0、段階的snapshot公開 | 並行実行、再送、部分失敗、JST境界の合成D1テスト |
 | NFR-009 | Privacy | Google Sheetsに健康データの副本が残ることを明示し、最小列・対象期間・データ保持/失効/削除手順を設計 | Workbook公開権限、コピー期間、ログ・数式対策のレビュー |
-| NFR-010 | Cost/Availability | Google API quota / billing、Cloudflare Free枠、定期実行の障害/429を考慮。課金・配信・Secrets設定は別承認 | quota再確認、予算停止条件、rate-limit/Google障害テスト |
+| NFR-010 | Cost/Availability | Google API quota / billing、Cloudflare Free Cron CPU 10ms制約、定期実行の障害/429を考慮。Free枠の実行可能性を証明するまで運用開始としない。課金・配信・Secrets設定は別承認 | quota再確認、CPU/サブリクエスト測定、予算停止条件、rate-limit/Google障害テスト |
 
 ### Boundaries / outstanding decisions
 
