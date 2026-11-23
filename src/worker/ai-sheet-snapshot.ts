@@ -252,6 +252,7 @@ function parseTab(tab:ReadTab,matrix:Matrix,generation:string):AiReadRows[ReadTa
 }
 export type Verified={
   consistency:"consistent"|"unverified";reason:string;generation_id:string|null;
+  freshness:"claimed_fresh"|"stale"|"not_checked";
   /** No cryptographic D1 provenance: sheet owner/editor can rewrite contents and digest. */
   authority:"sheet-copy-only";
 };
@@ -259,8 +260,12 @@ export interface SheetReader{
   readMeta():Promise<Matrix>;
   readTab(tab:ReadTab|"Sync_Status",generation:string):Promise<Matrix>;
 }
-export async function verifyReadSnapshot(reader:SheetReader):Promise<Verified>{
+/** Caller must supply a trusted reference time before claiming snapshot freshness. */
+export async function verifyReadSnapshot(
+  reader:SheetReader,referenceUtc?:string,maxAgeMs=36*3600_000
+):Promise<Verified>{
   const fail=(reason:string):Verified=>({consistency:"unverified",reason,
+    freshness:reason==="STALE_SNAPSHOT"?"stale":"not_checked",
     generation_id:null,authority:"sheet-copy-only"});
   try{
     const first=await reader.readMeta(),meta=parseMeta(first);
@@ -289,8 +294,17 @@ export async function verifyReadSnapshot(reader:SheetReader):Promise<Verified>{
     };
     validateSource(snap);
     if((await readModelDigest(snap))!==meta.generation_digest)throw Error("DIGEST_MISMATCH");
+    if(referenceUtc!==undefined){
+      const reference=Date.parse(referenceUtc),generated=Date.parse(meta.generated_at_utc);
+      if(!/^\d{4}-\d{2}-\d{2}T.*Z$/u.test(referenceUtc)||
+         !Number.isFinite(reference)||!Number.isFinite(generated)||
+         !Number.isFinite(maxAgeMs)||maxAgeMs<1||generated>reference+60_000)
+        throw Error("INVALID_FRESHNESS_REFERENCE");
+      if(reference-generated>maxAgeMs)throw Error("STALE_SNAPSHOT");
+    }
     return {consistency:"consistent",reason:"INTERNAL_CONSISTENCY_ONLY",
-      generation_id:gen,authority:"sheet-copy-only"};
+      generation_id:gen,authority:"sheet-copy-only",
+      freshness:referenceUtc===undefined?"not_checked":"claimed_fresh"};
   }catch(e){
     return fail(e instanceof Error?e.message:"INVALID_SNAPSHOT");
   }
@@ -356,6 +370,11 @@ export class FakeSheets implements SheetReader{
   async publishStaged(p:Prepared,maxChunkBytes=DEFAULT_BYTES):Promise<void>{
     if(!Number.isFinite(maxChunkBytes)||maxChunkBytes<256)
       throw Error("INVALID_CHUNK_BUDGET");
+    // In a failed-run storm, keep at most two partial generations in the fake.
+    if(!this.staged.has(p.generation_id)&&this.staged.size>=2){
+      const oldest=this.staged.keys().next().value;
+      if(oldest!==undefined)this.staged.delete(oldest);
+    }
     const inFlight=this.staged.get(p.generation_id);
     if(inFlight){
       for(const tab of TABS){

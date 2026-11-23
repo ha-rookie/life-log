@@ -236,4 +236,27 @@ describe("Phase B2 offline fake Sheets snapshot publication / validation",()=>{
    sw.warnings.push("DRINK_DAY_CONFLICT:2026-11-22");
    await expect(prepareSheetSnapshot(sw)).rejects.toThrow("SOURCE_DIGEST_MISMATCH");
  });
+
+ it("B14: consistent does not imply fresh; stale claimed generation is rejected using a trusted clock",async()=>{
+   const p=await fresh(30),fake=new FakeSheets();
+   await fake.publishAtomic(p,layout());
+   const unknownTime=await verifyReadSnapshot(fake);
+   expect(unknownTime).toMatchObject({consistency:"consistent",freshness:"not_checked"});
+   const freshTime=await verifyReadSnapshot(fake,"2026-11-23T02:30:00Z");
+   expect(freshTime).toMatchObject({consistency:"consistent",freshness:"claimed_fresh"});
+   const stale=await verifyReadSnapshot(fake,"2026-11-26T02:00:00Z");
+   expect(stale).toMatchObject({consistency:"unverified",freshness:"stale",reason:"STALE_SNAPSHOT"});
+   expect((await verifyReadSnapshot(fake,"2026-11-22T00:00:00Z")).reason)
+     .toBe("INVALID_FRESHNESS_REFERENCE");
+ });
+ it("B15: staged failure storms retain no more than two in-flight generations",async()=>{
+   const fake=new FakeSheets();
+   for(const g of ["synthetic_g001","synthetic_g002","synthetic_g003"]){
+     const p=await fresh(30,g);
+     fake.injectFailure({operation:"stage",code:503,tab:"Read_Steps",afterApply:true});
+     await expect(fake.publishStaged(p,1600)).rejects.toThrow("SHEETS_HTTP_503");
+     expect(fake.stagedCount).toBeLessThanOrEqual(2);
+   }
+   expect(fake.activeGeneration).toBeNull();
+ });
 });
