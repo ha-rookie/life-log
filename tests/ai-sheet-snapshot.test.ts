@@ -47,8 +47,7 @@ async function synthetic(days=30,gen="synthetic_g001",withWeight=false):Promise<
       value_state:"present",revision:rev(3000)});
     canonical_weight_keys[local_day]=record_key;
   }
-  const counts=Object.fromEntries(READ_TABS.map(tab=>[tab,rows[tab].length]))
-    as AiReadSnapshot["counts"];
+  const counts=Object.fromEntries(READ_TABS.map(tab=>[tab,rows[tab].length])) as AiReadSnapshot["counts"];
   const s:AiReadSnapshot={
     contract_version:"ai-sheets-v1",generation_id:gen,
     generated_at_utc:utc,coverage_from_jst:dayAt(0,days),
