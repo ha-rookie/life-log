@@ -81,7 +81,7 @@ function sourceType(source:string):string {
 function lifestylePriority(source:string):number {
   return source.startsWith("manual:")?0:source.startsWith("eclear")?1:2;
 }
-function assertUnique<T extends {record_key:string}>(rows:readonly T[],tab:string):void {
+function assertUnique(rows:readonly {record_key:string}[],tab:string):void {
   const seen=new Set<string>();
   for(const row of rows){
     if(seen.has(row.record_key))throw Error("DUPLICATE_RECORD_KEY:"+tab);

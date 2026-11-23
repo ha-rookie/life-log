@@ -6,7 +6,7 @@ import { projectAiReadSnapshot, type AiReadDb } from "../src/worker/ai-read-mode
 
 type Statement={bind(...args:unknown[]):Statement;run():Promise<unknown>;
   all<T>():Promise<{results:T[]}>;first<T>():Promise<T|null>};
-type DB=AiReadDb&{prepare(sql:string):Statement};
+type DB={prepare(sql:string):Statement};
 const owner="owner",other="other",at="2026-01-15T01:00:00Z";
 const generationId="synthetic-001";
 const options=(from="2026-01-11",to="2026-01-14")=>
