@@ -259,4 +259,27 @@ describe("Phase B2 offline fake Sheets snapshot publication / validation",()=>{
    }
    expect(fake.activeGeneration).toBeNull();
  });
+
+ it("B16: same generation ID with different valid snapshot digest is rejected, never already",async()=>{
+   const first=await fresh(30,"synthetic_g001");
+   const changed=await fresh(31,"synthetic_g001");
+   const fake=new FakeSheets();
+   expect(await publishFake(fake,first,layout())).toBe("published");
+   expect(await publishFake(fake,changed,layout())).toBe("rejected");
+   expect(fake.activeGeneration).toBe(first.generation_id);
+   expect(fake.committedCount).toBe(1);
+   expect((await verifyReadSnapshot(fake)).generation_digest).toBe(first.source_digest);
+ });
+ it("B17: missing calendar day from B1 daily tabs is incomplete, not recorded abstinence",async()=>{
+   const s=await synthetic(30);
+   s.rows.Read_DrinkDays.splice(5,1);
+   s.counts.Read_DrinkDays=s.rows.Read_DrinkDays.length;
+   s.generation_digest=await readModelDigest(s);
+   await expect(prepareSheetSnapshot(s)).rejects.toThrow("INCOMPLETE_DAY_COVERAGE:Read_DrinkDays");
+   const missing=await synthetic(30);
+   missing.rows.Read_Steps.splice(2,1);
+   missing.counts.Read_Steps=missing.rows.Read_Steps.length;
+   missing.generation_digest=await readModelDigest(missing);
+   await expect(prepareSheetSnapshot(missing)).rejects.toThrow("INCOMPLETE_DAY_COVERAGE:Read_Steps");
+ });
 });

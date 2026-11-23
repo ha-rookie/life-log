@@ -127,6 +127,22 @@ function validateSource(s:AiReadSnapshot):void{
       ids.add(row.record_key);
     }
   }
+  // B1 always materializes one day-level row per covered JST day.
+  // A missing day within the declared interval means an incomplete generation,
+  // not a trustworthy "no activity / no drinking" report.
+  const from=Date.parse(s.coverage_from_jst+"T00:00:00Z");
+  const to=Date.parse(s.coverage_to_jst+"T00:00:00Z");
+  if(!Number.isFinite(from)||!Number.isFinite(to)||to<from||
+    new Date(from).toISOString().slice(0,10)!==s.coverage_from_jst||
+    new Date(to).toISOString().slice(0,10)!==s.coverage_to_jst||
+    (to-from)/86400000>=366)throw Error("INVALID_SOURCE_WINDOW");
+  const expectedDays=Array.from({length:Math.round((to-from)/86400000)+1},
+    (_,i)=>new Date(from+i*86400000).toISOString().slice(0,10));
+  for(const tab of ["Read_Steps","Read_Meals","Read_DrinkDays"] as const){
+    const days=s.rows[tab].map(row=>row.local_day);
+    if(days.length!==expectedDays.length||days.some((day,i)=>day!==expectedDays[i]))
+      throw Error("INCOMPLETE_DAY_COVERAGE:"+tab);
+  }
   const refs=new Map(s.rows.Read_Weight.map(w=>[w.record_key,w.local_day]));
   for(const [day,key] of Object.entries(s.canonical_weight_keys)){
     if(refs.get(key)!==day)throw Error("INVALID_CANONICAL_WEIGHT_KEY");
@@ -252,6 +268,7 @@ function parseTab(tab:ReadTab,matrix:Matrix,generation:string):AiReadRows[ReadTa
 }
 export type Verified={
   consistency:"consistent"|"unverified";reason:string;generation_id:string|null;
+  generation_digest:string|null;
   freshness:"claimed_fresh"|"stale"|"not_checked";
   /** No cryptographic D1 provenance: sheet owner/editor can rewrite contents and digest. */
   authority:"sheet-copy-only";
@@ -266,7 +283,7 @@ export async function verifyReadSnapshot(
 ):Promise<Verified>{
   const fail=(reason:string):Verified=>({consistency:"unverified",reason,
     freshness:reason==="STALE_SNAPSHOT"?"stale":"not_checked",
-    generation_id:null,authority:"sheet-copy-only"});
+    generation_id:null,generation_digest:null,authority:"sheet-copy-only"});
   try{
     const first=await reader.readMeta(),meta=parseMeta(first);
     const gen=meta.active_generation;
@@ -303,7 +320,7 @@ export async function verifyReadSnapshot(
       if(reference-generated>maxAgeMs)throw Error("STALE_SNAPSHOT");
     }
     return {consistency:"consistent",reason:"INTERNAL_CONSISTENCY_ONLY",
-      generation_id:gen,authority:"sheet-copy-only",
+      generation_id:gen,generation_digest:meta.generation_digest,authority:"sheet-copy-only",
       freshness:referenceUtc===undefined?"not_checked":"claimed_fresh"};
   }catch(e){
     return fail(e instanceof Error?e.message:"INVALID_SNAPSHOT");
@@ -439,15 +456,16 @@ export async function publishFake(
 ):Promise<"published"|"already"|"unknown"|"rejected">{
   const before=fake.activeGeneration;
   const current=await verifyReadSnapshot(fake);
+  // Generation ID is an idempotency key: it must never be reused for new content.
   if(current.consistency==="consistent"&&current.generation_id===p.generation_id)
-    return "already";
+    return current.generation_digest===p.source_digest?"already":"rejected";
   if(before===p.generation_id)return "rejected"; // tampered active, do not overwrite
   try{
     if(mode==="atomic")await fake.publishAtomic(p,layout,maxBytes);
     else await fake.publishStaged(p,maxBytes);
     const v=await verifyReadSnapshot(fake);
-    return v.consistency==="consistent"&&v.generation_id===p.generation_id?
-      "published":"unknown";
+    return v.consistency==="consistent"&&v.generation_id===p.generation_id&&
+      v.generation_digest===p.source_digest?"published":"unknown";
   }catch(e){
     const msg=e instanceof Error?e.message:"UNKNOWN";
     if(msg.startsWith("SHEETS_HTTP_403")||msg.startsWith("INVALID_")||
