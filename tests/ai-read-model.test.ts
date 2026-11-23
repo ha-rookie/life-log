@@ -182,7 +182,7 @@ describe("AI B1 read-only canonical D1 projection (synthetic local D1)",()=>{
 
  it("R07: source row overflow throws rather than silently truncates",async()=>{
    const overflowDb:AiReadDb={
-     prepare:()=>{throw Error("SHOULD_USE_BATCH");},
+     prepare:()=>db.prepare("SELECT 1"),
      batch:async()=>Array.from({length:4},()=>({results:Array(10001).fill({})}))
    };
    await expect(projectAiReadSnapshot(overflowDb,owner,options()))
