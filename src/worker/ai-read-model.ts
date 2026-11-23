@@ -238,7 +238,9 @@ export async function projectAiReadSnapshot(
     const presence:0|1|null=conflicted?null:
       explicitFlags.has(1)||alcoholic?1:explicitFlags.has(0)?0:null;
     const cupValue=conflicted?null:presence===0?0:daily.value===1?cups.value as number|null:null;
-    const type=conflicted?"conflict":daily.source??(alcoholic?"entry_evidence":
+    // Daily status and a non-null cup count may be sourced independently.
+    const dailySource=daily.source&&cups.source&&daily.source!==cups.source?"mixed":daily.source;
+    const type=conflicted?"conflict":dailySource??(alcoholic?"entry_evidence":
       entries.length?"non_alcohol_only":"missing");
     const dk=keyFor(owner,"drink_day",day);
     Read_DrinkDays.push({generation_id,record_key:dk,local_day:day,

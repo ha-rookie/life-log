@@ -6,7 +6,8 @@ import { projectAiReadSnapshot, type AiReadDb } from "../src/worker/ai-read-mode
 
 type Statement={bind(...args:unknown[]):Statement;run():Promise<unknown>;
   all<T>():Promise<{results:T[]}>;first<T>():Promise<T|null>};
-type DB=AiReadDb&{prepare(sql:string):Statement};
+type DB={prepare(sql:string):Statement;
+  batch(statements:unknown[]):Promise<Array<{results:unknown[];success?:boolean}>>};
 const owner="owner",other="other",at="2026-01-15T01:00:00Z";
 const generationId="synthetic-001";
 const options=(from="2026-01-11",to="2026-01-14")=>
@@ -105,6 +106,14 @@ describe("AI B1 read-only canonical D1 projection (synthetic local D1)",()=>{
      drinking_presence:1,drink_cups:null,drink_cups_value_state:"missing"
    });
    expect(a.rows.Read_Drinks).toHaveLength(0);
+ });
+
+ it("R14: different sources for stated drinking and cups are labeled mixed",async()=>{
+   await lifestyle(db,"2026-01-12","manual:meals",{drinking:1,cups:null});
+   await lifestyle(db,"2026-01-12","csv:legacy",{drinking:1,cups:3});
+   const d=(await projectAiReadSnapshot(db,owner,options())).rows.Read_DrinkDays[1];
+   expect(d).toMatchObject({drinking_presence:1,drink_cups:3,
+     drink_cups_value_state:"present",source_type:"mixed"});
  });
 
  it("R04: merges distinct meal fields, preserving nullable dinner and explicit late-meal zero",async()=>{
