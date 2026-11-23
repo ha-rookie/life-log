@@ -7,8 +7,16 @@ import { dateRange, isEclearWeightSource, jstDay, parseDay } from "../shared/wei
 import { assessDrinkAlcohol, publicDrinkKind, type StoredDrinkKind } from "../shared/drink-measures";
 import { isFitSource } from "./steps-trend";
 
-type Statement = { bind(...values: unknown[]): { all<T>(): Promise<{ results: T[] }> } };
-export type AiReadDb = { prepare(sql: string): Statement };
+type Statement = {
+  bind(...values: unknown[]): Statement;
+  all<T>(): Promise<{ results: T[] }>;
+};
+type ReadBatchResult = { results: unknown[]; success?: boolean };
+export type AiReadDb = {
+  prepare(sql: string): Statement;
+  /** D1 batch() executes the four read queries in a single SQL transaction. */
+  batch(statements: Statement[]): Promise<ReadBatchResult[]>;
+};
 type WeightSource = { id:string; measured_at:string; weight_kg:number|null; source_id:string; source_kind:string; anomaly_flag:number };
 type StepSource = { id:string; local_day:string; steps:number|null; source_id:string };
 type LifestyleSource = { local_day:string; drinking_presence:number|null; drink_cups:number|null;
@@ -88,10 +96,10 @@ function assertUnique(rows:readonly {record_key:string}[],tab:string):void {
     seen.add(row.record_key);
   }
 }
-async function all<T>(db:AiReadDb,sql:string,...bind:unknown[]):Promise<T[]> {
-  const rows=(await db.prepare(sql).bind(...bind).all<T>()).results;
-  if(rows.length>=LIMIT)throw Error("TOO_MANY_SOURCE_ROWS");
-  return rows;
+function assertReadBatch(rows:readonly ReadBatchResult[]):void {
+  if(rows.length!==4||rows.some(row=>row.success===false||!Array.isArray(row.results)))
+    throw Error("INCOMPLETE_D1_READ_BATCH");
+  if(rows.some(row=>row.results.length>=LIMIT))throw Error("TOO_MANY_SOURCE_ROWS");
 }
 function daySequence(from:number,days:number):string[] {
   return Array.from({length:days},(_,i)=>dayFrom(from+i*DAY));
@@ -114,20 +122,25 @@ export async function projectAiReadSnapshot(
      options.to>todayJst(generated))throw Error("INVALID_SNAPSHOT_RANGE");
   const fromSec=Math.floor((range.start-JST)/1000);
   const toSec=Math.floor((range.end+DAY-JST)/1000);
-  const [weights,steps,lifestyles,drinks]=await Promise.all([
-    all<WeightSource>(db,"SELECT id,measured_at,weight_kg,source_id,source_kind,anomaly_flag "+
+  // A single D1 SQL transaction prevents inconsistent reads across four source tables.
+  // Promise.all of independent D1 requests cannot guarantee a common snapshot.
+  const readBatch=await db.batch([
+    db.prepare("SELECT id,measured_at,weight_kg,source_id,source_kind,anomaly_flag "+
       "FROM body_measurements WHERE owner_id=? AND unixepoch(measured_at)>=? AND unixepoch(measured_at)<? "+
-      "ORDER BY unixepoch(measured_at),id LIMIT ?",owner,fromSec,toSec,LIMIT),
-    all<StepSource>(db,"SELECT id,local_day,steps,source_id FROM activity_daily "+
-      "WHERE owner_id=? AND local_day>=? AND local_day<=? ORDER BY local_day,source_id,id LIMIT ?",
-      owner,options.from,options.to,LIMIT),
-    all<LifestyleSource>(db,"SELECT local_day,drinking_presence,drink_cups,lunch_kind,dinner_kind,late_meal,source_id "+
+      "ORDER BY unixepoch(measured_at),id LIMIT ?").bind(owner,fromSec,toSec,LIMIT),
+    db.prepare("SELECT id,local_day,steps,source_id FROM activity_daily "+
+      "WHERE owner_id=? AND local_day>=? AND local_day<=? ORDER BY local_day,source_id,id LIMIT ?")
+      .bind(owner,options.from,options.to,LIMIT),
+    db.prepare("SELECT local_day,drinking_presence,drink_cups,lunch_kind,dinner_kind,late_meal,source_id "+
       "FROM lifestyle_days WHERE owner_id=? AND local_day>=? AND local_day<=? "+
-      "ORDER BY local_day,source_id LIMIT ?",owner,options.from,options.to,LIMIT),
-    all<DrinkSource>(db,"SELECT id,observed_at,drink_kind,drink_variant,source_id,alcohol,cups,volume_ml,abv_pct "+
+      "ORDER BY local_day,source_id LIMIT ?").bind(owner,options.from,options.to,LIMIT),
+    db.prepare("SELECT id,observed_at,drink_kind,drink_variant,source_id,alcohol,cups,volume_ml,abv_pct "+
       "FROM drink_entries WHERE owner_id=? AND unixepoch(observed_at)>=? AND unixepoch(observed_at)<? "+
-      "ORDER BY unixepoch(observed_at),id LIMIT ?",owner,fromSec,toSec,LIMIT),
+      "ORDER BY unixepoch(observed_at),id LIMIT ?").bind(owner,fromSec,toSec,LIMIT),
   ]);
+  assertReadBatch(readBatch);
+  const [weights,steps,lifestyles,drinks]=readBatch.map(r=>r.results) as
+    [WeightSource[],StepSource[],LifestyleSource[],DrinkSource[]];
   const generation_id=options.generationId;
   const warnings:string[]=[];
   const Read_Weight:WeightRow[]=[];
@@ -144,7 +157,7 @@ export async function projectAiReadSnapshot(
     const row:WeightRow={generation_id,record_key,local_day:day,
       measured_at_jst:toJstIso(w.measured_at),weight_kg:w.weight_kg,
       source_type:type,measurement_kind:"measured",value_state:"present",
-      revision:revision(record_key,[w.measured_at,w.weight_kg,type])};
+      revision:revision(record_key,[w.source_id,w.source_kind,w.anomaly_flag,w.measured_at,w.weight_kg,type])};
     Read_Weight.push(row);
     const prior=representatives.get(day),rank=type==="eclear"?0:1;
     if(!prior||rank<prior.rank||(rank===prior.rank&&
@@ -188,14 +201,16 @@ export async function projectAiReadSnapshot(
     Read_Drinks.push({generation_id,record_key,observed_at_jst:toJstIso(entry.observed_at),
       drink_kind:publicKind,cups:entry.cups,pure_alcohol_g:a.grams,
       alcohol_value_kind:a.basis,source_type:sourceType(entry.source_id),value_state:"present",
-      revision:revision(record_key,[entry.observed_at,publicKind,entry.cups,a.grams,a.basis])});
+      revision:revision(record_key,[entry.id,entry.source_id,entry.observed_at,entry.drink_kind,
+        entry.drink_variant,entry.alcohol,entry.cups,entry.volume_ml,entry.abv_pct,publicKind,
+        a.grams,a.basis])});
   }
   function pick<K extends keyof LifestyleSource>(
     rows:readonly LifestyleSource[],field:K
-  ): {value:LifestyleSource[K]|null;source:string|null} {
+  ): {value:LifestyleSource[K]|null;source:string|null;sourceId:string|null} {
     for(const row of rows)if(row[field]!==null)
-      return {value:row[field],source:sourceType(row.source_id)};
-    return {value:null,source:null};
+      return {value:row[field],source:sourceType(row.source_id),sourceId:row.source_id};
+    return {value:null,source:null,sourceId:null};
   }
   const Read_Steps:StepRow[]=[],Read_Meals:MealRow[]=[],Read_DrinkDays:DrinkDayRow[]=[];
   for(const day of daySequence(range.start,range.days)){
@@ -204,7 +219,7 @@ export async function projectAiReadSnapshot(
     Read_Steps.push({generation_id,record_key:sk,local_day:day,steps:step?.steps??null,
       source_type:stepKind,source_priority:step?(stepKind==="fit"?0:1):null,
       value_state:step?"present":"missing",
-      revision:revision(sk,[step?.steps??null,stepKind])});
+      revision:revision(sk,[step?.id??null,step?.source_id??null,step?.steps??null,stepKind])});
     const lunch=pick(rows,"lunch_kind"),dinner=pick(rows,"dinner_kind"),late=pick(rows,"late_meal");
     const foundSources=[lunch.source,dinner.source,late.source].filter((s):s is string=>s!==null);
     const mealSource=[...new Set(foundSources)].length>1?"mixed":foundSources[0]??"missing";
@@ -214,7 +229,7 @@ export async function projectAiReadSnapshot(
       dinner_kind:dinner.value as string|null,dinner_value_state:dinner.value===null?"missing":"present",
       late_meal:late.value as number|null,late_meal_value_state:late.value===null?"missing":"present",
       source_type:mealSource,revision:revision(mk,[lunch.value as CellValue,dinner.value as CellValue,
-        late.value as CellValue,mealSource])});
+        late.value as CellValue,lunch.sourceId,dinner.sourceId,late.sourceId,mealSource])});
     const daily=pick(rows,"drinking_presence"),cups=pick(rows,"drink_cups");
     const explicitFlags=new Set(rows.filter(l=>l.drinking_presence!==null).map(l=>l.drinking_presence));
     const alcoholic=entries.some(e=>e.alcohol===1);
@@ -229,7 +244,9 @@ export async function projectAiReadSnapshot(
     Read_DrinkDays.push({generation_id,record_key:dk,local_day:day,
       drinking_presence:presence,drink_cups:cupValue,
       drink_cups_value_state:cupValue===null?"missing":"present",source_type:type,
-      revision:revision(dk,[presence,cupValue,type])});
+      revision:revision(dk,[presence,cupValue,type,...rows.flatMap(l=>
+        [l.source_id,l.drinking_presence,l.drink_cups]),...entries.flatMap(e=>
+        [e.id,e.source_id,e.alcohol,e.cups])])});
   }
   const result:AiReadRows={Read_Weight,Read_Steps,Read_Meals,Read_Drinks,Read_DrinkDays};
   for(const name of Object.keys(result) as (keyof AiReadRows)[])assertUnique(result[name],name);
@@ -245,7 +262,14 @@ export async function projectAiReadSnapshot(
     contract_version:"ai-sheets-v1",generation_id,generated_at_utc:options.generatedAtUtc,
     coverage_from_jst:options.from,coverage_to_jst:options.to,
     data_through_jst,incomplete_day_jst,counts,
-    generation_digest:await digest({generation_id,counts,result,warnings}),
+    // Hash the entire verifiable manifest, including canonical representative keys,
+    // source warnings and completeness dates. This is consistency, not authenticity.
+    generation_digest:await digest({
+      contract_version:"ai-sheets-v1",generation_id,generated_at_utc:options.generatedAtUtc,
+      coverage_from_jst:options.from,coverage_to_jst:options.to,
+      data_through_jst,incomplete_day_jst,counts,
+      canonical_weight_keys,warnings,rows:result
+    }),
     warnings,canonical_weight_keys,rows:result
   };
 }

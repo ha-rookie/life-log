@@ -6,7 +6,7 @@ import { projectAiReadSnapshot, type AiReadDb } from "../src/worker/ai-read-mode
 
 type Statement={bind(...args:unknown[]):Statement;run():Promise<unknown>;
   all<T>():Promise<{results:T[]}>;first<T>():Promise<T|null>};
-type DB={prepare(sql:string):Statement};
+type DB=AiReadDb&{prepare(sql:string):Statement};
 const owner="owner",other="other",at="2026-01-15T01:00:00Z";
 const generationId="synthetic-001";
 const options=(from="2026-01-11",to="2026-01-14")=>
@@ -172,9 +172,10 @@ describe("AI B1 read-only canonical D1 projection (synthetic local D1)",()=>{
  });
 
  it("R07: source row overflow throws rather than silently truncates",async()=>{
-   const overflowDb:AiReadDb={prepare:()=>({bind:()=>({
-     all:async<T>()=>({results:Array(10001).fill({}) as T[]})
-   })})};
+   const overflowDb:AiReadDb={
+     prepare:()=>{throw Error("SHOULD_USE_BATCH");},
+     batch:async()=>Array.from({length:4},()=>({results:Array(10001).fill({})}))
+   };
    await expect(projectAiReadSnapshot(overflowDb,owner,options()))
      .rejects.toThrow("TOO_MANY_SOURCE_ROWS");
  });
@@ -198,6 +199,58 @@ describe("AI B1 read-only canonical D1 projection (synthetic local D1)",()=>{
      expect(JSON.stringify(a).length).toBeGreaterThan(0);
      expect(elapsedMs).toBeGreaterThanOrEqual(0); // Not a Cloudflare Free CPU attestation.
    }
+ });
+
+
+ it("R11: all four owner-scoped SELECT statements execute in one atomic D1 batch",async()=>{
+   let calls=0,statements=0;
+   const wrapped:AiReadDb={
+     prepare:(sql)=>{expect(sql.startsWith("SELECT ")).toBe(true);
+       expect(sql).toContain("owner_id=?");return db.prepare(sql);},
+     batch:async(reads)=>{calls++;statements=reads.length;return db.batch(reads);}
+   };
+   await projectAiReadSnapshot(wrapped,owner,options());
+   expect(calls).toBe(1);
+   expect(statements).toBe(4);
+ });
+ it("R11: failed/partial read batch never becomes a valid snapshot",async()=>{
+   const invalid:AiReadDb={
+     prepare:()=>db.prepare("SELECT 1"),
+     batch:async()=>[{results:[]},{results:[]}]
+   };
+   await expect(projectAiReadSnapshot(invalid,owner,options()))
+     .rejects.toThrow("INCOMPLETE_D1_READ_BATCH");
+   const failed:AiReadDb={
+     prepare:()=>db.prepare("SELECT 1"),
+     batch:async()=>Array.from({length:4},(_,i)=>({results:[],success:i!==2}))
+   };
+   await expect(projectAiReadSnapshot(failed,owner,options()))
+     .rejects.toThrow("INCOMPLETE_D1_READ_BATCH");
+ });
+ it("R12: manifest digest changes with canonical map and refresh timestamp",async()=>{
+   await weight(db,"m12","2026-01-12T08:00:00+09:00",68.2,"manual:weight");
+   const p=options(),before=await projectAiReadSnapshot(db,owner,p);
+   const next=await projectAiReadSnapshot(db,owner,{
+     ...p,generatedAtUtc:"2026-01-15T02:00:00Z"
+   });
+   expect(next.generation_digest).not.toBe(before.generation_digest);
+   await weight(db,"e12","2026-01-12T07:00:00+09:00",68.2,"eclear");
+   const after=await projectAiReadSnapshot(db,owner,p);
+   expect(after.canonical_weight_keys["2026-01-12"])
+     .not.toBe(before.canonical_weight_keys["2026-01-12"]);
+   expect(after.generation_digest).not.toBe(before.generation_digest);
+ });
+ it("R13: provenance-only changes invalidate revisions even if output values match",async()=>{
+   await step(db,"fitA","2026-01-12",1234,"fit");
+   await lifestyle(db,"2026-01-12","csv:sourceA",{dinner:"home"});
+   const before=await projectAiReadSnapshot(db,owner,options());
+   await run(db,"UPDATE activity_daily SET source_id='google_fit' WHERE id='fitA'");
+   await run(db,"UPDATE lifestyle_days SET source_id='csv:sourceB' WHERE local_day='2026-01-12'");
+   const after=await projectAiReadSnapshot(db,owner,options());
+   expect(after.rows.Read_Steps[1].steps).toBe(before.rows.Read_Steps[1].steps);
+   expect(after.rows.Read_Steps[1].revision).not.toBe(before.rows.Read_Steps[1].revision);
+   expect(after.rows.Read_Meals[1].dinner_kind).toBe(before.rows.Read_Meals[1].dinner_kind);
+   expect(after.rows.Read_Meals[1].revision).not.toBe(before.rows.Read_Meals[1].revision);
  });
 
  it("Today's recorded weight is included but the day is not marked complete",async()=>{
