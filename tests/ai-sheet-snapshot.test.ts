@@ -3,7 +3,7 @@ import type { AiReadSnapshot, AiReadRows } from "../src/worker/ai-read-model";
 import {
   HEADERS,READ_TABS,FakeSheets,prepareSheetSnapshot,readModelDigest,
   verifyReadSnapshot,buildAtomicBatch,publishFake,
-  type Layout,type Tab,type Prepared
+  type Layout,type Tab
 } from "../src/worker/ai-sheet-snapshot";
 
 const tabNames:readonly Tab[]=[...READ_TABS,"Sync_Status","Meta"];
