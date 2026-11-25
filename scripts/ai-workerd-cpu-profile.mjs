@@ -107,7 +107,12 @@ async function connect(url) {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(Error("INSPECTOR_OPEN_TIMEOUT")), 5000);
     ws.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, {once:true});
-    ws.addEventListener("error", () => { clearTimeout(timeout); reject(Error("INSPECTOR_OPEN_FAILED")); }, {once:true});
+    ws.addEventListener("error", event => {
+      clearTimeout(timeout);
+      const detail = String(event?.error?.code || event?.error?.message ||
+        event?.message || "unknown").slice(0,140);
+      reject(Error("INSPECTOR_OPEN_FAILED_" + detail));
+    }, {once:true});
   });
   const pending = new Map();
   let next = 0;
@@ -203,7 +208,14 @@ async function main() {
         CLOUDFLARE_API_KEY:"",CLOUDFLARE_EMAIL:""}});
     child.stderr.on("data", chunk => {stderr = (stderr + String(chunk)).slice(-1600);});
     const endpoint = await waitUntilReady(child);
-    inspector = await connect(endpoint);
+    // Workerd's inspector proxy can publish a target before its WebSocket
+    // upgrade handler is ready. Retry only the local connection, never a provider.
+    let lastInspectorError = null;
+    for(let attempt=0;attempt<12;attempt++){
+      try { inspector = await connect(endpoint); break; }
+      catch(error){ lastInspectorError = error; await sleep(250); }
+    }
+    if(!inspector) throw lastInspectorError || Error("INSPECTOR_OPEN_FAILED");
     await inspector.call("Profiler.enable");
     const records=[];
     for (const days of [30,90,366]) records.push(await profileDay(inspector,days));
