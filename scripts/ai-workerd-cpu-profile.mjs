@@ -8,6 +8,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+// Available in the pinned Wrangler lockfile; local inspector transport only.
+import WebSocket from "ws";
 
 const HOST = "127.0.0.1", PORT = 8897, INSPECTOR = 9297;
 const BASE = "http://" + HOST + ":" + PORT;
@@ -102,23 +104,29 @@ async function waitUntilReady(child) {
   fail("LOCAL_WORKER_INSPECTOR_UNAVAILABLE");
 }
 async function connect(url) {
-  if (typeof WebSocket !== "function") fail("NODE_WEBSOCKET_REQUIRED");
-  const ws = new WebSocket(url);
+  const ws = new WebSocket(url, {
+    headers: {"Origin":"http://" + HOST + ":" + INSPECTOR}
+  });
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(Error("INSPECTOR_OPEN_TIMEOUT")), 5000);
-    ws.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, {once:true});
-    ws.addEventListener("error", event => {
+    ws.once("open", () => { clearTimeout(timeout); resolve(); });
+    ws.once("unexpected-response", (_request,response) => {
       clearTimeout(timeout);
-      const detail = String(event?.error?.code || event?.error?.message ||
-        event?.message || "unknown").slice(0,140);
-      reject(Error("INSPECTOR_OPEN_FAILED_" + detail));
-    }, {once:true});
+      const status = response?.statusCode ?? 0;
+      response?.resume();
+      reject(Error("INSPECTOR_UPGRADE_STATUS_" + status));
+    });
+    ws.once("error", error => {
+      clearTimeout(timeout);
+      reject(Error("INSPECTOR_OPEN_FAILED_" + String(error?.code || error?.message ||
+        "UNKNOWN").slice(0,120)));
+    });
   });
   const pending = new Map();
   let next = 0;
-  ws.addEventListener("message", e => {
+  ws.on("message", data => {
     let message;
-    try { message = JSON.parse(e.data); } catch { return; }
+    try { message = JSON.parse(String(data)); } catch { return; }
     if (!Number.isInteger(message.id)) return;
     const item = pending.get(message.id);
     if (!item) return;
