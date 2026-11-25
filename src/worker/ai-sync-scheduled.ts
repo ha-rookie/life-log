@@ -86,6 +86,8 @@ const empty=(reason:string):SyncReport=>({
  */
 export async function scheduled(context:ScheduledReadContext):Promise<SyncReport>{
   let n=0,bytes=0,used=0,generation:string|null=null,digest:string|null=null;
+  // Anchor a verified starting state; after a 429 never overwrite a third-party generation.
+  let baseline:{generation:string;digest:string}|null=null;
   let limits:Effective;
   try{
     limits=caps(context.limits);
@@ -146,6 +148,7 @@ export async function scheduled(context:ScheduledReadContext):Promise<SyncReport
         return result(before.generation_digest===digest?"already":"rejected",
           before.generation_digest===digest?"SAME_GENERATION_DIGEST":"GENERATION_COLLISION");
       }
+      baseline={generation:before.generation_id!,digest:before.generation_digest!};
     }else if(current!=="empty")return result("rejected","INVALID_WORKBOOK_STATE");
     checkCpu();
     charge(1); // OAuth endpoint (in B3 replaced by injected fake).
@@ -208,7 +211,12 @@ export async function scheduled(context:ScheduledReadContext):Promise<SyncReport
             return result(seen.generation_digest===digest?"sheet_copy_verified":"rejected",
               seen.generation_digest===digest?
                 "SHEET_INTERNAL_CONSISTENCY_ONLY":"GENERATION_COLLISION");
+          // A new or altered third-party snapshot between probe and retry is not ours.
+          if(!baseline||seen.generation_id!==baseline.generation||
+             seen.generation_digest!==baseline.digest)
+            return result("unknown","CONCURRENT_GENERATION_CHANGE");
         }else if(state!=="empty")return result("unknown","RATE_LIMIT_UNKNOWN_STATE");
+        else if(baseline)return result("unknown","CONCURRENT_GENERATION_CHANGE");
         try{checkCpu();}catch{return result("unknown","CPU_AFTER_SUBMIT_UNKNOWN");}
         if(attempt===limits.attempts)return result("rejected","RATE_LIMIT_EXHAUSTED");
         const jitter=(generation.charCodeAt(0)*attempt)%50;

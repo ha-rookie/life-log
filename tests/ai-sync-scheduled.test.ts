@@ -364,4 +364,30 @@ describe("B3 scheduled-only pipeline, no actual network/D1/Google/Cron",()=>{
     });
     expect(allowed.api.calls).toHaveLength(1);
   });
+
+
+  it("S17: 429 may not overwrite a new generation published by another actor",async()=>{
+    for(const withBaseline of [false,true]){
+      const s=await setup(30,"synthetic_b3_new_429",[429,200]);
+      if(withBaseline){
+        const previous=await prepareSheetSnapshot(await projectAiReadSnapshot(
+          s.source.db,OWNER,opts(30,"synthetic_b3_old_429")));
+        await s.fake.publishAtomic(previous,s.ly);
+      }
+      const concurrentlyPublished=await prepareSheetSnapshot(await projectAiReadSnapshot(
+        s.source.db,OWNER,opts(30,"synthetic_b3_other429")));
+      const submit=s.context.sheet.submit;
+      s.context.sheet.submit=async request=>{
+        const response=await submit(request);
+        await s.fake.publishAtomic(concurrentlyPublished,s.ly);
+        return response;
+      };
+      expect(await scheduled(s.context)).toMatchObject({
+        status:"unknown",reason:"CONCURRENT_GENERATION_CHANGE"
+      });
+      expect(s.api.calls).toHaveLength(1);
+      expect(s.fake.activeGeneration).toBe(concurrentlyPublished.generation_id);
+      expect(s.source.writes).toBe(0);
+    }
+  });
 });
