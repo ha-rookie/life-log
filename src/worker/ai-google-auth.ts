@@ -40,8 +40,9 @@ function validateIdentity(config:ServiceIdentity):void{
     (config.audience!==undefined&&config.audience!==GOOGLE_TOKEN_ENDPOINT))
     throw Error("INVALID_SERVICE_IDENTITY");
   const key=config.privateKey;
-  if(!key||key.type!=="private"||key.algorithm.name!=="RSASSA-PKCS1-v1_5"||
-    !key.usages.includes("sign"))
+  if(!key||key.type!=="private"||!key.algorithm||
+    key.algorithm.name!=="RSASSA-PKCS1-v1_5"||
+    !Array.isArray(key.usages)||!key.usages.includes("sign"))
     throw Error("INVALID_SIGNING_KEY");
 }
 export async function createServiceAssertion(
@@ -91,7 +92,9 @@ export async function requestSyntheticGoogleToken(
     throw Error("INVALID_TOKEN_RESPONSE");
   const data=payload as Record<string,unknown>;
   const token=data.access_token,expires=data.expires_in;
-  if(data.token_type!=="Bearer"||typeof token!=="string"||token.length<8||
+  if(data.token_type!=="Bearer"||
+     (data.scope!==undefined&&data.scope!==identity.scope)||
+     typeof token!=="string"||token.length<8||
      token.length>4096||/[\u0000-\u0020]/u.test(token)||
      !Number.isSafeInteger(expires)||typeof expires!=="number"||
      expires<60||expires>3600)

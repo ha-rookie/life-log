@@ -167,8 +167,9 @@ export async function scheduled(context:ScheduledReadContext):Promise<SyncReport
     checkCpu();
     const endpoint=SHEETS_BATCH_ENDPOINT+context.spreadsheetId+":batchUpdate";
     for(let attempt=1;attempt<=limits.attempts;attempt++){
-      // Reserve the eight readback subrequests BEFORE any possible write.
-      reserve(9);
+      // Reserve the largest branch BEFORE any possible write:
+      // one POST + one 429 state probe + eight verification reads.
+      reserve(10);
       checkCpu();
       charge(1);
       let response:{status:number};

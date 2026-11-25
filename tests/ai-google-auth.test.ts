@@ -77,6 +77,8 @@ describe("B3 OAuth service-account JWT — synthetic transport only",()=>{
   it("O04: malformed key, out-of-range clock and expired assertions reject",async()=>{
     await expect(createServiceAssertion(identity({privateKey:keys.publicKey}),NOW))
       .rejects.toThrow("INVALID_SIGNING_KEY");
+    await expect(createServiceAssertion(identity({privateKey:{} as CryptoKey}),NOW))
+      .rejects.toThrow("INVALID_SIGNING_KEY");
     await expect(createServiceAssertion(identity(),0)).rejects.toThrow("INVALID_AUTH_TIME");
     await expect(createServiceAssertion(identity(),NOW,10)).rejects.toThrow("INVALID_AUTH_TIME");
     await expect(createServiceAssertion(identity(),NOW,3601)).rejects.toThrow("INVALID_AUTH_TIME");
@@ -116,5 +118,12 @@ describe("B3 OAuth service-account JWT — synthetic transport only",()=>{
   it("O07: no default exchange means no network fallback",async()=>{
     await expect(requestSyntheticGoogleToken(identity(),null as never,NOW))
       .rejects.toThrow("TOKEN_TRANSPORT_REQUIRED");
+  });
+
+  it("O08: mismatched token response scope is not trusted",async()=>{
+    await expect(requestSyntheticGoogleToken(identity(),transport(200,{
+      access_token:"synthetic_token",token_type:"Bearer",expires_in:600,
+      scope:GOOGLE_SPREADSHEETS_SCOPE
+    }),NOW)).rejects.toThrow("INVALID_TOKEN_RESPONSE");
   });
 });

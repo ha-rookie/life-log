@@ -348,4 +348,20 @@ describe("B3 scheduled-only pipeline, no actual network/D1/Google/Cron",()=>{
     expect(s.api.calls).toHaveLength(0);
     expect(s.fake.activeGeneration).toBeNull();
   });
+
+  it("S16: 429 after-apply readback budget is reserved before any submission",async()=>{
+    const blocked=await setup(30,"synthetic_b3_budget429",["429-after-apply"]);
+    blocked.context.limits={maxSubrequests:15};
+    expect(await scheduled(blocked.context)).toMatchObject({
+      status:"rejected",reason:"SUBREQUEST_BUDGET"
+    });
+    expect(blocked.api.calls).toHaveLength(0);
+    expect(blocked.fake.activeGeneration).toBeNull();
+    const allowed=await setup(30,"synthetic_b3_budget429",["429-after-apply"]);
+    allowed.context.limits={maxSubrequests:16};
+    expect(await scheduled(allowed.context)).toMatchObject({
+      status:"sheet_copy_verified",subrequests:16
+    });
+    expect(allowed.api.calls).toHaveLength(1);
+  });
 });
