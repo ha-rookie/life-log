@@ -390,4 +390,30 @@ describe("B3 scheduled-only pipeline, no actual network/D1/Google/Cron",()=>{
       expect(s.source.writes).toBe(0);
     }
   });
+
+
+  it("S18: a generation changed DURING 429 backoff is not overwritten by retry",async()=>{
+    for(const withBaseline of [false,true]){
+      const s=await setup(30,"synthetic_b3_pause429",[429,200]);
+      if(withBaseline){
+        const previous=await prepareSheetSnapshot(await projectAiReadSnapshot(
+          s.source.db,OWNER,opts(30,"synthetic_old_pause429")));
+        await s.fake.publishAtomic(previous,s.ly);
+      }
+      const concurrent=await prepareSheetSnapshot(await projectAiReadSnapshot(
+        s.source.db,OWNER,opts(30,"synthetic_other_pause429")));
+      s.context.pause=async ms=>{
+        s.delays.push(ms);
+        await s.fake.publishAtomic(concurrent,s.ly);
+      };
+      const report=await scheduled(s.context);
+      expect(report).toMatchObject({
+        status:"unknown",reason:"CONCURRENT_GENERATION_CHANGE"
+      });
+      expect(s.delays).toHaveLength(1);
+      expect(s.api.calls).toHaveLength(1); // NO second POST after the backoff
+      expect(s.fake.activeGeneration).toBe(concurrent.generation_id);
+      expect(s.source.writes).toBe(0);
+    }
+  });
 });

@@ -172,8 +172,15 @@ export async function scheduled(context:ScheduledReadContext):Promise<SyncReport
     for(let attempt=1;attempt<=limits.attempts;attempt++){
       // Reserve the largest branch BEFORE any possible write:
       // one POST + one 429 state probe + eight verification reads.
-      reserve(10);
-      checkCpu();
+      try{
+        reserve(10);
+        checkCpu();
+      }catch(e){
+        // A previous POST may have applied even when the response was 429.
+        // Never describe an unverified retry-budget stop as a clean rejection.
+        if(attempt>1)return result("unknown","RETRY_PREFLIGHT_UNKNOWN");
+        throw e;
+      }
       charge(1);
       let response:{status:number};
       try{
@@ -222,6 +229,33 @@ export async function scheduled(context:ScheduledReadContext):Promise<SyncReport
         const jitter=(generation.charCodeAt(0)*attempt)%50;
         try{await context.pause(200*2**(attempt-1)+jitter);}
         catch{return result("unknown","BACKOFF_INTERRUPTED");}
+        // S18: the first post-429 readback occurred BEFORE the asynchronous
+        // backoff. Re-probe now, while still able to stop before another POST.
+        // This is NOT an atomic provider-side compare-and-set or a lock.
+        try{
+          charge(1);
+          const afterPause=await context.sheet.probe();
+          if(afterPause==="unknown")return result("unknown","RATE_LIMIT_UNKNOWN_STATE");
+          if(afterPause==="occupied"){
+            charge(8);
+            const seen=await verifyReadSnapshot(context.sheet.reader,nowUtc);
+            if(seen.consistency!=="consistent")
+              return result("unknown","RATE_LIMIT_UNVERIFIED_COPY");
+            if(seen.generation_id===generation)
+              return result(seen.generation_digest===digest?"sheet_copy_verified":"rejected",
+                seen.generation_digest===digest?
+                  "SHEET_INTERNAL_CONSISTENCY_ONLY":"GENERATION_COLLISION");
+            if(!baseline||seen.generation_id!==baseline.generation||
+               seen.generation_digest!==baseline.digest)
+              return result("unknown","CONCURRENT_GENERATION_CHANGE");
+          }else if(afterPause==="empty"){
+            if(baseline)return result("unknown","CONCURRENT_GENERATION_CHANGE");
+          }else return result("unknown","RATE_LIMIT_UNKNOWN_STATE");
+          checkCpu();
+        }catch{
+          // After a possible publication, a failed re-check is never a rollback.
+          return result("unknown","RETRY_PREFLIGHT_UNKNOWN");
+        }
         continue;
       }
       // 5xx, timeout, malformed response or response loss: no unsafe retry.
