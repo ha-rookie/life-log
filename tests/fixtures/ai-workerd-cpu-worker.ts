@@ -37,7 +37,7 @@ function dbFor(days: number, populated: boolean): AiReadDb {
     rows[0].push({id:"w"+i,measured_at,weight_kg:70+i%10/10,source_id:"manual:cpu",source_kind:"measured",anomaly_flag:0});
     rows[1].push({id:"s"+i,local_day:day,steps:i%5===0?0:7000+i,source_id:"manual:cpu"});
     rows[2].push({local_day:day,drinking_presence:i%3===0?1:0,drink_cups:i%3===0?1:0,lunch_kind:"home",dinner_kind:"home",late_meal:0,source_id:"manual:cpu"});
-    if(i%3===0) rows[3].push({id:"d"+i,observed_at:day+"T20:00:00+09:00",drink_kind:"beer",drink_variant:null,source_id:"manual:cpu",alcohol:1,cups:1,volume_ml:350,abv_pct:5});
+    if(i%3===0) rows[3].push({id:"d"+i,observed_at:day+"T20:00:00+09:00",drink_kind:"other_alcohol",drink_variant:"beer",source_id:"manual:cpu",alcohol:1,cups:1,volume_ml:350,abv_pct:5});
   }
   return {
   prepare: sql => new FakeStatement(sql),
