@@ -66,7 +66,10 @@ const safe=(v:Cell,extended=false):Cell=>{
     if(!Number.isFinite(v))throw Error("INVALID_CELL_NUMBER");
     return v;
   }
-  if(typeof v!=="string"||enc.encode(v).byteLength>(extended?90_000:MAX_CELL_BYTES)||
+  const limit=extended?90_000:MAX_CELL_BYTES;
+  // Each UTF-16 code unit occupies at most three UTF-8 bytes (a surrogate pair
+  // occupies four total). Only allocate an encoded buffer near the limit.
+  if(typeof v!=="string"||(v.length*3>limit&&enc.encode(v).byteLength>limit)||
      /[\u0000-\u001f\u007f]/u.test(v)||/^\s*[=+@-]/u.test(v))
     throw Error("UNSAFE_SHEET_TEXT");
   return v;
@@ -106,13 +109,15 @@ function assertRowShape(tab:ReadTab,row:Record<string,unknown>,generation:string
     }else{
       if(typeof value!=="string"||!value)throw Error("INVALID_STRING_CELL");
     }
-    safe(value as Cell);
+    // Null and numeric cells have already passed identical checks above.
+    // Only strings still need UTF-8/formula/control validation.
+    if(typeof value==="string")safe(value);
   }
   const day=tab==="Read_Drinks"?row.observed_at_jst:row.local_day;
   if(typeof day!=="string"||!/^\d{4}-\d{2}-\d{2}/u.test(day))
     throw Error("INVALID_ROW_DAY");
 }
-function validateSource(s:AiReadSnapshot):void{
+function validateSource(s:AiReadSnapshot,parsedReadback=false):void{
   if(s.contract_version!=="ai-sheets-v1"||!/^[a-zA-Z0-9_-]{8,80}$/u.test(s.generation_id)||
      !/^\d{4}-\d{2}-\d{2}T/u.test(s.generated_at_utc)||
      s.coverage_to_jst<s.coverage_from_jst)throw Error("INVALID_SOURCE_MANIFEST");
@@ -120,11 +125,15 @@ function validateSource(s:AiReadSnapshot):void{
     const rows=s.rows[tab];
     if(!Array.isArray(rows)||rows.length>=MAX_ROWS||s.counts[tab]!==rows.length)
       throw Error("INVALID_SOURCE_COUNTS");
-    const ids=new Set<string>();
-    for(const row of rows){
-      assertRowShape(tab,row as unknown as Record<string,unknown>,s.generation_id);
-      if(ids.has(row.record_key))throw Error("DUPLICATE_RECORD_KEY");
-      ids.add(row.record_key);
+    // parseTab constructs fresh, private primitive-only rows and checks shape
+    // and uniqueness synchronously. No caller-supplied source can skip checks.
+    if(!parsedReadback){
+      const ids=new Set<string>();
+      for(const row of rows){
+        assertRowShape(tab,row as unknown as Record<string,unknown>,s.generation_id);
+        if(ids.has(row.record_key))throw Error("DUPLICATE_RECORD_KEY");
+        ids.add(row.record_key);
+      }
     }
   }
   // B1 always materializes one day-level row per covered JST day.
@@ -309,7 +318,7 @@ export async function verifyReadSnapshot(
       counts,canonical_weight_keys,warnings,
       rows,generation_digest:meta.generation_digest
     };
-    validateSource(snap);
+    validateSource(snap,true);
     if((await readModelDigest(snap))!==meta.generation_digest)throw Error("DIGEST_MISMATCH");
     if(referenceUtc!==undefined){
       const reference=Date.parse(referenceUtc),generated=Date.parse(meta.generated_at_utc);

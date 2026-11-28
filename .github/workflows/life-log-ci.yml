@@ -48,10 +48,11 @@ jobs:
         run: npm test -- --no-file-parallelism
       # B4 profiling is deliberately one-shot on the dedicated scoped PR.
       # Do not spend GitHub Actions minutes or access real bindings on other PRs.
-      - name: Isolated Workerd CPU profiling (Issue 313, synthetic only)
+      - name: Isolated Workerd CPU profiling (Issues 313 and 315, synthetic only)
         if: >-
           github.event_name == 'pull_request' &&
-          contains(github.event.pull_request.body, 'Closes #313')
+          (contains(github.event.pull_request.body, 'Closes #313') ||
+           contains(github.event.pull_request.body, 'Closes #315'))
         timeout-minutes: 4
         run: |
           node scripts/ai-workerd-cpu-profile.mjs --self-test

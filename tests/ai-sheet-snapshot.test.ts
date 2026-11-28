@@ -193,6 +193,42 @@ describe("Phase B2 offline fake Sheets snapshot publication / validation",()=>{
    forged.rows.Read_Steps[1].steps=99;
    await expect(prepareSheetSnapshot(forged)).rejects.toThrow("SOURCE_DIGEST_MISMATCH");
  });
+ it("B18: UTF-8 byte boundary and unsafe short/long strings remain fail-closed",async()=>{
+   for(const value of ["あ".repeat(85)+"x","😀".repeat(64),"a".repeat(256),"normal"]){
+     const s=await synthetic(30);
+     s.rows.Read_Meals[0].lunch_kind=value;
+     s.generation_digest=await readModelDigest(s);
+     const p=await prepareSheetSnapshot(s),fake=new FakeSheets();
+     await fake.publishAtomic(p,layout());
+     expect((await verifyReadSnapshot(fake)).consistency).toBe("consistent");
+     expect(p.workbook.Read_Meals[1][3]).toBe(value);
+   }
+   for(const value of ["あ".repeat(86),"😀".repeat(64)+"x","a".repeat(257),"=1","\ttext","a\u0000b","  +1"]){
+     const s=await synthetic(30);
+     s.rows.Read_Meals[0].lunch_kind=value;
+     s.generation_digest=await readModelDigest(s);
+     await expect(prepareSheetSnapshot(s)).rejects.toThrow("UNSAFE_SHEET_TEXT");
+     const p=await fresh(30),fake=new FakeSheets();
+     await fake.publishAtomic(p,layout());
+     fake.tamperActive("Read_Meals",1,3,value);
+     expect((await verifyReadSnapshot(fake)).reason).toBe("UNSAFE_SHEET_TEXT");
+   }
+ });
+ it("B19: numeric and required-null validation remains fail-closed",async()=>{
+   for(const [value,reason] of [[NaN,"INVALID_NUMERIC_CELL"],[Infinity,"INVALID_NUMERIC_CELL"],["42","INVALID_NUMERIC_CELL"],[null,"INVALID_NULL_CELL"]] as const){
+     const s=await synthetic(30,"synthetic_g001",true);
+     (s.rows.Read_Weight[0] as unknown as Record<string,unknown>).weight_kg=value;
+     s.generation_digest=await readModelDigest(s);
+     await expect(prepareSheetSnapshot(s)).rejects.toThrow(reason);
+     const p=await fresh(30,"synthetic_g001",true),fake=new FakeSheets();
+     await fake.publishAtomic(p,layout());
+     fake.tamperActive("Read_Weight",1,4,value);
+     // The fake JSON transport may normalize non-finite numbers to null.
+     const read=await verifyReadSnapshot(fake);
+     expect(read.consistency).toBe("unverified");
+     expect(["INVALID_NUMERIC_CELL","INVALID_NULL_CELL"]).toContain(read.reason);
+   }
+ });
  it("B10: 30, 90, 366 day synthetic sizes and CPU timing are only local estimates",async()=>{
    for(const n of [30,90,366]){
      const s=await synthetic(n,"synthetic_g001",true);
