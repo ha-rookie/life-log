@@ -147,9 +147,10 @@ async function connect(url) {
   });
   return {call,close:()=>ws.close()};
 }
-async function profileDay(client, days) {
-  const warmed = await fetchLocal("/warmup?days=" + days);
-  if (warmed.ready !== true || warmed.days !== days) fail("WARMUP_MISMATCH");
+async function profileDay(client, days, populated) {
+  const query = "?days=" + days + "&populated=" + (populated ? 1 : 0);
+  const warmed = await fetchLocal("/warmup" + query);
+  if (warmed.ready !== true || warmed.days !== days || warmed.populated !== populated) fail("WARMUP_MISMATCH");
   const cpu = [], wall = [], sampleCounts = [];
   let bytes = -1, subrequests = -1;
   for (let pass = 0; pass < PROFILE_COUNT; pass++) {
@@ -158,9 +159,9 @@ async function profileDay(client, days) {
     let response;
     try {
       for (let i=0; i<REQUESTS_PER_PROFILE; i++) {
-        response = await fetchLocal("/profile?days=" + days);
+        response = await fetchLocal("/profile" + query);
         if (response.outcome !== "sheet_copy_verified" ||
-            response.days !== days ||
+            response.days !== days || response.populated !== populated ||
             response.cpuMeterEvidence !== "injected-synthetic-only")
           fail("SYNTHETIC_PIPELINE_NOT_VERIFIED");
       }
@@ -184,7 +185,7 @@ async function profileDay(client, days) {
       !Number.isInteger(subrequests) || subrequests <= 0 || subrequests > 50)
     fail("SYNTHETIC_RESOURCE_LIMIT_VIOLATION");
   return {
-    days, payloadBytes:bytes, countedSubrequests:subrequests,
+    days, populated, payloadBytes:bytes, countedSubrequests:subrequests,
     profileMethod:"local-workerd-cdp-Profiler-active-sample-estimate",
     profiles:PROFILE_COUNT, invocationsPerProfile:REQUESTS_PER_PROFILE,
     activeSamples:sampleCounts,
@@ -226,9 +227,10 @@ async function main() {
     if(!inspector) throw lastInspectorError || Error("INSPECTOR_OPEN_FAILED");
     await inspector.call("Profiler.enable");
     const records=[];
-    for (const days of [30,90,366]) records.push(await profileDay(inspector,days));
+    for (const populated of [false,true])
+      for (const days of [30,90,366]) records.push(await profileDay(inspector,days,populated));
     const report = {
-      issue:313,
+      issue:315,
       environment:"local Workerd on CI runner, fake D1/Google only",
       measurement:"CDP non-idle CPU profiler samples; approximation not billable CPU",
       notCloudflareFreeAttestation:true,
@@ -239,13 +241,13 @@ async function main() {
     };
     console.log("AI_B4_LOCAL_WORKERD_CPU_PROFILE "+JSON.stringify(report));
     if (process.env.GITHUB_STEP_SUMMARY) {
-      const lines=["### Issue #313 — local Workerd synthetic CPU profile",
+      const lines=["### Issue #315 — local Workerd synthetic CPU profile",
         "Not a production Free CPU attestation. No remote bindings or credentials.",
-        "| days | CDP CPU p50 (ms) | p95 | max | payload bytes | subrequests |",
-        "|---:|---:|---:|---:|---:|---:|"];
+        "| scenario | days | CDP CPU p50 (ms) | p95 | max | payload bytes | subrequests |",
+        "|---|---:|---:|---:|---:|---:|---:|"];
       for(const row of records){
         const c=row.cpuEstimateMs;
-        lines.push("| "+row.days+" | "+c.p50.toFixed(3)+" | "+c.p95.toFixed(3)+
+        lines.push("| "+(row.populated?"populated":"sparse")+" | "+row.days+" | "+c.p50.toFixed(3)+" | "+c.p95.toFixed(3)+
           " | "+c.max.toFixed(3)+" | "+row.payloadBytes+
           " | "+row.countedSubrequests+" |");
       }

@@ -29,7 +29,17 @@ class FakeStatement {
   bind(...values: unknown[]): this { this.values = values; return this; }
   async all<T>(): Promise<{results: T[]}> { return { results: [] }; }
 }
-const db: AiReadDb = {
+function dbFor(days: number, populated: boolean): AiReadDb {
+  const rows: unknown[][] = [[], [], [], []];
+  if (populated) for (let i = 0; i < days; i++) {
+    const day = new Date(END - (days - 1 - i) * 86400000).toISOString().slice(0, 10);
+    const measured_at = day + "T08:00:00+09:00";
+    rows[0].push({id:"w"+i,measured_at,weight_kg:70+i%10/10,source_id:"manual:cpu",source_kind:"measured",anomaly_flag:0});
+    rows[1].push({id:"s"+i,local_day:day,steps:i%5===0?0:7000+i,source_id:"manual:cpu"});
+    rows[2].push({local_day:day,drinking_presence:i%3===0?1:0,drink_cups:i%3===0?1:0,lunch_kind:"home",dinner_kind:"home",late_meal:0,source_id:"manual:cpu"});
+    if(i%3===0) rows[3].push({id:"d"+i,observed_at:day+"T20:00:00+09:00",drink_kind:"beer",drink_variant:null,source_id:"manual:cpu",alcohol:1,cups:1,volume_ml:350,abv_pct:5});
+  }
+  return {
   prepare: sql => new FakeStatement(sql),
   batch: async statements => {
     if (statements.length !== 4) throw Error("FAKE_D1_BATCH_ONLY");
@@ -39,9 +49,10 @@ const db: AiReadDb = {
           statement.values[0] !== OWNER)
         throw Error("FAKE_D1_OWNER_SCOPING");
     }
-    return Array.from({length: 4}, () => ({results: []}));
+    return rows.map(results => ({results}));
   }
-};
+  };
+}
 const options = (days: number): AiReadOptions => ({
   from: new Date(END - (days - 1) * 86400000).toISOString().slice(0, 10),
   to: new Date(END).toISOString().slice(0, 10),
@@ -49,8 +60,9 @@ const options = (days: number): AiReadOptions => ({
   generationId: "synthetic_workerd_cpu_" + days
 });
 let keyPair: CryptoKeyPair | null = null;
-const baseline = new Map<number, Prepared>();
-async function warmup(days: number): Promise<void> {
+const baseline = new Map<string, Prepared>();
+const keyFor = (days: number, populated: boolean) => `${days}:${populated}`;
+async function warmup(days: number, populated: boolean): Promise<void> {
   if (!keyPair) {
     keyPair = await crypto.subtle.generateKey(
       {
@@ -59,15 +71,19 @@ async function warmup(days: number): Promise<void> {
       }, false, ["sign", "verify"]
     ) as CryptoKeyPair;
   }
-  if (!baseline.has(days)) {
-    const snap = await projectAiReadSnapshot(db, OWNER, options(days));
-    baseline.set(days, await prepareSheetSnapshot(snap));
+  const key = keyFor(days, populated);
+  if (!baseline.has(key)) {
+    const snap = await projectAiReadSnapshot(dbFor(days,populated), OWNER, options(days));
+    if(populated && (snap.rows.Read_Weight.length!==days || snap.rows.Read_Drinks.length!==Math.ceil(days/3)))
+      throw Error("POPULATED_FIXTURE_NOT_PROJECTED");
+    baseline.set(key, await prepareSheetSnapshot(snap));
   }
 }
-async function exercise(days: number) {
-  if (!keyPair || !baseline.has(days)) throw Error("WARMUP_REQUIRED");
+async function exercise(days: number, populated: boolean) {
+  const key = keyFor(days, populated);
+  if (!keyPair || !baseline.has(key)) throw Error("WARMUP_REQUIRED");
   const fake = new FakeSheets();
-  const prepared = baseline.get(days)!;
+  const prepared = baseline.get(key)!;
   const identity: ServiceIdentity = {
     clientEmail: "synthetic-cpu@test-project.iam.gserviceaccount.com",
     privateKey: keyPair.privateKey, scope: GOOGLE_DRIVE_FILE_SCOPE
@@ -86,7 +102,7 @@ async function exercise(days: number) {
     }
   };
   const context: ScheduledReadContext = {
-    db, trustedOwner: OWNER, options: options(days),
+    db: dbFor(days,populated), trustedOwner: OWNER, options: options(days),
     spreadsheetId: "synthetic_cpu_spreadsheet_313",
     layout: LAYOUT, identity, tokenTransport,
     sheet: {
@@ -111,7 +127,7 @@ async function exercise(days: number) {
       report.subrequests !== 15)
     throw Error("SYNTHETIC_B3_PROFILE_FAILED");
   return {
-    days, payloadBytes: report.payloadBytes,
+    days, populated, payloadBytes: report.payloadBytes,
     subrequests: report.subrequests,
     outcome: report.status,
     cpuMeterEvidence: report.cpuEvidence
@@ -123,14 +139,15 @@ export default {
     if (url.pathname !== "/warmup" && url.pathname !== "/profile")
       return new Response("Not Found", {status: 404});
     const days = Number(url.searchParams.get("days"));
+    const populated = url.searchParams.get("populated") === "1";
     if (![30,90,366].includes(days))
       return new Response("Invalid synthetic window", {status: 400});
     try {
       if (url.pathname === "/warmup") {
-        await warmup(days);
-        return Response.json({days, ready: true});
+        await warmup(days,populated);
+        return Response.json({days, populated, ready: true});
       }
-      return Response.json(await exercise(days));
+      return Response.json(await exercise(days,populated));
     } catch {
       // No JWT, key material, personal records, or provider error detail in logs.
       return Response.json({error: "SYNTHETIC_PROFILE_FAILED"}, {status: 500});
