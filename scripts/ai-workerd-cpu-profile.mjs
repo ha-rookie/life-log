@@ -19,13 +19,13 @@ function fail(message) { throw Error("AI_B4_LOCAL_PROFILE: " + message); }
  // inlining, native work and GC can hide caller identity; report unknown separately.
  // Never print raw call frames, URLs, source paths or sample contents.
 const GROUPS = {
-  b1_projection: ["projectAiReadSnapshot","marker","revision","keyFor","daySequence","toJstIso","assertUnique","assessDrinkAlcohol"],
+  b1_projection: ["projectAiReadSnapshot","marker","revision","daySequence","toJstIso","assertUnique","assessDrinkAlcohol"],
   b2_validation: ["assertRowShape","validateSource","safe","parseTab","parseMeta"],
-  b2_digest: ["readModelDigest","digest"],
+  shared_digest: ["readModelDigest","digest"],
   b2_encoding_batch: ["encodeTable","metaTable","buildAtomicBatch","makeRows","bytes","checkCells"],
   b2_prepare_readback: ["prepareSheetSnapshot","verifyReadSnapshot"],
-  oauth: ["requestSyntheticGoogleToken","signServiceAccountAssertion","createServiceAssertion"],
-  fake_fixture: ["dbFor","exercise","publishAtomic","activate","clone","readTab","readMeta"],
+  oauth: ["requestSyntheticGoogleToken","createServiceAssertion","validateIdentity"],
+  fake_fixture: ["dbFor","publishAtomic","activate","clone","readTab","readMeta"],
   gc: ["(garbage collector)"]
 };
 const groupNames = [...Object.keys(GROUPS),"other"];
