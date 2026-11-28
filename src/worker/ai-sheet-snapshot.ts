@@ -109,7 +109,9 @@ function assertRowShape(tab:ReadTab,row:Record<string,unknown>,generation:string
     }else{
       if(typeof value!=="string"||!value)throw Error("INVALID_STRING_CELL");
     }
-    safe(value as Cell);
+    // Null and numeric cells have already passed identical checks above.
+    // Only strings still need UTF-8/formula/control validation.
+    if(typeof value==="string")safe(value);
   }
   const day=tab==="Read_Drinks"?row.observed_at_jst:row.local_day;
   if(typeof day!=="string"||!/^\d{4}-\d{2}-\d{2}/u.test(day))
